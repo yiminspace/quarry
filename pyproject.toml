@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quarry-db"
-version = "0.19.0"
+version = "0.20.0"
 description = "AI-native database workbench: one safety-railed query kernel, many faces (CLI / GUI / agent skill / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -192,6 +192,26 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.20.0 (2026-07-28)
+
+### Bug Fixes
+
+- Address keepalive review findings on PR #113
+  ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+### Features
+
+- Add workspace tunnel keeper and shared tunnel attach
+  ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+### Testing
+
+- Add keepalive unit coverage for CI gate ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+
 ## v0.19.0 (2026-07-23)
 
 ### Features
