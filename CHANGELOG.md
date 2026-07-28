@@ -8,6 +8,18 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Added
 
+- **Workspace tunnel keep-alive keeper + shared tunnel attach** (#112): `qy
+  up/down/status` now manage a workspace-owned keeper that keeps SSH tunnels
+  warm and reconnects dropped forwards with exponential backoff. CLI/GUI/MCP
+  processes now attach to an already-live registry entry for the same
+  ssh/db/proxy dimension instead of spawning duplicate tunnels, so warm
+  forwards are reused cross-process. Keep-alive/reconnect opt-ins are persisted
+  per workspace in `config.toml`; `qy status` and the GUI header expose
+  `up/reconnecting/down` state; and `qy exec`/`qy run` print a one-line hint
+  when keep-alive is configured but the keeper is down. Neptune tunnel defaults
+  now align with its standard port (`8182`) and the same `ssh_*` participation
+  model.
+
 - **`qy ping <connection>|--all`** (#110): a lightweight reachability probe
   for configured connections, distinct from `connections test`'s richer
   "connected to \<db\>" report. PG/MySQL run `select 1`, Redis runs `PING`,

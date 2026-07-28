@@ -34,7 +34,7 @@ from urllib.parse import urlparse, urlunparse
 from . import proxy as proxy_mod
 from . import workspace
 
-DEFAULT_DB_PORT = {"postgres": 5432, "mysql": 3306, "redis": 6379}
+DEFAULT_DB_PORT = {"postgres": 5432, "mysql": 3306, "redis": 6379, "neptune": 8182}
 
 _POOL: dict[tuple, "_Tunnel"] = {}
 _LOCK = threading.Lock()
@@ -59,11 +59,14 @@ _OWNED_REGISTRY_KEYS: set[str] = set()
 
 
 class _Tunnel:
-    def __init__(self, proc: subprocess.Popen, local_port: int):
+    def __init__(self, proc: subprocess.Popen | None, local_port: int, *, attached: bool = False):
         self.proc = proc
         self.local_port = local_port
+        self.attached = attached
 
     def alive(self) -> bool:
+        if self.proc is None:
+            return _port_open("127.0.0.1", self.local_port)
         return self.proc.poll() is None
 
 
@@ -119,6 +122,24 @@ def _load_registry() -> dict:
         return {}
 
 
+def _registry_attached_local_port(key: tuple) -> int | None:
+    """A live keeper-owned local_port for `key`, if any."""
+    rkey = _registry_key(key)
+    own_pid = _own_pid()
+    registry = _load_registry().get(rkey)
+    if not isinstance(registry, dict):
+        return None
+    for pid, entry in registry.items():
+        if pid == own_pid or not isinstance(entry, dict):
+            continue
+        if entry.get("owner") != "keeper":
+            continue
+        port = entry.get("local_port")
+        if isinstance(port, int) and _port_open("127.0.0.1", port):
+            return port
+    return None
+
+
 def _save_registry(data: dict) -> None:
     try:
         REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +182,7 @@ def _register_tunnel(key: tuple, t: "_Tunnel", proxy_key) -> None:
         "local_port": t.local_port,
         "proxied": proxy_key is not None,
         "proxy": f"{proxy_key[0]}:{proxy_key[1]}" if proxy_key else None,
+        "owner": os.environ.get("QUARRY_TUNNEL_OWNER", "client"),
     }
     _save_registry(registry)
     _OWNED_REGISTRY_KEYS.add(rkey)
@@ -287,10 +309,15 @@ def open_tunnel(conn, engine: str, connect_timeout: float | None = None, use_pro
         if t is not None and not t.alive():
             t = None
         if t is None:
-            t = _make_tunnel(conn, db_host, db_port, connect_timeout=connect_timeout, proxy_info=proxy_info)
-            _POOL[key] = t
-            _terminate_stale_dimension(key)
-            _register_tunnel(key, t, proxy_key)
+            attached_port = _registry_attached_local_port(key)
+            if attached_port is not None:
+                t = _Tunnel(None, attached_port, attached=True)
+                _POOL[key] = t
+            else:
+                t = _make_tunnel(conn, db_host, db_port, connect_timeout=connect_timeout, proxy_info=proxy_info)
+                _POOL[key] = t
+                _terminate_stale_dimension(key)
+                _register_tunnel(key, t, proxy_key)
         local_port = t.local_port
     yield _rewrite_url_hostport(conn.url, "127.0.0.1", local_port)
 

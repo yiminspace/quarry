@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ConnGroup, TablesResponse } from "../api";
+import type { ConnGroup, KeepAliveResponse, TablesResponse } from "../api";
 
 export type CurrentConn = {
   db: string;
@@ -30,6 +30,7 @@ type ConnState = {
   /** Bumped when something outside the workbench (currently: the workspace
    * manager after add/remove) needs `/api/connections` reloaded. */
   reloadToken: number;
+  keepAlive: KeepAliveResponse | null;
   setConnMeta: (workspace: string, workspaces: string[], groups: ConnGroup[]) => void;
   setCurrent: (current: CurrentConn) => void;
   setCurrentTable: (table: string | null) => void;
@@ -38,6 +39,7 @@ type ConnState = {
   putTcache: (key: string, data: TablesResponse) => void;
   dropTcache: (key: string) => void;
   requestReload: () => void;
+  setKeepAlive: (keepAlive: KeepAliveResponse | null) => void;
 };
 
 /** Connection-tree state shared by the header (workspace label, prod badge,
@@ -54,6 +56,7 @@ export const useConnStore = create<ConnState>((set) => ({
   checking: false,
   tcache: {},
   reloadToken: 0,
+  keepAlive: null,
   setConnMeta: (workspace, workspaces, groups) =>
     set((s) => ({ workspace, workspaces, groups, loaded: true, loadSeq: s.loadSeq + 1 })),
   setCurrent: (current) => set({ current }),
@@ -69,4 +72,5 @@ export const useConnStore = create<ConnState>((set) => ({
       return { tcache };
     }),
   requestReload: () => set((s) => ({ reloadToken: s.reloadToken + 1 })),
+  setKeepAlive: (keepAlive) => set({ keepAlive }),
 }));

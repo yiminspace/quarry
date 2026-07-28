@@ -292,6 +292,47 @@ def test_set_proxy_enabled_does_not_duplicate_on_repeat_toggle(monkeypatch, tmp_
     assert workspace.proxy_enabled_workspaces().count(str(ws)) == 1
 
 
+@pytest.mark.unit
+def test_set_tunnel_keep_alive_roundtrip(monkeypatch, tmp_path):
+    _use_config(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    workspace.set_tunnel_keep_alive(str(ws), True)
+    assert workspace.is_tunnel_keep_alive_enabled(str(ws)) is True
+    workspace.set_tunnel_keep_alive(str(ws), False)
+    assert workspace.is_tunnel_keep_alive_enabled(str(ws)) is False
+
+
+@pytest.mark.unit
+def test_set_tunnel_reconnect_roundtrip(monkeypatch, tmp_path):
+    _use_config(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    workspace.set_tunnel_reconnect(str(ws), True)
+    assert workspace.is_tunnel_reconnect_enabled(str(ws)) is True
+    workspace.set_tunnel_reconnect(str(ws), False)
+    assert workspace.is_tunnel_reconnect_enabled(str(ws)) is False
+
+
+@pytest.mark.unit
+def test_tunnel_flags_read_legacy_tunnel_table(monkeypatch, tmp_path):
+    cfg = _use_config(monkeypatch, tmp_path)
+    cfg.write_text("[tunnel]\nkeep_alive = true\nreconnect = true\n", encoding="utf-8")
+    ws = tmp_path / "ws"
+    assert workspace.is_tunnel_keep_alive_enabled(str(ws)) is True
+    assert workspace.is_tunnel_reconnect_enabled(str(ws)) is True
+
+
+@pytest.mark.unit
+def test_set_tunnel_flags_write_tunnel_table(monkeypatch, tmp_path):
+    cfg = _use_config(monkeypatch, tmp_path)
+    ws = tmp_path / "ws"
+    workspace.set_tunnel_keep_alive(str(ws), True)
+    workspace.set_tunnel_reconnect(str(ws), True)
+    text = cfg.read_text(encoding="utf-8")
+    assert "[tunnel]" in text
+    assert "keep_alive = true" in text
+    assert "reconnect = true" in text
+
+
 # ---------------------------------------------------------------------------
 # workspace.py — _split_dirs precedence + build_workspaces + configure
 # ---------------------------------------------------------------------------
@@ -437,8 +478,8 @@ def test_db_host_port(url, engine, expected):
 
 @pytest.mark.unit
 def test_db_host_port_unknown_engine_defaults_5432():
-    # engine not in DEFAULT_DB_PORT and no explicit port -> 5432
-    assert tunnel._db_host_port("neptune://gw/graph", "neptune") == ("gw", 5432)
+    # known engine default without explicit port
+    assert tunnel._db_host_port("neptune://gw/graph", "neptune") == ("gw", 8182)
 
 
 @pytest.mark.unit
@@ -782,6 +823,7 @@ def test_open_tunnel_registers_new_tunnel_in_cross_process_registry(monkeypatch)
         "local_port": 54170,
         "proxied": False,
         "proxy": None,
+        "owner": "client",
     }
 
 
@@ -1206,6 +1248,62 @@ def test_tunnel_alive_reflects_poll():
     dead = tunnel._Tunnel(_FakeProc(poll_value=0), 5001)
     assert alive.alive() is True
     assert dead.alive() is False
+
+
+@pytest.mark.unit
+def test_open_tunnel_attaches_to_live_registry_entry_without_spawning_ssh(monkeypatch):
+    """issue #112: when another process already owns a live tunnel for the same
+    key, this process should attach to that local forward rather than opening a
+    second ssh process."""
+    popen_calls = []
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda cmd, **k: popen_calls.append(cmd))
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: None)
+    monkeypatch.setattr(tunnel, "_port_open", lambda host, port: port == 55123)
+    conn = _Conn("postgresql://u@remote-db:5432/app", ssh_host="bastion")
+    db_host, db_port = tunnel._db_host_port(conn.url, "postgres")
+    key = (conn.ssh_host, 22, "root", "", db_host, db_port, None)
+    rkey = tunnel._registry_key(key)
+    tunnel._save_registry({rkey: {"999999": {
+        "ssh_target": "root@bastion:22",
+        "db_target": "remote-db:5432",
+        "local_port": 55123,
+        "proxied": False,
+        "proxy": None,
+        "owner": "keeper",
+    }}})
+
+    with tunnel.open_tunnel(conn, "postgres") as url:
+        assert "127.0.0.1:55123" in url
+    assert popen_calls == []
+    pooled = next(iter(tunnel._POOL.values()))
+    assert pooled.proc is None
+    assert pooled.attached is True
+
+
+@pytest.mark.unit
+def test_open_tunnel_does_not_attach_non_keeper_registry_entry(monkeypatch):
+    popen_calls = []
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda cmd, **k: popen_calls.append(cmd) or _FakeProc(poll_value=None))
+    monkeypatch.setattr(tunnel, "_wait_port", lambda *a, **k: True)
+    monkeypatch.setattr(tunnel, "_free_port", lambda: 55124)
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: None)
+    monkeypatch.setattr(tunnel, "_port_open", lambda host, port: True)
+    conn = _Conn("postgresql://u@remote-db:5432/app", ssh_host="bastion")
+    db_host, db_port = tunnel._db_host_port(conn.url, "postgres")
+    key = (conn.ssh_host, 22, "root", "", db_host, db_port, None)
+    rkey = tunnel._registry_key(key)
+    tunnel._save_registry({rkey: {"999999": {
+        "ssh_target": "root@bastion:22",
+        "db_target": "remote-db:5432",
+        "local_port": 55123,
+        "proxied": False,
+        "proxy": None,
+        "owner": "client",
+    }}})
+
+    with tunnel.open_tunnel(conn, "postgres") as url:
+        assert "127.0.0.1:55124" in url
+    assert len(popen_calls) == 1
 
 
 @pytest.mark.unit

@@ -61,6 +61,34 @@ def test_health_freshness_ttl(monkeypatch):
     assert gui.core._health_fresh_enough({"ok": True}) is False  # legacy entry, no _ts
 
 
+@pytest.mark.unit
+def test_api_keepalive_status_and_controls(monkeypatch):
+    from quarry import gui
+
+    state = {"running": False}
+
+    def fake_status(_ws):
+        return {
+            "workspace": "/tmp/ws",
+            "enabled": True,
+            "reconnect": True,
+            "keeper": {"running": state["running"], "pid": 4242 if state["running"] else None},
+            "tunnels": [],
+            "updatedAt": 0.0,
+        }
+
+    monkeypatch.setattr(gui.keepalive, "status", fake_status)
+    monkeypatch.setattr(gui.keepalive, "start", lambda _ws: state.__setitem__("running", True) or (True, 4242))
+    monkeypatch.setattr(gui.keepalive, "stop", lambda _ws: state.__setitem__("running", False) or True)
+
+    down = gui.api_keepalive()
+    assert down["keeper"]["running"] is False
+    up = gui.api_keepalive_up()
+    assert up["keeper"]["running"] is True
+    back = gui.api_keepalive_down()
+    assert back["keeper"]["running"] is False
+
+
 # ---------------------------------------------------------------------------
 # e2e — through the server
 # ---------------------------------------------------------------------------

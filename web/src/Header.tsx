@@ -1,6 +1,6 @@
 import { VoyageToolbar } from "@yiminlab/voyage/react";
 import { useState } from "react";
-import { fetchHealth } from "./api";
+import { fetchHealth, keepAliveDown, keepAliveUp } from "./api";
 import { t, LANG, toggleLang } from "./i18n";
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
@@ -17,6 +17,7 @@ export default function Header() {
   const groups = useConnStore((s) => s.groups);
   const current = useConnStore((s) => s.current);
   const checking = useConnStore((s) => s.checking);
+  const keepAlive = useConnStore((s) => s.keepAlive);
   const updateInfo = useUiStore((s) => s.updateInfo);
   const whatsNew = useUiStore((s) => s.whatsNew);
   const setWhatsNew = useUiStore((s) => s.setWhatsNew);
@@ -25,6 +26,13 @@ export default function Header() {
 
   const isProd = (current?.env ?? "").toLowerCase() === "prod";
   const multiWs = workspaces.length > 1;
+  const kaState = (() => {
+    if (!keepAlive?.keeper?.running) return "down";
+    if ((keepAlive.tunnels || []).some((x) => x.state === "reconnecting")) return "reconnecting";
+    return "up";
+  })();
+  const kaLabel = kaState === "up" ? t("ka_up") : kaState === "reconnecting" ? t("ka_reconnecting") : t("ka_down");
+  const kaBtn = keepAlive?.keeper?.running ? t("ka_stop") : t("ka_start");
 
   /** Probe every connection (concurrency-capped at 3 — parallel SSH tunnels
    * skew each other's results) and paint the sidebar dots as results land. */
@@ -84,6 +92,22 @@ export default function Header() {
       <span className="vg-badge badge ok ro" id="roBadge">
         <i className="ti ti-lock" /> {t("ro_badge")}
       </span>
+      <span className={`vg-badge badge ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`} id="kaBadge">
+        <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
+      </span>
+      <button
+        className="vg-iconbtn iconbtn"
+        id="kaBtn"
+        title={kaBtn}
+        aria-label={kaBtn}
+        onClick={() =>
+          (keepAlive?.keeper?.running ? keepAliveDown() : keepAliveUp())
+            .then((next) => useConnStore.getState().setKeepAlive(next))
+            .catch(() => {})
+        }
+      >
+        <i className={`ti ${keepAlive?.keeper?.running ? "ti-player-stop" : "ti-player-play"}`} />
+      </button>
       {updateInfo?.available && (
         <button className="vg-badge badge update" id="updateBadge" onClick={() => setUpdOpen(true)}>
           <span className="vg-update-dot update-dot" /> {t("update_available")}

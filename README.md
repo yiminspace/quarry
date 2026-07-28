@@ -84,6 +84,7 @@ Resolution order: `--workspace PATH` → `~/.config/quarry/config.toml` → curr
 | `qy save <name> --db X --sql "..."` | Save a named query |
 | `qy list / describe / validate / fingerprint / audit` | Manage named queries |
 | `qy workspace list/add/remove` | Manage aggregated workspaces |
+| `qy up/down/status [--format text\|json]` | Workspace tunnel keep-alive keeper |
 | `qy local up/down/status/sync [--engine postgres\|redis\|all]` | Local dev containers (see below) |
 | `qy gui` | Launch the local GUI |
 | `qy mcp [--write]` | Serve the MCP face over stdio (for AI agents) |
@@ -155,6 +156,29 @@ ssh_host = "bastion.example.com"
 ssh_user = "ubuntu"
 ssh_key  = "~/.ssh/id_ed25519"
 ```
+
+Neptune participates in the same tunnel path now: if a Neptune connection has
+`ssh_host` (plus optional `ssh_user`/`ssh_key`/`ssh_port`), it joins tunnel
+pooling/keep-alive the same way as Postgres/MySQL/Redis.
+
+### Workspace keep-alive (`qy up/down/status`)
+
+If you query the same SSH-backed connections repeatedly (CLI + GUI + MCP), run
+the workspace keeper once and reuse warm forwards across processes:
+
+```bash
+qy up                    # start keeper for current workspace (also turns keep-alive on)
+qy status                # text status: keeper + per-connection tunnel state
+qy status --format json  # machine-readable state (up/reconnecting/down)
+qy down                  # stop keeper
+```
+
+`keep_alive=true` + `reconnect=true` are persisted per workspace in
+`~/.config/quarry/config.toml`. When reconnect is enabled, dropped tunnels are
+re-opened with exponential backoff and reported as `reconnecting` in both `qy
+status` and the GUI header badge. If keep-alive is enabled but the keeper is
+down, cold `qy exec`/`qy run` still work (legacy behavior) and print a one-line
+hint to stderr suggesting `qy up`.
 
 ### Proxy (for throttled tunnels)
 

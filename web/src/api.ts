@@ -119,6 +119,24 @@ export type WorkspacesResponse = {
   proxyDiscovered: ProxyDiscovered | null;
 };
 
+export type KeepAliveTunnelStatus = {
+  connection: string;
+  env: string | null;
+  state: "up" | "reconnecting" | "down";
+  localPort?: number | null;
+  lastError?: string | null;
+  updatedAt?: number;
+};
+
+export type KeepAliveResponse = {
+  workspace: string;
+  enabled: boolean;
+  reconnect: boolean;
+  keeper: { running: boolean; pid: number | null };
+  tunnels: KeepAliveTunnelStatus[];
+  updatedAt: number;
+};
+
 export type LocalUpResponse = {
   key: string;
   created: boolean;
@@ -229,6 +247,18 @@ export function fetchConnInfo(
 
 export function fetchWorkspaces(): Promise<WorkspacesResponse> {
   return getJSON("/api/workspaces");
+}
+
+export function fetchKeepAlive(): Promise<KeepAliveResponse> {
+  return getJSON("/api/keepalive");
+}
+
+export function keepAliveUp(): Promise<KeepAliveResponse> {
+  return postJSON("/api/keepalive/up", {});
+}
+
+export function keepAliveDown(): Promise<KeepAliveResponse> {
+  return postJSON("/api/keepalive/down", {});
 }
 
 export function addWorkspace(dir: string): Promise<WorkspacesResponse> {

@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-from . import __version__, cache, core, local, local_sync, proxy, redis_engine, tunnel, workspace
+from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, tunnel, workspace
 from .core import QuarryError
 
 log = logging.getLogger("quarry.gui")
@@ -447,6 +447,21 @@ def api_workspaces() -> dict:
     }
 
 
+def api_keepalive() -> dict:
+    """Workspace tunnel keep-alive status (same contract as `qy status --format json`)."""
+    return keepalive.status(workspace.WS.home)
+
+
+def api_keepalive_up() -> dict:
+    keepalive.start(workspace.WS.home)
+    return api_keepalive()
+
+
+def api_keepalive_down() -> dict:
+    keepalive.stop(workspace.WS.home)
+    return api_keepalive()
+
+
 def api_workspace_add(body: dict) -> dict:
     workspace.add_workspace(_req(body, "dir"))
     # reload_workspace(), not configure_workspace(None): the GUI is a long-lived
@@ -806,6 +821,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = api_update()
             elif u.path == "/api/changelog":
                 out = api_changelog()
+            elif u.path == "/api/keepalive":
+                out = api_keepalive()
             else:
                 return self._send(404, {"error": "not found"})
             log.info("GET %s (%d ms)", self.path, int((time.monotonic() - t0) * 1000))
@@ -833,6 +850,10 @@ class Handler(BaseHTTPRequestHandler):
                 out = api_workspace_add(body)
             elif u.path == "/api/workspaces/remove":
                 out = api_workspace_remove(body)
+            elif u.path == "/api/keepalive/up":
+                out = api_keepalive_up()
+            elif u.path == "/api/keepalive/down":
+                out = api_keepalive_down()
             else:
                 return self._send(404, {"error": "not found"})
             log.info("POST %s (%d ms)", u.path, int((time.monotonic() - t0) * 1000))
