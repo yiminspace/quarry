@@ -169,6 +169,8 @@ def remove_workspace(d: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _PROXY_KEY = "proxy_enabled_workspaces"
+_TUNNEL_KEEP_ALIVE_KEY = "tunnel_keep_alive_workspaces"
+_TUNNEL_RECONNECT_KEY = "tunnel_reconnect_workspaces"
 
 
 def proxy_enabled_workspaces() -> list[str]:
@@ -188,6 +190,44 @@ def set_proxy_enabled(ws_home: str, enabled: bool) -> Path:
     without_target = [x for x in current if _resolved(x) != target]
     new_value = (without_target + [ws_home]) if enabled else without_target
     return _write_config_key(_PROXY_KEY, new_value)
+
+
+def _workspace_toggle_values(key: str) -> list[str]:
+    return [str(x) for x in (_read_config().get(key) or [])]
+
+
+def _set_workspace_toggle(key: str, ws_home: str, enabled: bool) -> Path:
+    current = _workspace_toggle_values(key)
+    target = _resolved(ws_home)
+    without_target = [x for x in current if _resolved(x) != target]
+    new_value = (without_target + [ws_home]) if enabled else without_target
+    return _write_config_key(key, new_value)
+
+
+def tunnel_keep_alive_workspaces() -> list[str]:
+    return _workspace_toggle_values(_TUNNEL_KEEP_ALIVE_KEY)
+
+
+def tunnel_reconnect_workspaces() -> list[str]:
+    return _workspace_toggle_values(_TUNNEL_RECONNECT_KEY)
+
+
+def is_tunnel_keep_alive_enabled(ws_home: "str | Path") -> bool:
+    target = _resolved(str(ws_home))
+    return target in {_resolved(x) for x in tunnel_keep_alive_workspaces()}
+
+
+def is_tunnel_reconnect_enabled(ws_home: "str | Path") -> bool:
+    target = _resolved(str(ws_home))
+    return target in {_resolved(x) for x in tunnel_reconnect_workspaces()}
+
+
+def set_tunnel_keep_alive(ws_home: str, enabled: bool) -> Path:
+    return _set_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
+
+
+def set_tunnel_reconnect(ws_home: str, enabled: bool) -> Path:
+    return _set_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
 
 
 def _split_dirs(explicit: str | None) -> list[Path]:

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import cache, core, local, local_sync, proxy, redis_engine, tunnel, workspace
+from . import cache, core, keepalive, local, local_sync, proxy, redis_engine, tunnel, workspace
 from .core import (
     DEFAULT_PING_TIMEOUT_SEC,
     EXIT_CONNECTION_ERROR,
@@ -477,6 +477,8 @@ def _execute(conn, sql, psql_vars, args) -> int:
     notice = core.proxy_fallback_notice(conn, use_proxy=use_proxy)
     if notice:
         err(notice)
+    if keepalive.should_hint_keeper_down(conn) and tunnel.tunnel_fact_for(conn, core.connection_engine(conn)) is None:
+        err(f"connection [{conn.key}]: keep-alive is enabled but not running; run `qy up` for warm shared tunnels.")
     stats: dict[str, Any] = {}
     try:
         return core.execute_sql(
@@ -812,6 +814,59 @@ def cmd_proxy_off(args: argparse.Namespace) -> int:
     target = _proxy_target_workspace(args)
     cfg = workspace.set_proxy_enabled(str(target), False)
     print(f"✓ 已为 workspace {target} 关闭代理 → {cfg}")
+    return EXIT_OK
+
+
+def _keepalive_target_workspace(args: argparse.Namespace) -> Path:
+    return Path(args.workspace).expanduser().resolve() if getattr(args, "workspace", None) else workspace.WS.home
+
+
+def cmd_keepalive_up(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    started, pid = keepalive.start(target)
+    action = "started" if started else "already running"
+    print(f"✓ keep-alive {action} for workspace {target} (pid={pid})")
+    return EXIT_OK
+
+
+def cmd_keepalive_down(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    stopped = keepalive.stop(target)
+    print(f"✓ keep-alive {'stopped' if stopped else 'already down'} for workspace {target}")
+    return EXIT_OK
+
+
+def cmd_keepalive_status(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    data = keepalive.status(target)
+    if getattr(args, "format", "text") == "json":
+        json.dump(data, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return EXIT_OK
+    keeper = data.get("keeper") or {}
+    print(f"workspace: {data.get('workspace')}")
+    print(f"keep_alive: {'on' if data.get('enabled') else 'off'}")
+    print(f"reconnect: {'on' if data.get('reconnect') else 'off'}")
+    running = keeper.get("running")
+    pid = keeper.get("pid")
+    print(f"keeper: {'running' if running else 'down'}{f' (pid={pid})' if pid else ''}")
+    tunnels = data.get("tunnels") or []
+    if not tunnels:
+        print("tunnels: (none)")
+        return EXIT_OK
+    print("tunnels:")
+    for item in tunnels:
+        state = item.get("state", "down")
+        conn_label = item.get("connection")
+        env = item.get("env")
+        last = item.get("lastError")
+        port = item.get("localPort")
+        line = f"  {conn_label}{('@' + env) if env else ''}: {state}"
+        if port:
+            line += f"  local:{port}"
+        if last and state in {"down", "reconnecting"}:
+            line += f"  error: {last}"
+        print(line)
     return EXIT_OK
 
 
@@ -1199,6 +1254,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_poff.add_argument("--workspace", default=argparse.SUPPRESS,
                         help="Workspace dir (default: the primary workspace)")
     p_poff.set_defaults(func=cmd_proxy_off)
+
+    p_up = sub.add_parser("up", help="Start the workspace tunnel keep-alive process")
+    p_up.add_argument("--workspace", default=argparse.SUPPRESS,
+                      help="Workspace dir (default: the primary workspace)")
+    p_up.set_defaults(func=cmd_keepalive_up)
+    p_down = sub.add_parser("down", help="Stop the workspace tunnel keep-alive process")
+    p_down.add_argument("--workspace", default=argparse.SUPPRESS,
+                        help="Workspace dir (default: the primary workspace)")
+    p_down.set_defaults(func=cmd_keepalive_down)
+    p_status = sub.add_parser("status", help="Show workspace tunnel keep-alive status")
+    p_status.add_argument("--format", choices=["text", "json"], default="text")
+    p_status.add_argument("--workspace", default=argparse.SUPPRESS,
+                          help="Workspace dir (default: the primary workspace)")
+    p_status.set_defaults(func=cmd_keepalive_status)
 
     p_local = sub.add_parser(
         "local", help="Manage local dev containers (postgres/redis) for env=local connections")

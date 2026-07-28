@@ -108,6 +108,11 @@ const I18N: Record<string, Record<string, string>> = {
     ws_proxy_off: "proxy: off",
     ws_proxy_on_addr: "proxy: on — {addr}",
     ws_proxy_on_none: "proxy: on — none discovered",
+    ka_start: "Start keeper",
+    ka_stop: "Stop keeper",
+    ka_down: "tunnel keeper: down",
+    ka_up: "tunnel keeper: up",
+    ka_reconnecting: "tunnel keeper: reconnecting",
   },
   zh: {
     loading: "加载连接…",
@@ -212,6 +217,11 @@ const I18N: Record<string, Record<string, string>> = {
     ws_proxy_off: "代理：未启用",
     ws_proxy_on_addr: "代理：已启用 — {addr}",
     ws_proxy_on_none: "代理：已启用 — 未探测到代理",
+    ka_start: "启动 keeper",
+    ka_stop: "停止 keeper",
+    ka_down: "隧道 keeper：离线",
+    ka_up: "隧道 keeper：在线",
+    ka_reconnecting: "隧道 keeper：重连中",
   },
 };
 

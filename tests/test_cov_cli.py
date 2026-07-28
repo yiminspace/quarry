@@ -694,3 +694,29 @@ class TestExecuteStatsLine:
         lines = [json.loads(x) for x in captured.out.splitlines()]
         assert lines == [{"value": "a"}, {"value": "b"}]
         assert "ms · downloaded" in captured.err
+
+
+@pytest.mark.unit
+class TestKeepAliveCommands:
+    def test_up_down_and_status_json(self, wsdir, monkeypatch, capsys):
+        from quarry import keepalive
+
+        monkeypatch.setattr(keepalive, "start", lambda ws: (True, 43210))
+        monkeypatch.setattr(keepalive, "stop", lambda ws: True)
+        monkeypatch.setattr(keepalive, "status", lambda ws: {
+            "workspace": str(ws),
+            "enabled": True,
+            "reconnect": True,
+            "keeper": {"running": True, "pid": 43210},
+            "tunnels": [{"connection": "shop", "env": "dev", "state": "up", "localPort": 55123}],
+            "updatedAt": 0.0,
+        })
+
+        assert run_cli(wsdir, "up") == EXIT_OK
+        assert "started" in capsys.readouterr().out
+        assert run_cli(wsdir, "status", "--format", "json") == EXIT_OK
+        body = json.loads(capsys.readouterr().out)
+        assert body["keeper"]["pid"] == 43210
+        assert body["tunnels"][0]["state"] == "up"
+        assert run_cli(wsdir, "down") == EXIT_OK
+        assert "stopped" in capsys.readouterr().out

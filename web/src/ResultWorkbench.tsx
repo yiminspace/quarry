@@ -3,6 +3,7 @@ import {
   fetchConnections,
   fetchHealth,
   fetchInspect,
+  fetchKeepAlive,
   fetchQueries,
   fetchTables,
   runQuery,
@@ -317,6 +318,9 @@ export default function ResultWorkbench() {
     fetchQueries()
       .then((qs) => !cancelled && setSavedQueries(qs))
       .catch(() => !cancelled && setSavedQueries([]));
+    fetchKeepAlive()
+      .then((ka) => !cancelled && useConnStore.getState().setKeepAlive(ka))
+      .catch(() => !cancelled && useConnStore.getState().setKeepAlive(null));
     return () => {
       cancelled = true;
     };

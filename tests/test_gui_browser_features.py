@@ -1612,6 +1612,35 @@ def test_workspace_manager_remove_unbinds_active_connection_immediately(page, tm
     assert "No connection" in txt or "未选连接" in txt  # unbound immediately, no tab switch needed
 
 
+def test_header_keepalive_badge_and_toggle(page, monkeypatch):
+    """issue #112: header exposes compact keep-alive status + up/down control."""
+    from quarry import keepalive
+
+    state = {"running": False}
+
+    def fake_status(_ws):
+        return {
+            "workspace": "/tmp/ws",
+            "enabled": True,
+            "reconnect": True,
+            "keeper": {"running": state["running"], "pid": 4242 if state["running"] else None},
+            "tunnels": [],
+            "updatedAt": time.time(),
+        }
+
+    monkeypatch.setattr(keepalive, "status", fake_status)
+    monkeypatch.setattr(keepalive, "start", lambda _ws: state.__setitem__("running", True) or (True, 4242))
+    monkeypatch.setattr(keepalive, "stop", lambda _ws: state.__setitem__("running", False) or True)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_selector("#kaBadge")
+    assert "down" in page.locator("#kaBadge").inner_text().lower() or "离线" in page.locator("#kaBadge").inner_text()
+
+    page.locator("#kaBtn").click()
+    page.wait_for_timeout(300)
+    assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
+
+
 # ---------------------------------------------------------------------------
 # 88-91. Tabs: rename / drag-reorder / middle-click close / keyboard shortcut
 # (issue #16 — formerly a "Design gaps" backlog item)
