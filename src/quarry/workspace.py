@@ -171,6 +171,7 @@ def remove_workspace(d: str) -> bool:
 _PROXY_KEY = "proxy_enabled_workspaces"
 _TUNNEL_KEEP_ALIVE_KEY = "tunnel_keep_alive_workspaces"
 _TUNNEL_RECONNECT_KEY = "tunnel_reconnect_workspaces"
+_TUNNEL_SECTION = "tunnel"
 
 
 def proxy_enabled_workspaces() -> list[str]:
@@ -196,6 +197,61 @@ def _workspace_toggle_values(key: str) -> list[str]:
     return [str(x) for x in (_read_config().get(key) or [])]
 
 
+def _find_table_span(lines: list[str], table: str) -> tuple[int, int] | None:
+    header = f"[{table}]"
+    for i, line in enumerate(lines):
+        if line.strip() == header and not line.startswith((" ", "\t")):
+            end = i + 1
+            while end < len(lines):
+                ln = lines[end]
+                if ln.strip().startswith("[") and not ln.startswith((" ", "\t")):
+                    break
+                end += 1
+            return (i, end)
+    return None
+
+
+def _write_table_bool(table: str, key: str, enabled: bool) -> Path:
+    p = _config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        lines = p.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = [
+            "# Quarry 配置 —— qy 每次读这里决定加载哪些 workspace(与终端环境变量无关)。",
+            "# 管理:qy workspace add|remove <dir> / qy workspace list ; qy proxy on|off",
+        ]
+    val = "true" if enabled else "false"
+    span = _find_table_span(lines, table)
+    if span is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.extend([f"[{table}]", f"{key} = {val}"])
+    else:
+        start, end = span
+        replaced = False
+        for i in range(start + 1, end):
+            ln = lines[i]
+            if ln.lstrip().startswith("#"):
+                continue
+            if re.match(rf"^\s*{re.escape(key)}\s*=", ln):
+                lines[i] = f"{key} = {val}"
+                replaced = True
+                break
+        if not replaced:
+            lines.insert(end, f"{key} = {val}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def _tunnel_table_bool(key: str) -> bool | None:
+    table = _read_config().get(_TUNNEL_SECTION)
+    if not isinstance(table, dict):
+        return None
+    val = table.get(key)
+    return val if isinstance(val, bool) else None
+
+
 def _set_workspace_toggle(key: str, ws_home: str, enabled: bool) -> Path:
     current = _workspace_toggle_values(key)
     target = _resolved(ws_home)
@@ -214,20 +270,28 @@ def tunnel_reconnect_workspaces() -> list[str]:
 
 def is_tunnel_keep_alive_enabled(ws_home: "str | Path") -> bool:
     target = _resolved(str(ws_home))
-    return target in {_resolved(x) for x in tunnel_keep_alive_workspaces()}
+    if target in {_resolved(x) for x in tunnel_keep_alive_workspaces()}:
+        return True
+    table_flag = _tunnel_table_bool("keep_alive")
+    return table_flag is True
 
 
 def is_tunnel_reconnect_enabled(ws_home: "str | Path") -> bool:
     target = _resolved(str(ws_home))
-    return target in {_resolved(x) for x in tunnel_reconnect_workspaces()}
+    if target in {_resolved(x) for x in tunnel_reconnect_workspaces()}:
+        return True
+    table_flag = _tunnel_table_bool("reconnect")
+    return table_flag is True
 
 
 def set_tunnel_keep_alive(ws_home: str, enabled: bool) -> Path:
-    return _set_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
+    _set_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
+    return _write_table_bool(_TUNNEL_SECTION, "keep_alive", enabled)
 
 
 def set_tunnel_reconnect(ws_home: str, enabled: bool) -> Path:
-    return _set_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
+    _set_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
+    return _write_table_bool(_TUNNEL_SECTION, "reconnect", enabled)
 
 
 def _split_dirs(explicit: str | None) -> list[Path]:

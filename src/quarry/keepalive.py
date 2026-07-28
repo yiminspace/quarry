@@ -119,6 +119,7 @@ def start(ws_home: "str | Path") -> tuple[bool, int | None]:
     logf = _log_file(ws_home).open("a", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, "-m", "quarry.keepalive", "--workspace", str(ws_home), "run"],
+        env={**os.environ, "QUARRY_TUNNEL_OWNER": "keeper"},
         stdin=subprocess.DEVNULL,
         stdout=logf,
         stderr=logf,

@@ -1641,6 +1641,40 @@ def test_header_keepalive_badge_and_toggle(page, monkeypatch):
     assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
 
 
+def test_header_keepalive_badge_tracks_background_state(page, monkeypatch):
+    """issue #112: badge state should refresh without manual button clicks."""
+    from quarry import keepalive
+
+    state = {"mode": "up"}
+
+    def fake_status(_ws):
+        tunnels = [] if state["mode"] == "up" else [{"connection": "shop", "env": "dev", "state": "reconnecting"}]
+        return {
+            "workspace": "/tmp/ws",
+            "enabled": True,
+            "reconnect": True,
+            "keeper": {"running": True, "pid": 4242},
+            "tunnels": tunnels,
+            "updatedAt": time.time(),
+        }
+
+    monkeypatch.setattr(keepalive, "status", fake_status)
+    monkeypatch.setattr(keepalive, "start", lambda _ws: (False, 4242))
+    monkeypatch.setattr(keepalive, "stop", lambda _ws: True)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_selector("#kaBadge")
+    assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
+    state["mode"] = "reconnecting"
+    page.wait_for_function(
+        """() => {
+          const t = (document.querySelector('#kaBadge')?.textContent || '').toLowerCase();
+          return t.includes('reconnecting') || t.includes('重连');
+        }""",
+        timeout=7000,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 88-91. Tabs: rename / drag-reorder / middle-click close / keyboard shortcut
 # (issue #16 — formerly a "Design gaps" backlog item)

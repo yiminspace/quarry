@@ -123,7 +123,7 @@ def _load_registry() -> dict:
 
 
 def _registry_attached_local_port(key: tuple) -> int | None:
-    """A live local_port for `key` owned by another process, if any."""
+    """A live keeper-owned local_port for `key`, if any."""
     rkey = _registry_key(key)
     own_pid = _own_pid()
     registry = _load_registry().get(rkey)
@@ -131,6 +131,8 @@ def _registry_attached_local_port(key: tuple) -> int | None:
         return None
     for pid, entry in registry.items():
         if pid == own_pid or not isinstance(entry, dict):
+            continue
+        if entry.get("owner") != "keeper":
             continue
         port = entry.get("local_port")
         if isinstance(port, int) and _port_open("127.0.0.1", port):
@@ -180,6 +182,7 @@ def _register_tunnel(key: tuple, t: "_Tunnel", proxy_key) -> None:
         "local_port": t.local_port,
         "proxied": proxy_key is not None,
         "proxy": f"{proxy_key[0]}:{proxy_key[1]}" if proxy_key else None,
+        "owner": os.environ.get("QUARRY_TUNNEL_OWNER", "client"),
     }
     _save_registry(registry)
     _OWNED_REGISTRY_KEYS.add(rkey)

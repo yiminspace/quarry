@@ -318,13 +318,25 @@ export default function ResultWorkbench() {
     fetchQueries()
       .then((qs) => !cancelled && setSavedQueries(qs))
       .catch(() => !cancelled && setSavedQueries([]));
-    fetchKeepAlive()
-      .then((ka) => !cancelled && useConnStore.getState().setKeepAlive(ka))
-      .catch(() => !cancelled && useConnStore.getState().setKeepAlive(null));
     return () => {
       cancelled = true;
     };
   }, [reloadToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = (): void => {
+      fetchKeepAlive()
+        .then((ka) => !cancelled && useConnStore.getState().setKeepAlive(ka))
+        .catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // Restore / re-validate the active tab's connection whenever the tree
   // (re)loads: select it if it still resolves, unbind it otherwise — the
