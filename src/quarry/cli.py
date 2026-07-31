@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -577,6 +578,92 @@ def cmd_exec(args: argparse.Namespace) -> int:
     if not sql:
         err("must provide --sql or --file", exit_code=EXIT_USAGE)
     return _execute(conn, sql, psql_vars, args)
+
+
+def cmd_speedtest(args: argparse.Namespace) -> int:
+    """Measure the current DB/tunnel path without printing the generated payload."""
+    if args.bytes <= 0 or args.bytes > 100_000_000:
+        err("--bytes must be between 1 and 100000000", exit_code=EXIT_USAGE)
+    if args.runs <= 0 or args.runs > 20:
+        err("--runs must be between 1 and 20", exit_code=EXIT_USAGE)
+
+    conn = core.resolve_connection(args.db_key, args.env)
+    engine = core.connection_engine(conn)
+    if engine not in ("postgres", "mysql"):
+        err(
+            f"speedtest supports postgres/mysql connections, got {engine}",
+            exit_code=EXIT_USAGE,
+        )
+
+    sql = f"SELECT repeat('x', {args.bytes}) AS payload"
+    runs: list[dict[str, Any]] = []
+    for index in range(1, args.runs + 1):
+        result = core.run_query(
+            conn,
+            sql,
+            max_rows=1,
+            timeout=args.timeout,
+            with_types=False,
+            use_proxy=None,
+        )
+        elapsed_sec = result.elapsed_ms / 1000 or 0.001
+        speed_bps = result.download_bytes / elapsed_sec
+        runs.append({
+            "run": index,
+            "elapsedMs": result.elapsed_ms,
+            "downloadBytes": result.download_bytes,
+            "bytesPerSecond": int(speed_bps),
+        })
+
+    elapsed_values = [item["elapsedMs"] for item in runs]
+    speed_values = [item["bytesPerSecond"] for item in runs]
+    summary: dict[str, Any] = {
+        "db": conn.logical_db,
+        "connection": conn.key,
+        "env": conn.env,
+        "engine": engine,
+        "payloadBytes": args.bytes,
+        "sizeIsEstimated": True,
+        "runs": runs,
+        "medianElapsedMs": int(statistics.median(elapsed_values)),
+        "medianBytesPerSecond": int(statistics.median(speed_values)),
+    }
+    fact = tunnel.tunnel_fact_for(conn, engine)
+    if fact:
+        summary["tunnel"] = {
+            "localPort": fact["local_port"],
+            "proxied": fact["proxied"],
+            "proxy": fact["proxy"],
+        }
+
+    if args.format == "json":
+        json.dump(summary, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return EXIT_OK
+
+    target = f"{conn.logical_db}@{conn.env}" if conn.env else conn.logical_db
+    print(
+        f"target: {target} ({engine}) · payload {core.format_bytes(args.bytes)} "
+        f"· {args.runs} run{'s' if args.runs != 1 else ''}"
+    )
+    for item in runs:
+        print(
+            f"run {item['run']}: "
+            f"{core.format_query_stats(item['elapsedMs'], item['downloadBytes'], True)}"
+        )
+    print(
+        f"median: {summary['medianElapsedMs']}ms · "
+        f"avg speed ≈{core.format_bytes(summary['medianBytesPerSecond'])}/s"
+    )
+    tunnel_info = summary.get("tunnel")
+    if tunnel_info:
+        route = (
+            f"proxy {tunnel_info['proxy']}"
+            if tunnel_info["proxied"]
+            else "direct"
+        )
+        print(f"tunnel: {route} · local port {tunnel_info['localPort']}")
+    return EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1186,6 +1273,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["json", "ndjson", "csv", "table"], default="json")
     _add_safety_flags(p)
     p.set_defaults(func=cmd_exec)
+
+    p = sub.add_parser(
+        "speedtest",
+        help="Measure the current PostgreSQL/MySQL tunnel path with a generated payload",
+    )
+    p.add_argument("db_key")
+    p.add_argument("--env", default=None, help="Target env for an env-set (default: dev)")
+    p.add_argument(
+        "--bytes",
+        type=int,
+        default=1_000_000,
+        help="Generated result payload in bytes (default: 1000000; max: 100000000)",
+    )
+    p.add_argument("--runs", type=int, default=3, help="Number of samples (default: 3; max: 20)")
+    p.add_argument("--timeout", type=_positive_int, default=None, help="Per-run query timeout in seconds")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_speedtest)
 
     p = sub.add_parser("save", help="Save a named query")
     p.add_argument("name")

@@ -79,6 +79,7 @@ Resolution order: `--workspace PATH` → `~/.config/quarry/config.toml` → curr
 | `qy connections [list\|add\|set\|remove\|test]` | Manage connections |
 | `qy ping <db>\|--all [--timeout N] [--format text\|json]` | Reachability probe (ok/fail + latency; exit 1 if any fail) |
 | `qy exec <db> --sql "..." [--format json\|ndjson\|csv\|table] [--timeout N]` | Run ad-hoc SQL |
+| `qy speedtest <db> [--env dev] [--bytes N] [--runs N]` | Benchmark the current PostgreSQL/MySQL tunnel path |
 | `qy schema <db> <table>` | Live table structure |
 | `qy run <name> [k=v ...]` | Run a saved named query |
 | `qy save <name> --db X --sql "..."` | Save a named query |

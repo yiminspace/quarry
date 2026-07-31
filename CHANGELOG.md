@@ -8,6 +8,13 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Added
 
+- **`qy speedtest <db>` tunnel-path benchmark**: generate a bounded
+  PostgreSQL/MySQL result payload without printing it, repeat the same
+  end-to-end query path, and report per-run plus median elapsed time and
+  effective download speed. `--bytes`, `--runs`, `--env`, `--timeout`, and
+  machine-readable `--format json` make proxy-node comparisons reproducible;
+  the probe deliberately skips the GUI's separate column-type lookup.
+
 - **Workspace tunnel keep-alive keeper + shared tunnel attach** (#112): `qy
   up/down/status` now manage a workspace-owned keeper that keeps SSH tunnels
   warm and reconnects dropped forwards with exponential backoff. CLI/GUI/MCP

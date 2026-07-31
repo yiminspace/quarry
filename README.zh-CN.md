@@ -78,6 +78,7 @@ my-workspace/
 | `qy connections [list\|add\|set\|remove\|test]` | 管理连接 |
 | `qy ping <db>\|--all [--timeout N] [--format text\|json]` | 轻量健康探测(可达/耗时;有失败则 exit 1) |
 | `qy exec <db> --sql "..." [--format json\|ndjson\|csv\|table]` | 跑临时 SQL |
+| `qy speedtest <db> [--env dev] [--bytes N] [--runs N]` | 测当前 PostgreSQL/MySQL 隧道链路吞吐 |
 | `qy schema <db> <table>` | 看表结构 |
 | `qy run <name> [k=v ...]` | 跑命名查询 |
 | `qy save <name> --db X --sql "..."` | 存命名查询 |
