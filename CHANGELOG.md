@@ -199,6 +199,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.21.0 (2026-07-31)
+
+### Features
+
+- Add tunnel speedtest command ([#114](https://github.com/yiminspace/quarry/pull/114),
+  [`87c0995`](https://github.com/yiminspace/quarry/commit/87c0995c7c37f33a9bcdd800eb17e5f4c99557bd))
+
+
 ## v0.20.0 (2026-07-28)
 
 ### Bug Fixes
