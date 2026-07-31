@@ -696,6 +696,106 @@ class TestExecuteStatsLine:
         assert "ms · downloaded" in captured.err
 
 
+# ===========================================================================
+# speedtest — generated payload, no result-body output
+# ===========================================================================
+
+@pytest.mark.unit
+class TestSpeedtest:
+    def _args(self, **overrides):
+        import argparse
+        base = dict(
+            db_key="matrix_runtime",
+            env="dev",
+            bytes=1_000_000,
+            runs=3,
+            timeout=None,
+            format="text",
+        )
+        base.update(overrides)
+        return argparse.Namespace(**base)
+
+    def test_text_output_reports_each_run_and_median(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        conn = core.Connection(
+            key="west2_matrix_runtime",
+            db="matrix_runtime",
+            url="postgresql://localhost/db",
+            env="dev",
+        )
+        results = iter([
+            SimpleNamespace(elapsed_ms=3000, download_bytes=1_000_000),
+            SimpleNamespace(elapsed_ms=2000, download_bytes=1_000_000),
+            SimpleNamespace(elapsed_ms=2500, download_bytes=1_000_000),
+        ])
+        calls = []
+        monkeypatch.setattr(core, "resolve_connection", lambda name, env: conn)
+        monkeypatch.setattr(
+            core,
+            "run_query",
+            lambda *a, **kw: (calls.append((a, kw)), next(results))[1],
+        )
+        monkeypatch.setattr(
+            tunnel,
+            "tunnel_fact_for",
+            lambda *a: {
+                "local_port": 54321,
+                "proxied": True,
+                "proxy": "127.0.0.1:7897",
+            },
+        )
+
+        assert cli.cmd_speedtest(self._args()) == EXIT_OK
+
+        out = capsys.readouterr().out
+        assert "target: matrix_runtime@dev (postgres)" in out
+        assert out.count("run ") == 3
+        assert "median: 2500ms" in out
+        assert "proxy 127.0.0.1:7897" in out
+        assert all(kw["with_types"] is False and kw["max_rows"] == 1 for _, kw in calls)
+
+    def test_json_output_is_machine_readable(self, monkeypatch, capsys):
+        from types import SimpleNamespace
+
+        conn = core.Connection(key="shop", url="mysql://localhost/shop", engine="mysql")
+        monkeypatch.setattr(core, "resolve_connection", lambda name, env: conn)
+        monkeypatch.setattr(
+            core,
+            "run_query",
+            lambda *a, **kw: SimpleNamespace(elapsed_ms=1000, download_bytes=500_000),
+        )
+        monkeypatch.setattr(tunnel, "tunnel_fact_for", lambda *a: None)
+
+        assert cli.cmd_speedtest(self._args(runs=1, bytes=500_000, format="json")) == EXIT_OK
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["engine"] == "mysql"
+        assert data["payloadBytes"] == 500_000
+        assert data["medianElapsedMs"] == 1000
+        assert data["medianBytesPerSecond"] == 500_000
+        assert "tunnel" not in data
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"bytes": 0}, "--bytes must be between"),
+            ({"bytes": 100_000_001}, "--bytes must be between"),
+            ({"runs": 0}, "--runs must be between"),
+            ({"runs": 21}, "--runs must be between"),
+        ],
+    )
+    def test_rejects_unsafe_bounds(self, overrides, message):
+        with pytest.raises(core.QuarryError, match=message):
+            cli.cmd_speedtest(self._args(**overrides))
+
+    def test_rejects_unsupported_engine(self, monkeypatch):
+        conn = core.Connection(key="cache", url="redis://localhost:6379/0", engine="redis")
+        monkeypatch.setattr(core, "resolve_connection", lambda name, env: conn)
+        with pytest.raises(core.QuarryError, match="supports postgres/mysql"):
+            cli.cmd_speedtest(self._args())
+
+
 @pytest.mark.unit
 class TestKeepAliveCommands:
     def test_up_down_and_status_json(self, wsdir, monkeypatch, capsys):
