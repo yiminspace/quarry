@@ -110,6 +110,15 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Changed
 
+- **Large GUI results no longer freeze the browser main thread**: grid and
+  row-detail cells render a bounded 512-character preview instead of copying
+  multi-megabyte values into text, `title`, and `data-*` DOM slots. Full values
+  remain available for copy/export and open in a chunked inspector; JSON trees
+  now mount branches only when expanded. Results above 512 KiB stay available
+  for the current session but skip synchronous `localStorage` persistence (with
+  a visible status notice), and editing SQL or switching tabs no longer
+  reserializes unchanged result snapshots.
+
 - **`qy schema`/`describe-table` and the MCP server now cache table and
   column lookups like the GUI already did** (#97): repeat metadata lookups
   over a slow SSH-tunneled connection used to re-query the database every

@@ -194,14 +194,14 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 47 | grid | sort asc/desc, numeric-aware; 3rd click restores original order; arrow | B:test_sort_column_toggles_arrow_and_reorders, F:test_sort_numeric_strings_and_third_click_restores | ✅ |
 | 48 | grid | sort state resets on a new result | F:test_new_result_resets_sort_state | ✅ |
 | 49 | grid | column width drag | F:test_column_width_drag | ✅ |
-| 50 | grid | cell select; dblclick long→modal / short→copy (honest toast) | B:test_cell_doubleclick_no_error, F:test_cell_copy_via_keyboard_and_dblclick | ✅ |
-| 51 | grid | JSON tree modal + copy | F:test_cell_json_opens_tree_modal | ✅ |
-| 52 | grid | row-detail modal (rownum click) | B:test_rownum_click_opens_row_detail_modal | ✅ |
+| 50 | grid | cell select; bounded preview for large values; dblclick long→chunked modal / short→copy; explicit copy always uses the full raw value (honest toast) | B:test_cell_doubleclick_no_error, F:test_cell_copy_via_keyboard_and_dblclick, F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview; cellValue.test.ts | ✅ |
+| 51 | grid | JSON tree modal + copy; branches start collapsed and mount children only when expanded | F:test_cell_json_opens_tree_modal | ✅ |
+| 52 | grid | row-detail modal (rownum click), with the same bounded large-cell previews as the grid | B:test_rownum_click_opens_row_detail_modal, F:test_large_cell_is_bounded_in_dom_and_kept_session_only | ✅ |
 | 53 | grid | keyboard nav: arrows move selection, Enter opens, Cmd+C copies | F:test_grid_keyboard_nav_and_enter_opens_modal, F:test_cell_copy_via_keyboard_and_dblclick | ✅ |
 | 54 | grid | status bar: rows / elapsed / download size / avg speed (≈ + tooltip when estimated) / truncated / target | B:test_click_table…, F:test_truncated_badge_shows, F:test_status_bar_shows_download_size_and_speed, F:test_load_more_accumulates_download_size_and_speed | ✅ |
 | 55 | grid | 0-row empty state | F:test_zero_rows_empty_state | ✅ |
 | 56 | grid | error pane (`.err`); network failures show a readable message | B:test_write_is_blocked…, F:test_network_error_shows_readable_message | ✅ |
-| 57 | grid | result persisted to localStorage; restored after reload | F:test_editor_and_result_restored_after_reload | ✅ |
+| 57 | grid | bounded result persisted to localStorage and restored after reload; results over 512 KiB remain in-session only with a visible status notice | F:test_editor_and_result_restored_after_reload, F:test_large_cell_is_bounded_in_dom_and_kept_session_only; tabsStore.test.ts | ✅ |
 | 58 | grid | Escape closes the topmost modal | B:test_explain…, F:test_cell_json…, F:test_history_modal_escape_closes | ✅ |
 | 59 | global | toast styles + durations (ok vs error) | F:test_cell_copy_via_keyboard_and_dblclick (ok style) + error-toast presence in guards | ✅ |
 | 60 | global | read-only rail end-to-end | B:test_write_is_blocked_with_readonly_error | ✅ |
@@ -218,7 +218,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 71 | sidebar | manual list refresh button (tables + redis keys); filter survives refresh | F:test_table_list_manual_refresh (redis button + filter-survival unasserted) | 🟡 |
 | 72 | sidebar | table list cap notice at 5000 | backend: test_api_tables_capped_flag_at_5000 (UI note unasserted) | 🟡 |
 | 73 | sidebar | Alt+click inserts generated SQL without running | F:test_alt_click_inserts_without_running | ✅ |
-| 74 | tabs | per-tab result persistence: every tab's grid survives a reload (`qy_tabres`), each restored under its own connection | F:test_per_tab_results_persist_across_reload | ✅ |
+| 74 | tabs | per-tab result persistence: every bounded tab result survives a reload (`qy_tabres`), each restored under its own connection; unchanged results are not reserialized on SQL input/tab switches | F:test_per_tab_results_persist_across_reload; tabsStore.test.ts | ✅ |
 | 75 | tabs | an in-flight request that lands after a tab switch is stored on its origin tab, never the now-active one | F:test_slow_response_routes_to_origin_tab_not_active | ✅ |
 | 76 | tabs | a result is tagged with its producing connection; re-pointing a tab to another db/env never restores the old grid on reload — incl. the legacy `qy_result` upgrade path (env, not just db, must match) | F:test_result_not_restored_after_tab_rebound_to_prod, F:test_legacy_qy_result_env_mismatch_not_restored, F:test_legacy_qy_result_env_match_restored | ✅ |
 | 77 | tabs | an in-flight request whose own tab is switched to another env of the same db is dropped, never repainted/persisted as the new env | F:test_inflight_response_dropped_when_same_tab_switches_env | ✅ |
@@ -246,6 +246,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 99 | sidebar | env pill shows a proxy badge (`data-testid="proxy-badge"`) only for connections with a currently-live SSH tunnel that's actually routed through the proxy right now (an observed tunnel-pool fact, not a prediction) — server-computed, not guessed client-side; hidden when the workspace toggle is off, nothing was discovered, or no tunnel has been established for that connection yet | F:test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active, F:test_proxy_badge_hidden_when_workspace_toggle_off, F:test_proxy_badge_hidden_when_nothing_discovered, F:test_proxy_badge_follows_server_state_across_reload; `/api/connections`'s `proxied` field unit-covered in test_gui_api.py | ✅ |
 | 100 | header | workspace manager shows each registered workspace's proxy toggle state and the currently discovered proxy address (`data-testid="ws-proxy-status"`) | F:test_workspace_manager_shows_proxy_status_per_workspace, F:test_workspace_manager_shows_proxy_off_when_toggle_disabled; `/api/workspaces`'s `proxyEnabled`/`proxyDiscovered` fields unit-covered in test_gui_api.py | ✅ |
 | 101 | header | compact tunnel keep-alive control: live status badge (`down`/`up`/`reconnecting`) + start/stop button backed by `/api/keepalive*`, matching `qy status` semantics | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
+| 102 | grid/tabs | multi-megabyte cells never enter grid/row-detail DOM attributes or text in full; grid preview is 512 chars, inspector text grows in 20k chunks, JSON children mount lazily, and >512 KiB results skip synchronous persistence while remaining fully copyable/exportable in the current session | F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview, test_gui_visual:test_large_result_session_badge_inherits_status_token; cellValue.test.ts, tabsStore.test.ts | ✅ |
 
 ### Design gaps (capability-audit output — missing on purpose until scheduled)
 
@@ -253,9 +254,12 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 |--------|--------------------|----------|
 | sidebar | row-count / size hints next to tables | backlog (low) |
 
-Safety-relevant UX invariants that must never regress (rows 13, 27–28, 37, 47):
+Safety/performance-relevant UX invariants that must never regress (rows 13,
+27–28, 37, 47, 102):
 draft SQL is never silently lost; switching to prod never auto-runs; stale
-responses never overwrite newer results; sort is numeric-aware and restorable.
+responses never overwrite newer results; sort is numeric-aware and restorable;
+large raw values stay copyable/exportable but never materialize in full in the
+grid DOM or synchronous result persistence.
 
 The Tabler icon webfont is vendored (self-hosted via `@tabler/icons-webfont`,
 bundled by Vite) — no CDN dependency; `test_gui_visual.py` asserts the font

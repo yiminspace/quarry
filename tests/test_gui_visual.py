@@ -94,6 +94,17 @@ def test_status_bar_download_speed_reuse_existing_text_color(page):
     assert _style(page, "#avgSpeed", "color") == light_status_color
 
 
+def test_large_result_session_badge_inherits_status_token(page):
+    _select_testpg(page)
+    _set_sql(page, "select repeat('x', 600000) as payload")
+    page.locator("#runBtn").click()
+    page.locator("#resultNotSaved").wait_for()
+    assert _style(page, "#resultNotSaved", "color") == _style(page, "#status", "color")
+
+    page.locator(".vg-switcher-mode").click()
+    assert _style(page, "#resultNotSaved", "color") == _style(page, "#status", "color")
+
+
 def test_typography_matches_legacy(page):
     # app-wide 14px sans stack; the editor runs on the mono stack
     assert _style(page, "body", "fontSize") == "14px"

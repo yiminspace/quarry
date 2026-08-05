@@ -39,6 +39,18 @@ const TABRES_KEY = "qy_tabres";
 const LEGACY_UI_KEY = "qy_ui";
 const LEGACY_RESULT_KEY = "qy_result";
 
+/** Keep synchronous localStorage work bounded. Large results remain fully
+ * available in memory for the current session, but are not restored on reload.
+ * downloadBytes is already computed by every current backend engine, so this
+ * decision does not stringify the result merely to measure it. */
+export const MAX_PERSISTED_RESULT_BYTES = 512 * 1024;
+const MAX_PERSISTED_RESULTS_BYTES = 1536 * 1024;
+
+export function isResultSnapshotPersistable(snapshot: TabResultSnapshot): boolean {
+  const bytes = snapshot.result?.downloadBytes;
+  return typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= MAX_PERSISTED_RESULT_BYTES;
+}
+
 // Tab ids are 't<n>' with a monotonically increasing counter seeded past
 // every persisted id, so ids are never reused across reloads (an in-flight
 // request routed by id must not land on an unrelated new tab).
@@ -134,9 +146,9 @@ function persistTabs(tabs: Tab[], activeId: TabId): void {
   }
 }
 
-/** Persist every tab's result index-aligned with qy_tabs, tagged with the
- * producing connection. On quota overflow, degrade to keeping only the
- * active tab's result (the legacy fallback). */
+/** Persist bounded tab results index-aligned with qy_tabs and tagged with the
+ * producing connection. Active-tab-first packing keeps both serialization
+ * work and localStorage usage below a deterministic budget. */
 function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, TabResultSnapshot>): void {
   const pack = (tab: Tab): StoredResult => {
     const snap = results[tab.id];
@@ -144,20 +156,35 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
     const res = snap.querySql ? { ...snap.result, _sql: snap.querySql } : snap.result;
     return { db: snap.queryDb, env: snap.queryEnv, res };
   };
+  const packed: StoredResult[] = tabs.map(() => null);
+  let remaining = MAX_PERSISTED_RESULTS_BYTES;
+  const activeIndex = tabs.findIndex((tab) => tab.id === activeId);
+  const order = [activeIndex, ...tabs.map((_, i) => i)].filter(
+    (i, pos, all) => i >= 0 && all.indexOf(i) === pos,
+  );
+  for (const i of order) {
+    const snap = results[tabs[i].id];
+    if (!snap?.result || !isResultSnapshotPersistable(snap)) continue;
+    const bytes = snap.result.downloadBytes;
+    if (typeof bytes === "number" && Number.isFinite(bytes)) {
+      if (bytes > remaining) continue;
+      remaining -= bytes;
+    } else {
+      // A legacy restored result has no size metadata but necessarily already
+      // fit localStorage once. Keep at most one such unknown-size payload.
+      if (remaining === 0) continue;
+      remaining = 0;
+    }
+    packed[i] = pack(tabs[i]);
+  }
+  const serialized = JSON.stringify(packed);
   try {
-    localStorage.setItem(TABRES_KEY, JSON.stringify(tabs.map(pack)));
+    localStorage.setItem(TABRES_KEY, serialized);
   } catch {
     try {
-      const arr: StoredResult[] = tabs.map(() => null);
-      const ati = tabs.findIndex((t) => t.id === activeId);
-      if (ati >= 0) arr[ati] = pack(tabs[ati]);
-      localStorage.setItem(TABRES_KEY, JSON.stringify(arr));
+      localStorage.removeItem(TABRES_KEY);
     } catch {
-      try {
-        localStorage.removeItem(TABRES_KEY);
-      } catch {
-        // storage completely unavailable — results just won't survive a reload
-      }
+      // storage completely unavailable — results just won't survive a reload
     }
   }
 }
@@ -218,7 +245,10 @@ export type TabsState = {
 
 export const useTabsStore = create<TabsState>((set, get) => {
   const initial = readInitial();
-  const save = (tabs: Tab[], activeId: TabId, results: Record<TabId, TabResultSnapshot>): void => {
+  const saveTabs = (tabs: Tab[], activeId: TabId): void => {
+    persistTabs(tabs, activeId);
+  };
+  const saveTopology = (tabs: Tab[], activeId: TabId, results: Record<TabId, TabResultSnapshot>): void => {
     persistTabs(tabs, activeId);
     persistResults(tabs, activeId, results);
   };
@@ -232,14 +262,14 @@ export const useTabsStore = create<TabsState>((set, get) => {
       const active = s.tabs.find((t) => t.id === s.activeId);
       const tab = blankTab(seed ?? { db: active?.db ?? null, env: active?.env ?? null });
       const tabs = [...s.tabs, tab];
-      save(tabs, tab.id, s.results);
+      saveTabs(tabs, tab.id);
       set({ tabs, activeId: tab.id });
     },
 
     switchTab: (id) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id) || id === s.activeId) return;
-      save(s.tabs, id, s.results);
+      saveTabs(s.tabs, id);
       set({ activeId: id });
     },
 
@@ -253,14 +283,14 @@ export const useTabsStore = create<TabsState>((set, get) => {
       const activeId = s.activeId === id ? tabs[Math.min(idx, tabs.length - 1)].id : s.activeId;
       const results = { ...s.results };
       delete results[id];
-      save(tabs, activeId, results);
+      saveTopology(tabs, activeId, results);
       set({ tabs, activeId, results });
     },
 
     renameTab: (id, title) => {
       const s = get();
       const tabs = s.tabs.map((t) => (t.id === id ? { ...t, title } : t));
-      save(tabs, s.activeId, s.results);
+      saveTabs(tabs, s.activeId);
       set({ tabs });
     },
 
@@ -273,7 +303,7 @@ export const useTabsStore = create<TabsState>((set, get) => {
       const tabs = [...s.tabs];
       const [moved] = tabs.splice(from, 1);
       tabs.splice(to, 0, moved);
-      save(tabs, s.activeId, s.results);
+      saveTopology(tabs, s.activeId, s.results);
       set({ tabs });
     },
 
@@ -284,7 +314,12 @@ export const useTabsStore = create<TabsState>((set, get) => {
     updateTab: (id, patch) => {
       const s = get();
       const tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
-      save(tabs, s.activeId, s.results);
+      // SQL input is the hot path: never reserialize unchanged result payloads
+      // on every keystroke. A low-frequency connection/env re-point still
+      // rewrites the index-aligned qy_tabres shape so its producer tags and
+      // explicit null entries keep the established reload contract.
+      if ("db" in patch || "env" in patch) saveTopology(tabs, s.activeId, s.results);
+      else saveTabs(tabs, s.activeId);
       set({ tabs });
     },
 

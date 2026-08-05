@@ -664,10 +664,52 @@ def test_cell_json_opens_tree_modal(page):
     _select_testpg(page)
     _run_sql(page, """select '{"a":1,"b":[1,2,3]}'::jsonb as blob""")
     page.locator("#grid td.json").dblclick()
-    page.wait_for_selector(".modal details.jt")           # collapsible JSON tree
+    tree = page.locator(".modal details.jt")
+    tree.wait_for()                                        # tree exists but is lazy/collapsed
+    assert page.locator(".modal .jk", has_text="a").count() == 0
+    tree.locator("summary").click()
+    page.wait_for_selector(".modal .jk")                  # children mount only after expansion
     assert page.locator(".modal .jk", has_text="a").count() >= 1
     page.keyboard.press("Escape")
     page.wait_for_selector(".modal", state="detached")
+
+
+def test_large_cell_is_bounded_in_dom_and_kept_session_only(page):
+    _select_testpg(page)
+    _run_sql(page, "select repeat('x', 600000) as payload")
+
+    cell = page.locator('#grid td[data-truncated="true"]')
+    cell.wait_for()
+    assert len(cell.inner_text()) == 512
+    assert cell.inner_text().endswith("…")
+    assert cell.get_attribute("data-v") is None            # no full-value DOM attribute copy
+    assert "600000" not in (cell.get_attribute("title") or "")
+    assert page.evaluate("document.querySelector('#grid').innerHTML.length") < 5_000
+    assert page.locator("#resultNotSaved").is_visible()
+    assert page.evaluate("JSON.parse(localStorage.getItem('qy_tabres'))") == [None]
+
+    # Row detail is bounded too; the explicit cell inspector starts at one
+    # 20k chunk instead of mounting the entire 600k value.
+    page.locator("#grid td.rownum").click()
+    detail = page.locator('.modal td[data-truncated="true"]')
+    assert len(detail.inner_text()) == 512
+    page.keyboard.press("Escape")
+    cell.dblclick()
+    modal_preview = page.locator(".modal pre")
+    modal_preview.wait_for()
+    assert len(modal_preview.inner_text()) == 20_000
+    assert page.locator(".modal .ciactions", has_text="Show more").count() == 1
+
+
+def test_large_cell_copy_uses_full_value_not_preview(page_clip):
+    page = page_clip
+    _select_testpg(page)
+    _run_sql(page, "select repeat('x', 600000) as payload")
+    cell = page.locator('#grid td[data-truncated="true"]')
+    cell.dblclick()
+    page.locator("#cpy").click()
+    page.wait_for_selector(".modal", state="detached")
+    assert page.evaluate("navigator.clipboard.readText().then(v => v.length)") == 600_000
 
 
 # ---------------------------------------------------------------------------
