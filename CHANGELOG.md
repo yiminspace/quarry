@@ -208,6 +208,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.21.1 (2026-08-05)
+
+### Bug Fixes
+
+- **gui**: 修复大结果查询卡顿 ([#115](https://github.com/yiminspace/quarry/pull/115),
+  [`7d4e88d`](https://github.com/yiminspace/quarry/commit/7d4e88d1cb83511575970039da5d73f66e41673c))
+
+
 ## v0.21.0 (2026-07-31)
 
 ### Features
