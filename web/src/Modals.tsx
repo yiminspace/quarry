@@ -1,17 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { QueryColumn, SavedQuery } from "./api";
+import { cellPreview, cellText, MODAL_TEXT_CHUNK_CHARS } from "./cellValue";
 import { copy } from "./clip";
 import { t } from "./i18n";
 import { useModalEscape } from "./modalStack";
 import type { HistEntry } from "./useSqlHistory";
 
 type Row = Record<string, unknown>;
-
-export function cellText(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v === "object") return JSON.stringify(v); // jsonb / arrays
-  return String(v);
-}
 
 /** Backdrop + box wrapper shared by every modal — legacy `.modal > .box`. */
 function Modal({
@@ -38,6 +33,7 @@ function Modal({
 /* ---- collapsible JSON tree (cell modal), legacy .jt/.jrow markup ---- */
 
 function JsonTree({ value, jsonKey }: { value: unknown; jsonKey?: string | number }) {
+  const [open, setOpen] = useState(false);
   const k = jsonKey !== undefined ? (
     <>
       <span className="vg-jk jk">{String(jsonKey)}</span>:{" "}
@@ -54,29 +50,26 @@ function JsonTree({ value, jsonKey }: { value: unknown; jsonKey?: string | numbe
   if (Array.isArray(value)) {
     if (!value.length) return <div className="vg-jrow jrow">{k}[]</div>;
     return (
-      <details className="vg-jt jt" open>
+      <details className="vg-jt jt" onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
           {k}
           <span className="vg-jm jm">[{value.length}]</span>
         </summary>
-        {value.map((x, i) => (
-          <JsonTree key={i} value={x} jsonKey={i} />
-        ))}
+        {open && value.map((x, i) => <JsonTree key={i} value={x} jsonKey={i} />)}
       </details>
     );
   }
   if (typeof value === "object") {
-    const keys = Object.keys(value as object);
-    if (!keys.length) return <div className="vg-jrow jrow">{k}{"{}"}</div>;
     return (
-      <details className="vg-jt jt" open>
+      <details className="vg-jt jt" onToggle={(e) => setOpen(e.currentTarget.open)}>
         <summary>
           {k}
-          <span className="vg-jm jm">{`{${keys.length}}`}</span>
+          <span className="vg-jm jm">{"{…}"}</span>
         </summary>
-        {keys.map((kk) => (
-          <JsonTree key={kk} value={(value as Row)[kk]} jsonKey={kk} />
-        ))}
+        {open &&
+          Object.keys(value as object).map((kk) => (
+            <JsonTree key={kk} value={(value as Row)[kk]} jsonKey={kk} />
+          ))}
       </details>
     );
   }
@@ -89,24 +82,40 @@ function JsonTree({ value, jsonKey }: { value: unknown; jsonKey?: string | numbe
   return (
     <div className="vg-jrow jrow">
       {k}
-      <span className={cls}>
-        {typeof value === "string" ? JSON.stringify(value) : String(value)}
-      </span>
+      <span className={cls}>{cellPreview(value, 2_000).text}</span>
     </div>
   );
 }
 
 /** Cell-value modal: JSON renders as a collapsible tree, anything else as
  * preformatted text; the header offers a one-click Copy. */
-export function CellModal({ value, onClose }: { value: string; onClose: () => void }) {
-  const parsed = useMemo(() => {
+export function CellModal({ value, onClose }: { value: unknown; onClose: () => void }) {
+  const [visibleChars, setVisibleChars] = useState(MODAL_TEXT_CHUNK_CHARS);
+  const [parsed, setParsed] = useState<unknown>(() => {
+    if (value !== null && typeof value === "object") return value;
+    if (typeof value !== "string" || value.length > MODAL_TEXT_CHUNK_CHARS || !/^\s*[{[]/.test(value)) {
+      return null;
+    }
     try {
-      const p = JSON.parse(value);
-      return p && typeof p === "object" ? p : null;
+      const candidate = JSON.parse(value);
+      return candidate && typeof candidate === "object" ? candidate : null;
     } catch {
       return null;
     }
-  }, [value]);
+  });
+  const preview = useMemo(() => cellPreview(value, visibleChars), [value, visibleChars]);
+  const canParseJson =
+    parsed === null && typeof value === "string" && /^\s*[{[]/.test(value);
+
+  const inspectJson = (): void => {
+    if (typeof value !== "string") return;
+    try {
+      const candidate = JSON.parse(value);
+      if (candidate && typeof candidate === "object") setParsed(candidate);
+    } catch {
+      // It only looked like JSON. Keep the bounded text preview instead.
+    }
+  };
   return (
     <Modal onClose={onClose} boxStyle={{ minWidth: "min(560px, 80vw)" }}>
       <div className="vg-mh mh">
@@ -115,14 +124,31 @@ export function CellModal({ value, onClose }: { value: string; onClose: () => vo
           id="cpy"
           style={{ cursor: "pointer", color: "var(--accent)" }}
           onClick={() => {
-            copy(value);
+            copy(cellText(value) ?? "");
             onClose();
           }}
         >
           {t("copy")}
         </span>
       </div>
-      {parsed !== null ? <JsonTree value={parsed} /> : <pre>{value}</pre>}
+      {parsed !== null ? <JsonTree value={parsed} /> : <pre>{preview.text}</pre>}
+      {parsed === null && (preview.truncated || canParseJson) && (
+        <div className="vg-ciactions ciactions">
+          {preview.truncated && (
+            <button
+              className="vg-btn btn"
+              onClick={() => setVisibleChars((n) => n + MODAL_TEXT_CHUNK_CHARS)}
+            >
+              {t("show_more")}
+            </button>
+          )}
+          {canParseJson && (
+            <button className="vg-btn btn" onClick={inspectJson}>
+              {t("inspect_json")}
+            </button>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -145,7 +171,7 @@ export function RowDetailModal({
       <table style={{ border: 0, width: "100%" }}>
         <tbody>
           {columns.map((c) => {
-            const text = cellText(row[c.name]);
+            const preview = cellPreview(row[c.name]);
             return (
               <tr key={c.name}>
                 <td
@@ -166,11 +192,15 @@ export function RowDetailModal({
                     </>
                   )}
                 </td>
-                <td style={{ padding: "4px 0", wordBreak: "break-word", fontFamily: "var(--mono)" }}>
-                  {text === null ? (
+                <td
+                  data-truncated={preview.truncated ? "true" : undefined}
+                  title={preview.truncated ? t("cell_preview_tip") : undefined}
+                  style={{ padding: "4px 0", wordBreak: "break-word", fontFamily: "var(--mono)" }}
+                >
+                  {preview.text === null ? (
                     <span style={{ color: "var(--null)", fontStyle: "italic" }}>NULL</span>
                   ) : (
-                    text
+                    preview.text
                   )}
                 </td>
               </tr>

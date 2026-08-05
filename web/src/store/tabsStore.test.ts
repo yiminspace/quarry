@@ -1,8 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { parseMainTable, tabTitle, type Tab } from "./tabsStore";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { QueryResult } from "../api";
+import {
+  MAX_PERSISTED_RESULT_BYTES,
+  parseMainTable,
+  tabTitle,
+  useTabsStore,
+  type Tab,
+  type TabResultSnapshot,
+} from "./tabsStore";
 
 function tab(patch: Partial<Tab>): Tab {
   return { id: "t1", title: null, sql: "", db: null, env: null, ...patch };
+}
+
+function snapshot(downloadBytes: number, value = "ok"): TabResultSnapshot {
+  const result: QueryResult = {
+    columns: [{ name: "v", type: "text" }],
+    rows: [{ v: value }],
+    rowCount: 1,
+    truncated: false,
+    elapsedMs: 1,
+    engine: "postgres",
+    sql: "select 1",
+    downloadBytes,
+    sizeIsEstimated: true,
+  };
+  return { result, queryDb: "shop", queryEnv: "dev", querySql: "select 1" };
 }
 
 describe("parseMainTable", () => {
@@ -74,5 +97,43 @@ describe("tabTitle", () => {
 
   it("falls back to the new-query placeholder with neither SQL nor a connection", () => {
     expect(tabTitle(tab({}))).toBe("new query");
+  });
+});
+
+describe("bounded result persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({
+      tabs: [tab({ id: "t1", db: "shop", env: "dev" })],
+      activeId: "t1",
+      results: {},
+    });
+  });
+
+  it("persists a small result but keeps an oversized result session-only", () => {
+    useTabsStore.getState().setTabResult("t1", snapshot(100));
+    expect(JSON.parse(localStorage.getItem("qy_tabres") ?? "null")[0].res.rows[0].v).toBe("ok");
+
+    useTabsStore.getState().setTabResult("t1", snapshot(MAX_PERSISTED_RESULT_BYTES + 1, "large"));
+    expect(JSON.parse(localStorage.getItem("qy_tabres") ?? "null")).toEqual([null]);
+    expect(useTabsStore.getState().results.t1.result?.rows[0].v).toBe("large");
+  });
+
+  it("does not rewrite unchanged results on SQL input or tab switches", () => {
+    useTabsStore.getState().setTabResult("t1", snapshot(100));
+    const original = localStorage.setItem.bind(localStorage);
+    const writes: string[] = [];
+    const spy = vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      writes.push(key);
+      original(key, value);
+    });
+    try {
+      useTabsStore.getState().updateActiveTab({ sql: "select typed" });
+      useTabsStore.getState().addTab();
+      useTabsStore.getState().switchTab("t1");
+      expect(writes.filter((key) => key === "qy_tabres")).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

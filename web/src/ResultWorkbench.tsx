@@ -14,16 +14,23 @@ import {
   type SavedQuery,
   type TablesResponse,
 } from "./api";
+import { cellOpensInspector, cellPreview, cellText } from "./cellValue";
 import { copy } from "./clip";
 import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
-import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal, cellText } from "./Modals";
+import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
 import { anyModalOpen } from "./modalStack";
 import { decodeQueryLink, encodeQueryLink, type QueryLinkPayload } from "./queryLink";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
 import SqlEditor from "./SqlEditor";
 import { useConnStore } from "./store/connStore";
-import { useTabsStore, type Tab, type TabId, type TabResultSnapshot } from "./store/tabsStore";
+import {
+  isResultSnapshotPersistable,
+  useTabsStore,
+  type Tab,
+  type TabId,
+  type TabResultSnapshot,
+} from "./store/tabsStore";
 import { toast } from "./store/toastStore";
 import { MAX_ROWS_OPTIONS, useUiStore } from "./store/uiStore";
 import TabBar from "./TabBar";
@@ -33,7 +40,7 @@ type Row = Record<string, unknown>;
 type SortState = { i: number; dir: 1 | -1 } | null;
 type SelectedCell = { ri: number; ci: number } | null;
 type ModalState =
-  | { type: "cell"; value: string }
+  | { type: "cell"; value: unknown }
   | { type: "row"; row: Row; columns: QueryColumn[] }
   | { type: "explain"; plan: string; db: string; env: string | null }
   | null;
@@ -820,13 +827,13 @@ export default function ResultWorkbench() {
     }
   };
 
-  const openCell = (v: string): void => {
+  const openCell = (v: unknown): void => {
     setModal({ type: "cell", value: v });
   };
 
-  const onCellDblClick = (v: string): void => {
-    if (v.length > 60 || /^[[{]/.test(v)) openCell(v);
-    else copy(v);
+  const onCellDblClick = (v: unknown): void => {
+    if (cellOpensInspector(v)) openCell(v);
+    else copy(cellText(v) ?? "");
   };
 
   // Grid keyboard navigation: arrows move the selected cell, Enter inspects,
@@ -945,6 +952,7 @@ export default function ResultWorkbench() {
   const envs = item?.envs ?? [];
   const multiEnv = envs.length > 1;
   const showStatus = !!result && !gridError;
+  const resultWillPersist = activeSnapshot ? isResultSnapshotPersistable(activeSnapshot) : true;
 
   return (
     <main className="vg-main">
@@ -1110,18 +1118,19 @@ export default function ResultWorkbench() {
                     </td>
                     {result.columns.map((c, ci) => {
                       const v = r[c.name];
-                      const text = cellText(v);
+                      const preview = cellPreview(v);
                       const isSel = selectedCell?.ri === ri && selectedCell?.ci === ci;
                       return (
                         <td
                           key={`${ri}-${ci}`}
                           className={`${cellClass(v)}${isSel ? " sel" : ""}`}
-                          data-v={text === null ? "" : text}
-                          title={text === null ? "NULL" : text}
+                          data-v={!preview.truncated ? (preview.text ?? "") : undefined}
+                          data-truncated={preview.truncated ? "true" : undefined}
+                          title={preview.truncated ? t("cell_preview_tip") : (preview.text ?? "NULL")}
                           onClick={() => setSelectedCell({ ri, ci })}
-                          onDoubleClick={() => onCellDblClick(text === null ? "" : text)}
+                          onDoubleClick={() => onCellDblClick(v)}
                         >
-                          {text === null ? "NULL" : text}
+                          {preview.text === null ? "NULL" : preview.text}
                         </td>
                       );
                     })}
@@ -1165,6 +1174,11 @@ export default function ResultWorkbench() {
               {result.truncated && (
                 <span className="vg-tr tr">
                   <i className="ti ti-arrow-narrow-down" /> {t("truncated")}
+                </span>
+              )}
+              {!resultWillPersist && (
+                <span id="resultNotSaved" title={t("large_result_not_saved_tip")}>
+                  <i className="ti ti-database-off" /> {t("large_result_not_saved")}
                 </span>
               )}
               {canLoadMore && (
