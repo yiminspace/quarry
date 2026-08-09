@@ -169,6 +169,11 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Fixed
 
+- **PyPI releases resume after semantic-release**: a successful version/tag
+  creation now explicitly dispatches the trusted publishing workflow for that
+  exact tag. The publisher validates the tag against both package version
+  declarations and checks built distribution metadata before uploading.
+
 - **`pip install -e` no longer breaks `qy`**: the bundled CHANGELOG.md (#80)
   was also force-included into editable wheels, creating a stray
   `site-packages/quarry/` directory that shadowed the editable install's
