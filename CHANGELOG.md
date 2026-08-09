@@ -220,6 +220,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.21.3 (2026-08-09)
+
+### Bug Fixes
+
+- **release**: 恢复 semantic-release 后的 PyPI 发布
+  ([`49c4ed3`](https://github.com/yiminspace/quarry/commit/49c4ed39a4477381e3a644d40121ea9eb3ff450b))
+
+
 ## v0.21.2 (2026-08-09)
 
 ### Bug Fixes
