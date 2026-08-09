@@ -215,6 +215,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.21.2 (2026-08-09)
+
+### Bug Fixes
+
+- 升级 Voyage 0.15 并适配顶栏与 Signal 主题 ([#117](https://github.com/yiminspace/quarry/pull/117),
+  [`f10ad6f`](https://github.com/yiminspace/quarry/commit/f10ad6f996638e932d6f7f31522e8f947d269855))
+
+
 ## v0.21.1 (2026-08-05)
 
 ### Bug Fixes
