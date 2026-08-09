@@ -122,10 +122,8 @@ def test_icons_use_selfhosted_tabler_font(page):
 
 
 def test_header_icon_controls_share_uniform_box(page):
-    # voyage 0.7.0 collapsed the lang / theme-mode / palette-trigger buttons
-    # onto one shared `.vg-iconbtn` box spec (same height/min-width/radius,
-    # only the content differs) — the language button used to be a
-    # differently-shaped badge.
+    # Voyage keeps lang / theme-mode / palette-trigger buttons on one shared
+    # `.vg-iconbtn` box spec; only their content differs.
     r_btn = _r_btn(page)
     selectors = (".vg-lang-switch", ".vg-switcher-mode", ".vg-switcher-trigger")
     for prop in ("height", "minWidth", "borderRadius"):
@@ -135,8 +133,7 @@ def test_header_icon_controls_share_uniform_box(page):
 
 
 def test_header_iconbtn_radius_follows_style_axis(page):
-    # pre-0.7.0 the header icon buttons had a hardcoded 5px radius; now it
-    # must track --r-btn and actually change across the style axis.
+    # Header icon buttons must track --r-btn across the style axis.
     try:
         for style in ("classic", "sharp", "soft"):
             page.evaluate(f"document.documentElement.setAttribute('data-style', {style!r})")
@@ -162,27 +159,30 @@ def test_ciact_iconbtn_fixed_size_not_stretched_by_min_width(page):
         assert _style(page, sel, "height") == "22px"
 
 
-def test_header_toolbar_has_no_query_toolbar_chrome(page):
-    # voyage.css's `.vg-toolbar` is shared by two shapes: the query toolbar
-    # (bg1 fill + bottom border + padding, see ResultWorkbench's
-    # `.vg-toolbar.toolbar`) and VoyageToolbar's plain lang/mode/palette
-    # arrangement container — both render with just `.vg-toolbar`, so
-    # without a header-scoped reset the query-toolbar chrome leaked in and
-    # drew a stray divider line under the three header buttons.
-    padding = _style(page, "header .vg-toolbar", "padding")
-    assert padding == "0px", padding
-    border_bottom = _style(page, "header .vg-toolbar", "borderBottomWidth")
-    assert border_bottom == "0px", border_bottom
-    bg = _style(page, "header .vg-toolbar", "backgroundColor")
-    assert bg == "rgba(0, 0, 0, 0)", bg
+def test_header_topbar_has_no_query_toolbar_chrome_or_account_placeholder(page):
+    assert page.locator("header .vg-topbar").count() == 1
+    assert page.locator("header .vg-toolbar").count() == 0
+    assert page.locator("header .vg-topbar-account").count() == 0
+    assert _style(page, "header .vg-topbar", "padding") == "0px"
+    assert _style(page, "header .vg-topbar", "borderBottomWidth") == "0px"
+    assert _style(page, "header .vg-topbar", "backgroundColor") == "rgba(0, 0, 0, 0)"
+
+
+def test_query_toolbar_keeps_its_own_chrome(page):
+    # The query action row remains the card-toolbar shape after VoyageToolbar
+    # moved the header arrangement onto its dedicated `.vg-topbar` class.
+    selector = ".vg-toolbar.toolbar"
+    assert _style(page, selector, "padding") == "9px 14px"
+    assert _style(page, selector, "backgroundColor") == DARK["bg1"]
+    assert _style(page, selector, "borderBottomWidth") == "1px"
 
 
 def test_header_toolbar_dom_order_is_lang_mode_palette(page):
-    # voyage 0.8.0's VoyageToolbar fixes the order (language -> mode ->
-    # palette) in its own DOM structure — no longer up to the host's JSX.
+    # VoyageToolbar fixes the order (language -> mode -> palette) in its own
+    # DOM structure, rather than leaving it up to the host's JSX.
     order = page.evaluate(
         """() => [...document.querySelectorAll(
-            '.vg-toolbar .vg-lang-switch, .vg-toolbar .vg-switcher-mode, .vg-toolbar .vg-switcher-trigger'
+            '.vg-topbar .vg-lang-switch, .vg-topbar .vg-switcher-mode, .vg-topbar .vg-switcher-trigger'
         )].map((el) => el.className)"""
     )
     assert len(order) == 3
@@ -192,10 +192,8 @@ def test_header_toolbar_dom_order_is_lang_mode_palette(page):
 
 
 def test_lang_switch_fixed_width_no_reflow(page):
-    # voyage 0.8.0 locks the lang button's width to --vg-lang-w (defaults to
-    # the control height) so unequal-width glyphs ("中" vs "EN") render the
-    # same box; before this, switching language changed the button's width
-    # and shoved the mode/palette buttons sideways on every toggle.
+    # --vg-lang-w keeps unequal-width glyphs ("中" vs "EN") in the same box,
+    # so switching language cannot shove the mode/palette buttons sideways.
     en_width = page.evaluate("document.querySelector('.vg-lang-switch').getBoundingClientRect().width")
     mode_x = page.evaluate("document.querySelector('.vg-switcher-mode').getBoundingClientRect().x")
     trigger_x = page.evaluate("document.querySelector('.vg-switcher-trigger').getBoundingClientRect().x")
@@ -214,10 +212,42 @@ def test_lang_switch_fixed_width_no_reflow(page):
 
 
 def test_header_toolbar_buttons_share_full_box_spec(page):
-    # the acceptance bar for 0.8.0: all three toolbar buttons agree on
-    # height/width/borderRadius/boxSizing pairwise (0.7.0 only pinned
-    # height/minWidth/borderRadius; width and boxSizing were unasserted).
+    # All three topbar buttons agree on the complete box spec pairwise.
     selectors = (".vg-lang-switch", ".vg-switcher-mode", ".vg-switcher-trigger")
     for prop in ("height", "width", "borderRadius", "boxSizing"):
         values = {sel: _style(page, sel, prop) for sel in selectors}
         assert len(set(values.values())) == 1, (prop, values)
+
+
+def test_signal_theme_four_axes_colors_and_reload_persistence(page):
+    page.locator(".vg-switcher-trigger").click()
+    signal = page.get_by_role("menuitemradio", name="Signal")
+    assert signal.is_visible()
+    signal.click()
+
+    axes = page.evaluate(
+        """() => {
+            const d = document.documentElement.dataset;
+            return [d.theme, d.mode, d.style, d.tone];
+        }"""
+    )
+    assert axes == ["signal", "dark", "classic", "quiet"]
+    assert _style(page, "body", "backgroundColor") == "rgb(0, 0, 0)"
+    assert _style(page, "header", "backgroundColor") == "rgb(0, 0, 0)"
+
+    page.locator(".vg-switcher-mode").click()
+    assert page.evaluate("document.documentElement.dataset.mode") == "light"
+    assert _style(page, "body", "backgroundColor") == "rgb(255, 255, 255)"
+    assert _style(page, "header", "backgroundColor") == "rgb(255, 255, 255)"
+
+    page.reload()
+    page.locator("#runBtn").wait_for()
+    axes = page.evaluate(
+        """() => {
+            const d = document.documentElement.dataset;
+            return [d.theme, d.mode, d.style, d.tone];
+        }"""
+    )
+    assert axes == ["signal", "light", "classic", "quiet"]
+    assert _style(page, "body", "backgroundColor") == "rgb(255, 255, 255)"
+    assert _style(page, "header", "backgroundColor") == "rgb(255, 255, 255)"
