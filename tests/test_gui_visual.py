@@ -251,3 +251,4 @@ def test_signal_theme_four_axes_colors_and_reload_persistence(page):
     assert axes == ["signal", "light", "classic", "quiet"]
     assert _style(page, "body", "backgroundColor") == "rgb(255, 255, 255)"
     assert _style(page, "header", "backgroundColor") == "rgb(255, 255, 255)"
+    assert page._console_errors == []

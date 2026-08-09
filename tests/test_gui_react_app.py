@@ -11,6 +11,7 @@ types without running anything.
 
 from __future__ import annotations
 
+import re
 import urllib.request
 import zipfile
 
@@ -192,7 +193,7 @@ def test_react_app_index_served(gui_server):
 
 @pytest.mark.unit
 def test_wheel_includes_web_dist(tmp_path):
-    """Built wheel must ship the pre-built React assets (zero Node at install time)."""
+    """Wheel index and every hashed asset it references must ship together."""
     import subprocess
     import sys
 
@@ -208,8 +209,21 @@ def test_wheel_includes_web_dist(tmp_path):
     wheels = list(dist.glob("*.whl"))
     assert wheels, "expected a wheel in dist/"
     with zipfile.ZipFile(wheels[0]) as zf:
-        names = zf.namelist()
-    assert any(n.startswith("quarry/web_dist/") and n.endswith("index.html") for n in names)
+        names = set(zf.namelist())
+        indexes = [n for n in names
+                   if n.startswith("quarry/web_dist/") and n.endswith("index.html")]
+        assert len(indexes) == 1
+        index_name = indexes[0]
+        html = zf.read(index_name).decode()
+
+    asset_refs = set(re.findall(r'(?:src|href)="(/app/assets/[^"]+)"', html))
+    assert asset_refs, "expected hashed JS/CSS references in the built index"
+    web_dist_prefix = index_name.removesuffix("index.html")
+    missing = {
+        web_dist_prefix + ref.removeprefix("/app/")
+        for ref in asset_refs
+    } - names
+    assert not missing, f"wheel is missing index-referenced assets: {sorted(missing)}"
 
 
 @pytest.mark.unit

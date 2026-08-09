@@ -18,6 +18,9 @@
 .trow .tsearch{flex:1;width:auto;margin:0}
 .tsearch{width:calc(100% - 24px);margin:3px 12px 5px}
 .esw{display:flex;gap:5px}
+/* Voyage 0.15 的浅色 --on-fg 是黑色, 放在 prod 红底上不足 4.5:1；
+   复用各主题已有的实色控件 ink token，保持生产环境安全提示可读。 */
+.vg[data-mode='light'] .vg-pill.on.prod,.vg[data-mode='light'] .vg-ep.on.prod{color:var(--accent-ink)}
 
 /* ---- SQL 编辑器: 高亮 <pre> 叠在透明 <textarea> 上的经典双层技巧 ---- */
 .edwrap{position:relative;background:var(--surf-2);overflow:hidden}
