@@ -110,6 +110,13 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Changed
 
+- **GUI design system upgraded to `@yiminlab/voyage` 0.15** (#116): the header
+  now uses Voyage's dedicated `.vg-topbar` contract while the query action row
+  keeps its own toolbar chrome. The new Signal theme is available with true
+  black/white dark and light surfaces and persisted four-axis preferences;
+  Quarry continues to omit the optional account area. Selected production
+  environment controls retain accessible white-on-red contrast in light mode.
+
 - **Large GUI results no longer freeze the browser main thread**: grid and
   row-detail cells render a bounded 512-character preview instead of copying
   multi-megabyte values into text, `title`, and `data-*` DOM slots. Full values

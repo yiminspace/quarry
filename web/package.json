@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@tabler/icons-webfont": "^3.0.0",
-    "@yiminlab/voyage": "^0.8.0",
+    "@yiminlab/voyage": "^0.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zustand": "^5.0.14"

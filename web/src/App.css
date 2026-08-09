@@ -18,14 +18,9 @@
 .trow .tsearch{flex:1;width:auto;margin:0}
 .tsearch{width:calc(100% - 24px);margin:3px 12px 5px}
 .esw{display:flex;gap:5px}
-
-/* ---- 顶栏 VoyageToolbar: 复位全局 .vg-toolbar 查询工具条的 chrome ---- */
-/* voyage.css 的 .vg-toolbar 同时服务两个场景: 查询工具条(bg1 底色 + 下边框 +
-   内边距, 见 ResultWorkbench 的 .vg-toolbar.toolbar) 与顶栏语言/明暗/调色板
-   排列容器(只需 display+gap)。VoyageToolbar 组件根节点只带 .vg-toolbar 一个
-   类名, 会连带吃到前者的 padding/background/border-bottom, 在顶栏三颗按钮
-   下方多出一条独立分隔线 —— 这里把顶栏场景下的这套查询工具条 chrome 清零。 */
-.vg-header .vg-toolbar{padding:0;background:transparent;border-bottom:0;backdrop-filter:none;-webkit-backdrop-filter:none}
+/* Voyage 0.15 的浅色 --on-fg 是黑色, 放在 prod 红底上不足 4.5:1；
+   复用各主题已有的实色控件 ink token，保持生产环境安全提示可读。 */
+.vg[data-mode='light'] .vg-pill.on.prod,.vg[data-mode='light'] .vg-ep.on.prod{color:var(--accent-ink)}
 
 /* ---- SQL 编辑器: 高亮 <pre> 叠在透明 <textarea> 上的经典双层技巧 ---- */
 .edwrap{position:relative;background:var(--surf-2);overflow:hidden}

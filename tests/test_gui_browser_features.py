@@ -304,6 +304,26 @@ def test_history_nav_stashes_and_restores_draft(page):
 # 2. Env pills / prod guard (fix: no auto-run on prod)
 # ---------------------------------------------------------------------------
 
+def _relative_luminance(rgb: str) -> float:
+    match = re.fullmatch(r"rgba?\((\d+), (\d+), (\d+)(?:, [^)]+)?\)", rgb)
+    assert match, rgb
+    channels = [int(value) / 255 for value in match.groups()]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+              for value in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_ratio(locator) -> tuple[str, str, float]:
+    fg, bg = locator.evaluate(
+        """(el) => {
+            const style = getComputedStyle(el);
+            return [style.color, style.backgroundColor];
+        }"""
+    )
+    lighter, darker = sorted((_relative_luminance(fg), _relative_luminance(bg)), reverse=True)
+    return fg, bg, (lighter + 0.05) / (darker + 0.05)
+
+
 def test_env_pills_default_dev_and_prod_badge(page_envset):
     page = page_envset
     page.wait_for_selector('.dbrow[data-db="shop"]')
@@ -315,6 +335,31 @@ def test_env_pills_default_dev_and_prod_badge(page_envset):
     assert page.locator("#prodBadge").is_hidden()
     page.locator('#esw .ep[data-env="prod"]').click()
     page.wait_for_selector("#prodBadge", state="visible")
+
+
+def test_selected_prod_pills_keep_accessible_contrast_in_light_themes(page_envset):
+    page = page_envset
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.wait_for_selector("#esw .ep")
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.locator(".vg-switcher-mode").click()
+    assert page.evaluate("document.documentElement.dataset.mode") == "light"
+
+    selectors = (
+        '.pill[data-db="shop"][data-env="prod"]',
+        '#esw .ep[data-env="prod"]',
+    )
+    for theme, expected_bg in (("slate", "rgb(178, 59, 52)"),
+                               ("signal", "rgb(179, 45, 45)")):
+        if theme == "signal":
+            page.locator(".vg-switcher-trigger").click()
+            page.get_by_role("menuitemradio", name="Signal").click()
+        assert page.evaluate("document.documentElement.dataset.theme") == theme
+        for selector in selectors:
+            fg, bg, ratio = _contrast_ratio(page.locator(selector).first)
+            assert fg == "rgb(255, 255, 255)"
+            assert bg == expected_bg
+            assert ratio >= 4.5, (theme, selector, fg, bg, ratio)
 
 
 def test_prod_env_switch_does_not_autorun(page_envset):
