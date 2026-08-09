@@ -26,8 +26,8 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: false
     permissions:
+      actions: write
       contents: write
-      id-token: write
     steps:
       - name: Checkout release branch
         uses: actions/checkout@v4
@@ -39,6 +39,7 @@ jobs:
         run: git reset --hard ${{ github.sha }}
 
       - name: Semantic release (automatic bump)
+        id: automatic
         if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.force != 'none') }}
         uses: python-semantic-release/python-semantic-release@v10.5.3
         with:
@@ -47,6 +48,7 @@ jobs:
           git_committer_email: actions@users.noreply.github.com
 
       - name: Semantic release (forced bump)
+        id: forced
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.force != 'none' }}
         uses: python-semantic-release/python-semantic-release@v10.5.3
         with:
@@ -54,3 +56,10 @@ jobs:
           force: ${{ github.event.inputs.force }}
           git_committer_name: github-actions
           git_committer_email: actions@users.noreply.github.com
+
+      - name: Dispatch PyPI publication
+        if: ${{ steps.automatic.outputs.released == 'true' || steps.forced.outputs.released == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.automatic.outputs.tag || steps.forced.outputs.tag }}
+        run: gh workflow run release.yml --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
