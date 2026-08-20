@@ -110,6 +110,12 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Changed
 
+- **PostgreSQL GUI table browser now includes every user schema**: non-public
+  tables appear as `schema.table` and work end-to-end with preview queries,
+  structure inspection, and qualified column completion. Public tables keep
+  their existing short names. The shared metadata path also lets `qy schema`
+  and MCP table discovery resolve schema-qualified tables.
+
 - **GUI design system upgraded to `@yiminlab/voyage` 0.15** (#116): the header
   now uses Voyage's dedicated `.vg-topbar` contract while the query action row
   keeps its own toolbar chrome. The new Signal theme is available with true

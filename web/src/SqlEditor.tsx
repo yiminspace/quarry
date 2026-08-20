@@ -31,7 +31,7 @@ const AC_KEYWORDS = (
 ).split(" ");
 const AC_MAX_ITEMS = 12;
 const FROM_LIKE_KEYWORD = /^(from|join|into|update)$/i;
-const TABLE_DOT_COL = /([A-Za-z_][\w$]*)\.([\w$]*)$/;
+const TABLE_DOT_COL = /((?:[A-Za-z_][\w$]*\.)?[A-Za-z_][\w$]*)\.([\w$]*)$/;
 const BARE_WORD = /([A-Za-z_][\w$]*)$/;
 
 // The legacy highlighter's keyword set, verbatim.

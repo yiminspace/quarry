@@ -647,11 +647,13 @@ def test_list_tables_postgres(isolated_cache, monkeypatch):
 
     def fake_run_query(conn, sql, max_rows=5000, **kwargs):
         captured["sql"] = sql
-        return _Res([{"table_name": "customers"}])
+        return _Res([{"table_name": "customers"},
+                     {"table_name": "app_metadata.app_metadata_app"}])
 
     monkeypatch.setattr(gui.core, "run_query", fake_run_query)
-    assert gui.core._list_tables(_Conn()) == ["customers"]
-    assert "'public'" in captured["sql"]
+    assert gui.core._list_tables(_Conn()) == ["customers", "app_metadata.app_metadata_app"]
+    assert "quote_ident(table_schema)" in captured["sql"]
+    assert "information_schema" in captured["sql"]
 
 
 @pytest.mark.unit
@@ -951,6 +953,24 @@ def test_list_tables_real_postgres(ws, isolated_cache):
     conn = isolated_cache._resolve("testpg", "test")
     tables = isolated_cache.core._list_tables(conn)
     assert "customers" in tables and "orders" in tables
+
+
+@requires_db
+@pytest.mark.integration
+def test_list_and_describe_non_public_postgres_table(ws, isolated_cache, pg_exec):
+    pg_exec("DROP SCHEMA IF EXISTS qy_multischema CASCADE")
+    rc, _, err = pg_exec("CREATE SCHEMA qy_multischema")
+    assert rc == 0, err
+    rc, _, err = pg_exec("CREATE TABLE qy_multischema.events (id integer, label text)")
+    assert rc == 0, err
+    try:
+        conn = isolated_cache._resolve("testpg", "test")
+        assert "qy_multischema.events" in isolated_cache.core._list_tables(conn)
+        out = isolated_cache.api_columns("testpg", "test", "qy_multischema.events")
+        assert out["columns"] == ["id", "label"]
+        assert out["types"] == {"id": "integer", "label": "text"}
+    finally:
+        pg_exec("DROP SCHEMA IF EXISTS qy_multischema CASCADE")
 
 
 @requires_db
