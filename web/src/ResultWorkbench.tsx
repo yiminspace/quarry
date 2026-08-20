@@ -67,7 +67,8 @@ function quoteIdent(name: string, engine: string): string {
 }
 
 function previewSql(table: string, engine: string): string {
-  return `select * from ${quoteIdent(table, engine)} limit 5`;
+  const target = engine !== "mysql" && table.includes(".") ? table : quoteIdent(table, engine);
+  return `select * from ${target} limit 5`;
 }
 
 /** Cell type classes for coloring — the legacy `cellClass` rules verbatim. */

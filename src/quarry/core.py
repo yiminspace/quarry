@@ -1669,8 +1669,15 @@ def _list_tables(conn: Connection, *, default_timeout: int = DEFAULT_EXECUTE_TIM
     elif engine == "neptune":
         return []
     else:
-        sql = ("SELECT table_name FROM information_schema.tables "
-               "WHERE table_schema = 'public' ORDER BY table_name")
+        sql = (
+            "SELECT CASE "
+            "WHEN table_schema = 'public' AND position('.' in table_name) = 0 THEN table_name "
+            "ELSE quote_ident(table_schema) || '.' || quote_ident(table_name) "
+            "END AS table_name FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+            "AND table_schema NOT LIKE 'pg_%' "
+            "ORDER BY table_schema, table_name"
+        )
     res = run_query(conn, sql, max_rows=5000, default_timeout=default_timeout)
     return [r.get("table_name") for r in res.rows if r.get("table_name")]
 
@@ -1742,11 +1749,29 @@ def cached_columns(conn: Connection, db: str, env: str | None, table: str, *,
         engine = connection_engine(conn)
         if engine in ("redis", "neptune"):
             return cache.put(key, {"rows": []})
-        schema = "DATABASE()" if engine == "mysql" else "'public'"
-        sql = ("SELECT column_name, data_type, is_nullable, column_default, "
-               "character_maximum_length FROM information_schema.columns "
-               f"WHERE table_schema = {schema} AND table_name = :'table' "
-               "ORDER BY ordinal_position")
+        if engine == "mysql":
+            sql = (
+                "SELECT column_name, data_type, is_nullable, column_default, "
+                "character_maximum_length FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = :'table' "
+                "ORDER BY ordinal_position"
+            )
+        elif "." in table:
+            sql = (
+                "WITH target AS (SELECT parse_ident(:'table') AS parts) "
+                "SELECT column_name, data_type, is_nullable, column_default, "
+                "character_maximum_length FROM information_schema.columns, target "
+                "WHERE table_schema = parts[cardinality(parts) - 1] "
+                "AND table_name = parts[cardinality(parts)] "
+                "ORDER BY ordinal_position"
+            )
+        else:
+            sql = (
+                "SELECT column_name, data_type, is_nullable, column_default, "
+                "character_maximum_length FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :'table' "
+                "ORDER BY ordinal_position"
+            )
         res = run_query(conn, sql, params={"table": table}, max_rows=2000,
                         default_timeout=default_timeout)
         return cache.put(key, {"rows": res.rows})

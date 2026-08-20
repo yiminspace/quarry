@@ -1490,6 +1490,38 @@ def test_alt_click_inserts_without_running(page):
     assert page.locator("#grid .empty").count() == 1       # grid untouched
 
 
+def test_non_public_schema_table_is_visible_and_clickable(page, pg_exec):
+    pg_exec("DROP SCHEMA IF EXISTS qy_gui_schema CASCADE")
+    rc, _, err = pg_exec("CREATE SCHEMA qy_gui_schema")
+    assert rc == 0, err
+    rc, _, err = pg_exec(
+        "CREATE TABLE qy_gui_schema.events (id integer, label text); "
+        "INSERT INTO qy_gui_schema.events VALUES (1, 'ready')"
+    )
+    assert rc == 0, err
+    try:
+        _select_testpg(page)
+        sel = '#tbl-panel .tname[data-t="qy_gui_schema.events"]'
+        page.wait_for_selector(sel)
+        page.locator(sel).click()
+        page.wait_for_selector('#grid td[data-v="ready"]')
+        assert page.locator("#sql").input_value() == (
+            "select * from qy_gui_schema.events limit 5"
+        )
+        page.locator(sel).dblclick()
+        page.wait_for_selector("#structbox .cirow")
+        structure = page.locator("#structbox").inner_text()
+        assert "id" in structure and "label" in structure
+        page.keyboard.press("Escape")
+        page.locator("#sql").focus()
+        page.keyboard.press("ControlOrMeta+a")
+        page.keyboard.type("select qy_gui_schema.events.l")
+        page.wait_for_selector(".acbox .acitem .ack-col", timeout=8000)
+        assert any("label" in item for item in page.locator(".acbox .acitem").all_inner_texts())
+    finally:
+        pg_exec("DROP SCHEMA IF EXISTS qy_gui_schema CASCADE")
+
+
 # ---------------------------------------------------------------------------
 # 80/81. connection-info modal: resolved config + live reachability
 # ---------------------------------------------------------------------------
