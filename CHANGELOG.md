@@ -226,6 +226,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.22.0 (2026-08-20)
+
+### Features
+
+- 支持 PostgreSQL 多 schema 表浏览 ([#119](https://github.com/yiminspace/quarry/pull/119),
+  [`038e57b`](https://github.com/yiminspace/quarry/commit/038e57bd597065b61a9297f5caed9eb33327fc87))
+
+
 ## v0.21.3 (2026-08-09)
 
 ### Bug Fixes
