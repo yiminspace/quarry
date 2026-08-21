@@ -91,6 +91,46 @@ def _apply_ssh_args(fields: dict[str, Any], args: argparse.Namespace) -> None:
         fields["ssh_port"] = args.ssh_port
 
 
+def _apply_connection_identity(
+    key: str, fields: dict[str, Any], args: argparse.Namespace,
+    data: dict[str, dict[str, object]],
+) -> None:
+    """Apply explicit db/group metadata, or inherit it from an existing env sibling.
+
+    `connections add shop_prod --env prod` should join an existing `db = shop`
+    env-set without requiring callers to repeat easy-to-forget display metadata.
+    Explicit --db/--group always win.
+    """
+    requested_db = getattr(args, "db", None)
+    requested_group = getattr(args, "group", None)
+    if requested_db:
+        fields["db"] = requested_db
+    if requested_group:
+        fields["group"] = requested_group
+    if requested_db and requested_group:
+        return
+
+    candidates = [requested_db or key]
+    env = getattr(args, "env", None)
+    suffix = f"_{env}" if env else ""
+    if not requested_db and suffix and key.endswith(suffix) and key != suffix:
+        candidates.append(key[:-len(suffix)])
+
+    for logical_db in candidates:
+        siblings = [
+            value for sibling_key, value in data.items()
+            if (value.get("db") or sibling_key) == logical_db and sibling_key != key
+        ]
+        if not siblings:
+            continue
+        if not requested_db:
+            fields["db"] = logical_db
+        sibling_groups = {str(v["group"]) for v in siblings if v.get("group")}
+        if not requested_group and len(sibling_groups) == 1:
+            fields["group"] = next(iter(sibling_groups))
+        return
+
+
 def _connections_upsert(key, *, url, region, env, notes, engine, args, require_new) -> None:
     if not core.CONN_KEY_RE.match(key):
         err(f"invalid key '{key}' (letters, digits, underscore; must start with letter)", exit_code=EXIT_USAGE)
@@ -106,6 +146,7 @@ def _connections_upsert(key, *, url, region, env, notes, engine, args, require_n
         fields["notes"] = notes
     if getattr(args, "timeout", None) is not None:
         fields["timeout"] = args.timeout
+    _apply_connection_identity(key, fields, args, data)
     _apply_ssh_args(fields, args)
     core.check_connection_write(key, fields, data, force=getattr(args, "force", False))
     data[key] = fields
@@ -141,6 +182,7 @@ def cmd_connections_set(args: argparse.Namespace) -> int:
         err("'url' is required for a new connection", exit_code=EXIT_USAGE)
     if args.timeout is not None:
         fields["timeout"] = args.timeout
+    _apply_connection_identity(args.key, fields, args, data)
     _apply_ssh_args(fields, args)
     core.check_connection_write(args.key, fields, data, force=getattr(args, "force", False))
     data[args.key] = fields
@@ -1187,6 +1229,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
     p_ca.add_argument("--region", default=None)
     p_ca.add_argument("--env", default=None)
+    p_ca.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
+    p_ca.add_argument("--group", default=None, help="Sidebar project folder")
     p_ca.add_argument("--notes", default=None)
     p_ca.add_argument("--timeout", type=_positive_int, default=None,
                        help="Query execution timeout in seconds for this connection")
@@ -1204,6 +1248,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cs.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
     p_cs.add_argument("--region", default=None)
     p_cs.add_argument("--env", default=None)
+    p_cs.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
+    p_cs.add_argument("--group", default=None, help="Sidebar project folder")
     p_cs.add_argument("--notes", default=None)
     p_cs.add_argument("--timeout", type=_positive_int, default=None,
                        help="Query execution timeout in seconds for this connection")

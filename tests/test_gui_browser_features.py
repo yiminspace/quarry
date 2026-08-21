@@ -50,7 +50,7 @@ def _console_clean(request):
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_saved")
+                       "page_saved", "page_missing_group")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -111,6 +111,32 @@ def page_envset_local(_pw_browser, tmp_path):
     """A page whose workspace adds a two-env set (stash: prod registered *before*
     local, no dev) — exercises "local always sorts first" (issue #44)."""
     with _running_gui(tmp_path, extra_conn=ENVSET_LOCAL_TOML) as url:
+        ctx, pg = _mk_page(_pw_browser, url)
+        try:
+            yield pg
+        finally:
+            ctx.close()
+
+
+MISSING_GROUP_ENVSET_TOML = f"""
+[queue_local]
+url = "redis://127.0.0.1:6379/0"
+engine = "redis"
+env = "local"
+db = "queue"
+group = "acme"
+
+[queue]
+url = "redis://dev.example.com:6379/0"
+engine = "redis"
+env = "dev"
+"""
+
+
+@pytest.fixture()
+def page_missing_group(_pw_browser, tmp_path):
+    """One env sibling omits group; the sidebar must still render one env-set."""
+    with _running_gui(tmp_path, extra_conn=MISSING_GROUP_ENVSET_TOML) as url:
         ctx, pg = _mk_page(_pw_browser, url)
         try:
             yield pg
@@ -407,6 +433,16 @@ def test_local_env_sorts_first_and_is_default_without_dev(page_envset_local):
     eps = page.locator("#esw .ep")
     assert [eps.nth(i).get_attribute("data-env") for i in range(eps.count())] == ["local", "prod"]
     assert "on" in eps.nth(0).get_attribute("class").split()
+
+
+def test_missing_group_env_sibling_stays_in_one_sidebar_env_set(page_missing_group):
+    page = page_missing_group
+    page.wait_for_selector('.dbrow[data-db="queue"]')
+    assert page.locator('.dbrow[data-db="queue"]').count() == 1
+    pills = page.locator('.pill[data-db="queue"]')
+    assert [pills.nth(i).get_attribute("data-env") for i in range(pills.count())] == ["local", "dev"]
+    group = page.locator('[data-grp]', has_text="acme")
+    assert group.count() == 1
 
 
 # ---------------------------------------------------------------------------

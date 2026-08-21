@@ -110,6 +110,13 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Changed
 
+- **Connection env-sets no longer split across a project group and `OTHER` when
+  one member omits `group`**: if the logical DB's grouped siblings agree,
+  CLI/GUI/MCP inherit that sole group for presentation. `qy connections
+  add/set` now also accept `--db` and `--group`, and automatically inherit an
+  existing env-set's identity for conventional keys such as `shop_prod`, so
+  newly added environments persist complete metadata.
+
 - **PostgreSQL GUI table browser now includes every user schema**: non-public
   tables appear as `schema.table` and work end-to-end with preview queries,
   structure inspection, and qualified column completion. Public tables keep

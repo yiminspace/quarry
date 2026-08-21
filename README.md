@@ -225,6 +225,8 @@ url = "postgresql://…prod…/shop"; group = "shop"; db = "shop"; env = "prod"
 ```
 
 - Connections with the same `db` fold into one env-set — one saved query runs against any environment: `qy exec shop --env prod`
+- `qy connections add/set` accepts `--db` and `--group`; when a new key such as `shop_prod --env prod` matches an existing env-set, Quarry inherits that identity automatically
+- If one env member omits `group` but every grouped sibling agrees, CLI/GUI/MCP keep the logical DB together in that group instead of creating a duplicate under `OTHER`
 - Unspecified env defaults to `dev` (the safest)
 - The GUI shows an environment switcher (prod turns red)
 

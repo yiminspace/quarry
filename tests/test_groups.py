@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from quarry import core, workspace
@@ -104,6 +106,66 @@ def test_local_env_always_sorts_first(ws):
     tree = core.group_connections()
     cache = next(g for g in tree if g["group"] == "cache")["items"][0]
     assert [e["env"] for e in cache["envs"]] == ["local", "prod"]
+
+
+def test_ungrouped_env_member_inherits_its_only_sibling_group(tmp_path):
+    (tmp_path / "connections.toml").write_text(
+        '[queue_local]\nurl = "redis://localhost:6379/0"\nengine = "redis"\n'
+        'group = "brain"\ndb = "queue"\nenv = "local"\n'
+        '[queue]\nurl = "redis://dev.example.com:6379/0"\nengine = "redis"\nenv = "dev"\n',
+        encoding="utf-8",
+    )
+    try:
+        workspace.configure_workspace(str(tmp_path))
+        tree = core.group_connections()
+        queue_items = [item for group in tree for item in group["items"] if item["db"] == "queue"]
+        assert len(queue_items) == 1
+        assert [e["env"] for e in queue_items[0]["envs"]] == ["local", "dev"]
+        assert next(g for g in tree if queue_items[0] in g["items"])["group"] == "brain"
+        assert not any(g["group"] is None for g in tree)
+    finally:
+        workspace.configure_workspace(None)
+
+
+def test_ungrouped_env_member_stays_visible_when_sibling_groups_conflict(tmp_path):
+    (tmp_path / "connections.toml").write_text(
+        '[queue_dev]\nurl = "redis://dev.example.com:6379/0"\nengine = "redis"\n'
+        'group = "brain"\ndb = "queue"\nenv = "dev"\n'
+        '[queue_prod]\nurl = "redis://prod.example.com:6379/0"\nengine = "redis"\n'
+        'group = "ops"\ndb = "queue"\nenv = "prod"\n'
+        '[queue_local]\nurl = "redis://localhost:6379/0"\nengine = "redis"\n'
+        'db = "queue"\nenv = "local"\n',
+        encoding="utf-8",
+    )
+    try:
+        workspace.configure_workspace(str(tmp_path))
+        tree = core.group_connections()
+        assert {g["group"] for g in tree} == {"brain", "ops", None}
+        assert next(g for g in tree if g["group"] is None)["items"][0]["envs"][0]["env"] == "local"
+    finally:
+        workspace.configure_workspace(None)
+
+
+def test_inherited_group_uses_the_declaring_siblings_workspace_origin(tmp_path):
+    ungrouped = tmp_path / "ungrouped"
+    grouped = tmp_path / "grouped"
+    ungrouped.mkdir()
+    grouped.mkdir()
+    (ungrouped / "connections.toml").write_text(
+        '[queue]\nurl = "redis://dev.example.com:6379/0"\nengine = "redis"\nenv = "dev"\n',
+        encoding="utf-8",
+    )
+    (grouped / "connections.toml").write_text(
+        '[queue_local]\nurl = "redis://localhost:6379/0"\nengine = "redis"\n'
+        'group = "brain"\ndb = "queue"\nenv = "local"\n',
+        encoding="utf-8",
+    )
+    try:
+        workspace.configure_workspace(f"{ungrouped}{os.pathsep}{grouped}")
+        queue_group = next(g for g in core.group_connections() if g["group"] == "brain")
+        assert queue_group["ws"] == str(grouped.resolve())
+    finally:
+        workspace.configure_workspace(None)
 
 
 def test_prod_write_is_read_only_by_default():

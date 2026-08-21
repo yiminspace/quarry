@@ -284,14 +284,41 @@ def resolve_connection(name: str, env: str | None = None) -> Connection:
 def group_connections() -> list[dict[str, Any]]:
     """Structured view for CLI/GUI: [{group, items: [{db, is_env_set, envs:[...]}]}]."""
     conns = list(load_connections().values())
+    # A logical database is one identity across environments.  If one member
+    # accidentally omits `group` while its siblings all agree on a folder,
+    # inherit that folder in the rendered tree instead of splitting the same
+    # db into both its real group and the ungrouped/OTHER fallback.  Keep a
+    # genuinely ambiguous db (siblings name multiple groups) ungrouped so a
+    # bad config remains visible rather than being assigned arbitrarily.
+    groups_by_db: dict[str, set[str]] = {}
+    for c in conns:
+        if c.group:
+            groups_by_db.setdefault(c.logical_db, set()).add(c.group)
+
+    def effective_group(c: Connection) -> str:
+        if c.group:
+            return c.group
+        sibling_groups = groups_by_db.get(c.logical_db, set())
+        return next(iter(sibling_groups)) if len(sibling_groups) == 1 else ""
+
+    def effective_group_source(c: Connection, group: str) -> str | None:
+        if c.group or not group:
+            return c.source
+        sibling = next(
+            (other for other in conns
+             if other.logical_db == c.logical_db and other.group == group),
+            None,
+        )
+        return sibling.source if sibling else c.source
+
     groups: dict[str, dict[str, list[Connection]]] = {}
     gsrc: dict[str, str | None] = {}
     order: list[str] = []
     for c in conns:
-        g = c.group or ""
+        g = effective_group(c)
         if g not in groups:
             groups[g] = {}
-            gsrc[g] = c.source
+            gsrc[g] = effective_group_source(c, g)
             order.append(g)
         groups[g].setdefault(c.logical_db, []).append(c)
 
