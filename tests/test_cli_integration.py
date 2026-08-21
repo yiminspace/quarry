@@ -347,6 +347,35 @@ class TestConnectionsMgmt:
         c = core.load_connections()["a1"]
         assert c.region == "eu-west-1" and c.env == "dev"
 
+    def test_connections_add_accepts_explicit_db_and_group(self, wsdir):
+        run_cli(wsdir, "connections", "add", "shop_dev", "--url",
+                "postgresql://dev.example.com/shop", "--env", "dev",
+                "--db", "shop", "--group", "commerce", "--no-test")
+        c = core.load_connections()["shop_dev"]
+        assert c.logical_db == "shop" and c.group == "commerce"
+
+    def test_connections_add_inherits_env_set_identity(self, wsdir):
+        (wsdir / "connections.toml").write_text(
+            '[shop_dev]\nurl = "postgresql://dev.example.com/shop"\n'
+            'env = "dev"\ndb = "shop"\ngroup = "commerce"\n',
+            encoding="utf-8",
+        )
+        run_cli(wsdir, "connections", "add", "shop_prod", "--url",
+                "postgresql://prod.example.com/shop", "--env", "prod", "--no-test")
+        c = core.load_connections()["shop_prod"]
+        assert c.logical_db == "shop" and c.group == "commerce"
+
+    def test_connections_set_can_heal_identity_from_sibling(self, wsdir):
+        (wsdir / "connections.toml").write_text(
+            '[queue_local]\nurl = "redis://localhost:6379/0"\nengine = "redis"\n'
+            'env = "local"\ndb = "queue"\ngroup = "brain"\n'
+            '[queue]\nurl = "redis://dev.example.com:6379/0"\nengine = "redis"\nenv = "dev"\n',
+            encoding="utf-8",
+        )
+        run_cli(wsdir, "connections", "set", "queue", "--notes", "healed", "--no-test")
+        c = core.load_connections()["queue"]
+        assert c.logical_db == "queue" and c.group == "brain"
+
     # -- issue #94: configurable per-connection query timeout ---------------
 
     def test_connections_add_with_timeout(self, wsdir):

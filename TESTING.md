@@ -152,7 +152,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
-| 7 | sidebar | connection groups + workspace origin label | B:test_load_shows_brand_and_readonly_badge (row presence only) | 🟡 |
+| 7 | sidebar | connection groups; an ungrouped env sibling inherits the logical DB's sole group instead of creating a duplicate under OTHER; workspace origin label | B:test_load_shows_brand_and_readonly_badge (origin single-ws only), F:test_missing_group_env_sibling_stays_in_one_sidebar_env_set, A:test_ungrouped_env_member_inherits_its_only_sibling_group | 🟡 |
 | 8 | sidebar | group collapse/expand + persistence | F:test_group_collapse_persists_after_reload | ✅ |
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
