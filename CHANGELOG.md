@@ -6,6 +6,13 @@ All notable changes to Quarry are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **MySQL writes now persist**: successful statements executed through the
+  shared MySQL query path are committed before the connection closes, so
+  `qy exec --write`, the GUI, and MCP no longer report success while silently
+  rolling the transaction back.
+
 ### Changed
 
 - **The GUI now has a distinctive crystal-in-rock favicon** instead of the
