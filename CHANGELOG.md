@@ -238,6 +238,14 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.23.0 (2026-08-25)
+
+### Features
+
+- Replace GUI favicon with crystal mark ([#121](https://github.com/yiminspace/quarry/pull/121),
+  [`2af7f7a`](https://github.com/yiminspace/quarry/commit/2af7f7ae7684e6eee7780a6cdc3f2172bf5ef17e))
+
+
 ## v0.22.0 (2026-08-20)
 
 ### Features
