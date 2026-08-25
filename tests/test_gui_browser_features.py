@@ -28,6 +28,15 @@ from test_gui_browser import page_saved  # noqa: F401  (fixture reused below)
 pytestmark = [requires_browser, pytest.mark.browser]
 
 
+def test_app_uses_distinct_svg_favicon(page):
+    icon = page.locator('head link[rel="icon"]')
+    assert icon.get_attribute("type") == "image/svg+xml"
+    assert icon.get_attribute("href") == "/app/favicon.svg"
+    response = page.request.get(icon.evaluate("node => node.href"))
+    assert response.ok
+    assert "<text" not in response.text()
+
+
 # ---------------------------------------------------------------------------
 # helpers + fixtures
 # ---------------------------------------------------------------------------

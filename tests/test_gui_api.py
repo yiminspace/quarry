@@ -285,6 +285,22 @@ def test_root_redirects_to_react_app(gui_server):
     assert "<title>Quarry</title>" in html
 
 
+@requires_db
+@pytest.mark.integration
+def test_gui_html_and_favicon_asset(gui_server):
+    import urllib.request
+    with urllib.request.urlopen(gui_server.base + "/app/", timeout=10) as r:
+        html = r.read().decode()
+    assert '<link rel="icon" type="image/svg+xml" href="/app/favicon.svg"' in html
+
+    with urllib.request.urlopen(gui_server.base + "/app/favicon.svg", timeout=10) as r:
+        favicon = r.read().decode()
+        content_type = r.headers.get_content_type()
+    assert content_type == "image/svg+xml"
+    assert "<text" not in favicon
+    assert 'viewBox="0 0 64 64"' in favicon
+
+
 # ---------------------------------------------------------------------------
 # connection info (/api/conninfo) — resolved config, password always masked
 # ---------------------------------------------------------------------------
