@@ -6,6 +6,11 @@ All notable changes to Quarry are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The GUI now has a distinctive crystal-in-rock favicon** instead of the
+  temporary lettermark, making a persistent Quarry tab easier to recognize.
+
 ### Added
 
 - **`qy speedtest <db>` tunnel-path benchmark**: generate a bounded
