@@ -245,6 +245,19 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.23.1 (2026-08-25)
+
+### Bug Fixes
+
+- Commit successful MySQL writes ([#123](https://github.com/yiminspace/quarry/pull/123),
+  [`a5880a2`](https://github.com/yiminspace/quarry/commit/a5880a27ccfd1be8c2735e02661ef2ad82988721))
+
+### Code Style
+
+- Refine Quarry favicon ([#122](https://github.com/yiminspace/quarry/pull/122),
+  [`521abc7`](https://github.com/yiminspace/quarry/commit/521abc74d3dc00418719f751655b2bd8ebf74c95))
+
+
 ## v0.23.0 (2026-08-25)
 
 ### Features
