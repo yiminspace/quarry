@@ -866,9 +866,13 @@ class _FakeConn:
     def __init__(self, cursor):
         self._cursor = cursor
         self.closed = False
+        self.committed = False
 
     def cursor(self):
         return self._cursor
+
+    def commit(self):
+        self.committed = True
 
     def close(self):
         self.closed = True
@@ -888,10 +892,13 @@ def _make_fake_pymysql(*, cursor=None, connect_error=None):
         captured.update(kwargs)
         if connect_error is not None:
             raise connect_error
-        return _FakeConn(cursor)
+        connection = _FakeConn(cursor)
+        mod._connection = connection
+        return connection
 
     mod.connect = connect
     mod._captured = captured
+    mod._connection = None
     return mod
 
 
@@ -913,13 +920,14 @@ def test_run_mysql_query_serializes_rows(monkeypatch):
 
 
 @pytest.mark.unit
-def test_run_mysql_query_no_description_returns_empty(monkeypatch):
+def test_run_mysql_query_commits_statement_without_result(monkeypatch):
     cur = _FakeCursor(description=None, rows=[{"x": 1}])
     fake = _make_fake_pymysql(cursor=cur)
     monkeypatch.setattr(core, "import_pymysql", lambda: fake)
-    rows, download_bytes = core.run_mysql_query("mysql://u:p@h/db", "SET @x = 1")
+    rows, download_bytes = core.run_mysql_query("mysql://u:p@h/db", "INSERT INTO t VALUES (1)")
     assert rows == []
     assert download_bytes == len(json.dumps([]).encode("utf-8"))
+    assert fake._connection.committed is True
 
 
 @pytest.mark.unit

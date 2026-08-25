@@ -1149,6 +1149,7 @@ def run_mysql_query(
                 cur.execute(f"SET SESSION max_statement_time = {max(1, timeout)}")
             cur.execute(rendered)
             rows = cur.fetchall() if cur.description else []
+        conn.commit()
     except pymysql.err.MySQLError as exc:
         msg = str(exc)
         if "timed out" in msg.lower() or "timeout" in msg.lower():
