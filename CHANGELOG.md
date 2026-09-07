@@ -31,8 +31,10 @@ All notable changes to Quarry are documented here. The format follows
 - **GUI address bar and tab title follow the current selection**: selecting
   a connection or table updates `?db=&env=&table=` and `document.title`
   (`db@env · table`) so a shared GUI host tells an agent what you mean.
-  Opening a focus URL restores that selection without auto-running (share
-  links that include `sql` still auto-run).
+  Opening a focus URL restores that selection in a new/reused/empty tab
+  without auto-running or rebinding a nonempty draft (share links that
+  include `sql` still auto-run). Schema-qualified tables stay qualified
+  in the generated focus URL.
 
 - **`qy speedtest <db>` tunnel-path benchmark**: generate a bounded
   PostgreSQL/MySQL result payload without printing it, repeat the same

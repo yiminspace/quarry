@@ -2040,6 +2040,41 @@ def test_selection_updates_url_and_title(page):
     assert "testpg" in page.title()
 
 
+def test_focus_url_opens_new_tab_when_active_tab_has_sql(page):
+    queries = []
+    page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
+    draft = "select 123 as draft_marker"
+    page.evaluate(
+        """([sql]) => {
+            localStorage.setItem("qy_tabs", JSON.stringify([
+              { id: "t1", sql, db: "testpg", env: "test" }
+            ]));
+            localStorage.setItem("qy_ati", "0");
+            localStorage.removeItem("qy_tabres");
+        }""",
+        [draft],
+    )
+    base = page.url.split("/app/")[0]
+    page.goto(f"{base}/app/?db=testpg&env=test&table=customers", wait_until="networkidle")
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from customers'")
+    assert page.locator(".tab[data-i]").count() == 2
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value.includes('draft_marker')")
+    page.wait_for_timeout(400)
+    assert queries == []
+
+
+def test_handwritten_schema_sql_keeps_schema_in_focus_url(page):
+    _select_testpg(page)
+    _set_sql(page, "select * from qy_gui_schema.events")
+    page.wait_for_function(
+        """() => new URL(location.href).searchParams.get('table')
+            === 'qy_gui_schema.events'""")
+    assert "qy_gui_schema.events" in page.title()
+
+
 def test_focus_url_restores_selection_without_autorun(page):
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))

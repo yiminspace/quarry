@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findPreviewTab, previewSql, quoteIdent, tableClickPlan } from "./tablePreview";
+import { findPreviewTab, focusRestorePlan, previewSql, quoteIdent, tableClickPlan } from "./tablePreview";
 
 describe("previewSql", () => {
   it("emits select-star with no LIMIT", () => {
@@ -42,6 +42,31 @@ describe("tableClickPlan", () => {
   it("does not reuse a preview on another connection", () => {
     expect(tableClickPlan(tabs, "t1", "other", "dev", "customers", "postgres")).toEqual({
       action: "new",
+    });
+  });
+});
+
+describe("focusRestorePlan", () => {
+  const dirty = [{ id: "t1", sql: "select 123 as draft", db: "shop", env: "dev" }];
+
+  it("opens a new tab instead of rebinding a nonempty draft", () => {
+    expect(focusRestorePlan(dirty, "t1", "testpg", "test", "customers", "postgres")).toEqual({
+      action: "new",
+    });
+  });
+
+  it("keeps a nonempty tab when the focus is the same connection and has no table", () => {
+    expect(focusRestorePlan(dirty, "t1", "shop", "dev", null, "postgres")).toEqual({
+      action: "same",
+      tabId: "t1",
+    });
+  });
+
+  it("reuses an empty tab for a table focus", () => {
+    const empty = [{ id: "t1", sql: "", db: null, env: null }];
+    expect(focusRestorePlan(empty, "t1", "testpg", "test", "customers", "postgres")).toEqual({
+      action: "empty",
+      tabId: "t1",
     });
   });
 });

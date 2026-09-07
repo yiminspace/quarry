@@ -28,6 +28,7 @@ export function findPreviewTab(
 export type TableClickPlan =
   | { action: "reuse"; tabId: string }
   | { action: "empty"; tabId: string }
+  | { action: "same"; tabId: string }
   | { action: "new" };
 
 /** Clicking a table never overwrites a tab that already has SQL: reuse the
@@ -45,5 +46,23 @@ export function tableClickPlan(
   if (existing) return { action: "reuse", tabId: existing.id };
   const active = tabs.find((t) => t.id === activeId);
   if (active && active.sql.trim() === "") return { action: "empty", tabId: active.id };
+  return { action: "new" };
+}
+
+/** Opening a focus URL (`?db=&env=&table=`) must never rebind a tab that
+ * already has SQL. Reuse a matching preview, an empty tab, or the same
+ * connection when no table was requested; otherwise open a new tab. */
+export function focusRestorePlan(
+  tabs: TabLike[],
+  activeId: string,
+  db: string,
+  env: string | null,
+  table: string | null,
+  engine: string,
+): TableClickPlan {
+  if (table) return tableClickPlan(tabs, activeId, db, env, table, engine);
+  const active = tabs.find((t) => t.id === activeId);
+  if (active && active.sql.trim() === "") return { action: "empty", tabId: active.id };
+  if (active && active.db === db && (active.env ?? null) === env) return { action: "same", tabId: active.id };
   return { action: "new" };
 }

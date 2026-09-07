@@ -21,7 +21,7 @@ import { t } from "./i18n";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
 import { anyModalOpen } from "./modalStack";
 import { decodeFocus, decodeQueryLink, encodeFocusSearch, encodeQueryLink, focusTitle, type QueryLinkPayload } from "./queryLink";
-import { previewSql, tableClickPlan } from "./tablePreview";
+import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
 import SqlEditor from "./SqlEditor";
 import { useConnStore } from "./store/connStore";
@@ -463,14 +463,29 @@ export default function ResultWorkbench() {
       if (focus) {
         const item = findItem(focus.db);
         if (item) {
-          selectDb(focus.db, focus.env, { force: true });
-          if (focus.table) {
-            const tab = useTabsStore.getState().tabs.find((tb) => tb.id === useTabsStore.getState().activeId);
-            if (tab && !tab.sql.trim()) {
-              useTabsStore.getState().updateActiveTab({ sql: previewSql(focus.table, item.engine) });
-              useConnStore.getState().setCurrentTable(focus.table);
-            }
+          const tabsState = useTabsStore.getState();
+          const plan = focusRestorePlan(
+            tabsState.tabs,
+            tabsState.activeId,
+            focus.db,
+            focus.env,
+            focus.table,
+            item.engine,
+          );
+          if (plan.action === "reuse" || plan.action === "same") {
+            if (plan.tabId !== tabsState.activeId) tabsState.switchTab(plan.tabId);
+          } else if (plan.action === "new") {
+            tabsState.addTab({ db: focus.db, env: focus.env });
           }
+          if (focus.table && plan.action !== "same") {
+            useTabsStore.getState().updateActiveTab({
+              db: focus.db,
+              env: focus.env,
+              sql: previewSql(focus.table, item.engine),
+            });
+            useConnStore.getState().setCurrentTable(focus.table);
+          }
+          selectDb(focus.db, focus.env, { force: true });
         }
       }
       setSessionReady(true);
