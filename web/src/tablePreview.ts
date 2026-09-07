@@ -1,3 +1,5 @@
+import { parseMainTable } from "./store/tabsStore";
+
 /** Quote mixed-case / reserved identifiers (legacy `qid`). */
 export function quoteIdent(name: string, engine: string): string {
   if (/^[a-z_][a-z0-9_$]*$/.test(name)) return name;
@@ -50,8 +52,9 @@ export function tableClickPlan(
 }
 
 /** Opening a focus URL (`?db=&env=&table=`) must never rebind a tab that
- * already has SQL. Reuse a matching preview, an empty tab, or the same
- * connection when no table was requested; otherwise open a new tab. */
+ * already has SQL. A reload writes the active tab back into the URL, so
+ * matching db/env (and the same main table, when one is present) stays on
+ * that tab. A *different* table or connection opens a new/reused/empty tab. */
 export function focusRestorePlan(
   tabs: TabLike[],
   activeId: string,
@@ -60,9 +63,16 @@ export function focusRestorePlan(
   table: string | null,
   engine: string,
 ): TableClickPlan {
-  if (table) return tableClickPlan(tabs, activeId, db, env, table, engine);
   const active = tabs.find((t) => t.id === activeId);
+  if (active && active.db === db && (active.env ?? null) === env) {
+    if (!table) return { action: active.sql.trim() === "" ? "empty" : "same", tabId: active.id };
+    if (findPreviewTab(tabs, db, env, table, engine)?.id === active.id) {
+      return { action: "reuse", tabId: active.id };
+    }
+    if (parseMainTable(active.sql) === table) return { action: "same", tabId: active.id };
+    if (active.sql.trim() === "") return { action: "empty", tabId: active.id };
+  }
+  if (table) return tableClickPlan(tabs, activeId, db, env, table, engine);
   if (active && active.sql.trim() === "") return { action: "empty", tabId: active.id };
-  if (active && active.db === db && (active.env ?? null) === env) return { action: "same", tabId: active.id };
   return { action: "new" };
 }

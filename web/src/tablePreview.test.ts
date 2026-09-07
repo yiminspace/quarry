@@ -62,6 +62,21 @@ describe("focusRestorePlan", () => {
     });
   });
 
+  it("keeps a nonempty tab whose SQL already targets the focus table (reload)", () => {
+    const saved = [{ id: "t1", sql: "select * from customers order by id", db: "testpg", env: "test" }];
+    expect(focusRestorePlan(saved, "t1", "testpg", "test", "customers", "postgres")).toEqual({
+      action: "same",
+      tabId: "t1",
+    });
+  });
+
+  it("opens a new tab when the focus table differs from the active SQL", () => {
+    const orders = [{ id: "t1", sql: "select * from orders", db: "testpg", env: "test" }];
+    expect(focusRestorePlan(orders, "t1", "testpg", "test", "customers", "postgres")).toEqual({
+      action: "new",
+    });
+  });
+
   it("reuses an empty tab for a table focus", () => {
     const empty = [{ id: "t1", sql: "", db: null, env: null }];
     expect(focusRestorePlan(empty, "t1", "testpg", "test", "customers", "postgres")).toEqual({
