@@ -261,6 +261,22 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.24.0 (2026-09-07)
+
+### Bug Fixes
+
+- **gui**: 刷新时不要把当前查询拆成新的预览 tab ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+- **gui**: 焦点 URL 不改写已有 tab，并保留 schema 限定表名 ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+### Features
+
+- **gui**: 点表开新 tab，并把当前库表写进地址栏 ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+
 ## v0.23.1 (2026-08-25)
 
 ### Bug Fixes
