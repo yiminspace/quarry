@@ -51,7 +51,8 @@ describe("parseMainTable", () => {
     // Postgres double-quote form, as produced by ResultWorkbench's quoteIdent()
     expect(parseMainTable('select * from "QyCamelZz" limit 5')).toBe("QyCamelZz");
     // schema-qualified, quoted
-    expect(parseMainTable('select * from public."QyCamelZz" limit 5')).toBe("QyCamelZz");
+    expect(parseMainTable('select * from public."QyCamelZz" limit 5')).toBe("public.QyCamelZz");
+    expect(parseMainTable("select * from audit.events")).toBe("audit.events");
     // MySQL backtick form
     expect(parseMainTable("select * from `QyCamelZz` limit 5")).toBe("QyCamelZz");
     // escaped quote inside the identifier

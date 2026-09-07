@@ -192,9 +192,9 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
 // A bare identifier, or one quoted the way the table-click preview SQL
 // quotes mixed-case/reserved names — `"double"` (Postgres, `""` escapes) or
 // `` `backtick` `` (MySQL, ``` `` ``` escapes). See `quoteIdent` in
-// ResultWorkbench.tsx, the producer of that preview SQL.
+// tablePreview.ts, the producer of that preview SQL.
 const IDENT = String.raw`"(?:[^"]|"")+"|\`(?:[^\`]|\`\`)+\`|[a-zA-Z_]\w*`;
-const MAIN_TABLE_RE = new RegExp(String.raw`\b(?:from|update|into)\s+(?:(?:${IDENT})\.)?(${IDENT})`, "i");
+const MAIN_TABLE_RE = new RegExp(String.raw`\b(?:from|update|into)\s+(?:(${IDENT})\.)?(${IDENT})`, "i");
 
 function unquoteIdent(raw: string): string {
   if (raw.startsWith('"')) return raw.slice(1, -1).replaceAll('""', '"');
@@ -212,7 +212,9 @@ export function parseMainTable(sql: string): string | null {
   const cleaned = sql.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
   if (/\bjoin\b/i.test(cleaned)) return null;
   const m = MAIN_TABLE_RE.exec(cleaned);
-  return m ? unquoteIdent(m[1]) : null;
+  if (!m) return null;
+  const table = unquoteIdent(m[2]);
+  return m[1] ? `${unquoteIdent(m[1])}.${table}` : table;
 }
 
 /** A user rename always wins. Else, a non-empty SQL body is what
