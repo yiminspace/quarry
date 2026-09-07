@@ -44,10 +44,11 @@ still *exhaustively enumerable* — and we keep it enumerated:
    state (grep, list them in the PR) and cover each — partial rollout of an
    invariant is how "closing a tab loses SQL" shipped.
 6. **UX invariants that must never regress** (each is pinned by a browser test):
-   - hand-written editor SQL is never silently lost — every editor overwrite
-     (table click / key inspect / saved query / history recall / tab close)
-     goes through `keepDraft()`/`pushHist()` in `useSqlHistory`; Cmd/Ctrl+↓
-     restores the stash;
+   - hand-written editor SQL is never silently lost — a table click with
+     existing SQL opens a new tab (the draft stays on the previous one);
+     every remaining editor overwrite (Alt+click table / key inspect /
+     saved query / history recall / tab close) goes through `keepDraft()`/
+     `pushHist()` in `useSqlHistory`; Cmd/Ctrl+↓ restores the stash;
    - switching the env pill to **prod never auto-runs** the current SQL;
    - overlapping query responses are **latest-wins** (the per-tab
      `startReq`/`isCurrentReq`/`endReq` request-tracking guard) — a stale

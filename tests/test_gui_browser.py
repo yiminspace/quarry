@@ -101,8 +101,8 @@ def test_click_table_renders_grid_with_types_and_status(page):
     _select_testpg(page)
     page.locator('#tbl-panel .tname[data-t="customers"]').click()
     page.wait_for_selector("#grid table tbody tr")
-    # the generated preview query defaults to a 5-row limit (not 100)
-    assert page.locator("#sql").input_value() == 'select * from customers limit 5'
+    # first-page preview: no baked-in LIMIT (toolbar max-rows bounds the result)
+    assert page.locator("#sql").input_value() == "select * from customers"
     # 3 data rows
     assert page.locator("#grid table tbody tr").count() == 3
     # typed header: id integer, name text

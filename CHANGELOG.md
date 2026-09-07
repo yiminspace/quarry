@@ -15,10 +15,24 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Changed
 
+- **Table-click preview no longer bakes in `LIMIT 5`**: clicking a sidebar
+  table now generates `select * from <table>` and runs it under the toolbar
+  max-rows cap (default 500), so "load more" can page through the rest.
+
+- **Clicking a table opens its own tab**: a click reuses an empty tab or an
+  existing same-table preview; a tab that already has SQL is left intact.
+  Alt+click still inserts into the current editor without running.
+
 - **The GUI now has a distinctive crystal-in-rock favicon** instead of the
   temporary lettermark, making a persistent Quarry tab easier to recognize.
 
 ### Added
+
+- **GUI address bar and tab title follow the current selection**: selecting
+  a connection or table updates `?db=&env=&table=` and `document.title`
+  (`db@env · table`) so a shared GUI host tells an agent what you mean.
+  Opening a focus URL restores that selection without auto-running (share
+  links that include `sql` still auto-run).
 
 - **`qy speedtest <db>` tunnel-path benchmark**: generate a bounded
   PostgreSQL/MySQL result payload without printing it, repeat the same

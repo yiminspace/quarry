@@ -192,7 +192,7 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
 // A bare identifier, or one quoted the way the table-click preview SQL
 // quotes mixed-case/reserved names — `"double"` (Postgres, `""` escapes) or
 // `` `backtick` `` (MySQL, ``` `` ``` escapes). See `quoteIdent` in
-// ResultWorkbench.tsx, the producer of that preview SQL.
+// tablePreview.ts, the producer of that preview SQL.
 const IDENT = String.raw`"(?:[^"]|"")+"|\`(?:[^\`]|\`\`)+\`|[a-zA-Z_]\w*`;
 const MAIN_TABLE_RE = new RegExp(String.raw`\b(?:from|update|into)\s+(?:(?:${IDENT})\.)?(${IDENT})`, "i");
 
