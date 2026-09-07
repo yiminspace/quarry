@@ -309,17 +309,16 @@ def _run_sql(page, sql: str):
 # 1. Draft preservation (fix: table click / history recall must not lose SQL)
 # ---------------------------------------------------------------------------
 
-def test_table_click_preserves_draft_in_history(page):
+def test_table_click_preserves_draft_on_previous_tab(page):
     _select_testpg(page)
     _set_sql(page, "select 123 as draft_marker")     # hand-written, never run
     page.locator('#tbl-panel .tname[data-t="customers"]').click()
     page.wait_for_selector("#grid table tbody tr")
-    # editor now holds the generated query…
-    assert "from customers" in page.locator("#sql").input_value()
-    # …and the draft is recoverable from History
-    page.locator("#histBtn").click()
-    page.wait_for_selector(".modal .hitem")
-    assert page.locator(".modal .hitem", has_text="draft_marker").count() == 1
+    assert page.locator(".tab[data-i]").count() == 2
+    assert page.locator("#sql").input_value() == "select * from customers"
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value.includes('draft_marker')")
 
 
 def test_history_nav_stashes_and_restores_draft(page):
@@ -1551,7 +1550,7 @@ def test_non_public_schema_table_is_visible_and_clickable(page, pg_exec):
         page.locator(sel).click()
         page.wait_for_selector('#grid td[data-v="ready"]')
         assert page.locator("#sql").input_value() == (
-            "select * from qy_gui_schema.events limit 5"
+            "select * from qy_gui_schema.events"
         )
         page.locator(sel).dblclick()
         page.wait_for_selector("#structbox .cirow")
@@ -1998,6 +1997,103 @@ def test_query_deeplink_opens_existing_tab_and_autoruns(page):
     page.wait_for_selector('#grid td[data-v="42"]')
     assert page.locator(".tab[data-i]").count() == 1
     assert page.locator("#sql").input_value() == sql
+
+
+def test_table_click_opens_new_tab_without_overwrite(page):
+    _select_testpg(page)
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_selector("#grid table tbody tr")
+    page.locator('#tbl-panel .tname[data-t="orders"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from orders'")
+    assert page.locator(".tab[data-i]").count() == 2
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from customers'")
+
+
+def test_table_click_reuses_same_table_preview_tab(page):
+    _select_testpg(page)
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_selector("#grid table tbody tr")
+    page.locator('#tbl-panel .tname[data-t="orders"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from orders'")
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from customers'")
+    assert page.locator(".tab[data-i]").count() == 2
+
+
+def test_selection_updates_url_and_title(page):
+    _select_testpg(page)
+    page.wait_for_function(
+        "() => new URL(location.href).searchParams.get('db') === 'testpg'")
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_selector("#grid table tbody tr")
+    page.wait_for_function(
+        """() => {
+            const q = new URL(location.href).searchParams;
+            return q.get('db') === 'testpg' && q.get('table') === 'customers';
+        }""")
+    assert "customers" in page.title()
+    assert "testpg" in page.title()
+
+
+def test_focus_url_opens_new_tab_when_active_tab_has_sql(page):
+    queries = []
+    page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
+    draft = "select 123 as draft_marker"
+    page.evaluate(
+        """([sql]) => {
+            localStorage.setItem("qy_tabs", JSON.stringify([
+              { id: "t1", sql, db: "testpg", env: "test" }
+            ]));
+            localStorage.setItem("qy_ati", "0");
+            localStorage.removeItem("qy_tabres");
+        }""",
+        [draft],
+    )
+    base = page.url.split("/app/")[0]
+    page.goto(f"{base}/app/?db=testpg&env=test&table=customers", wait_until="networkidle")
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from customers'")
+    assert page.locator(".tab[data-i]").count() == 2
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_function(
+        "document.querySelector('#sql').value.includes('draft_marker')")
+    page.wait_for_timeout(400)
+    assert queries == []
+
+
+def test_handwritten_schema_sql_keeps_schema_in_focus_url(page):
+    _select_testpg(page)
+    _set_sql(page, "select * from qy_gui_schema.events")
+    page.wait_for_function(
+        """() => new URL(location.href).searchParams.get('table')
+            === 'qy_gui_schema.events'""")
+    assert "qy_gui_schema.events" in page.title()
+
+
+def test_focus_url_restores_selection_without_autorun(page):
+    queries = []
+    page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
+    base = page.url.split("/app/")[0]
+    page.evaluate(
+        """() => {
+            localStorage.removeItem("qy_tabs");
+            localStorage.removeItem("qy_ati");
+            localStorage.removeItem("qy_tabres");
+        }"""
+    )
+    page.goto(f"{base}/app/?db=testpg&env=test&table=customers", wait_until="networkidle")
+    page.wait_for_selector('.dbrow.on[data-db="testpg"]')
+    page.wait_for_function(
+        "document.querySelector('#sql').value === 'select * from customers'")
+    page.wait_for_timeout(500)
+    assert queries == []
+    assert page.locator("#grid .empty").count() == 1
+    assert "customers" in page.title()
 
 
 def test_query_deeplink_invalid_env_shows_notice_and_skips_autorun(page_envset):

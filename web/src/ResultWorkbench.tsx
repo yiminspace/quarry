@@ -20,12 +20,14 @@ import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
 import { anyModalOpen } from "./modalStack";
-import { decodeQueryLink, encodeQueryLink, type QueryLinkPayload } from "./queryLink";
+import { decodeFocus, decodeQueryLink, encodeFocusSearch, encodeQueryLink, focusTitle, type QueryLinkPayload } from "./queryLink";
+import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
 import SqlEditor from "./SqlEditor";
 import { useConnStore } from "./store/connStore";
 import {
   isResultSnapshotPersistable,
+  parseMainTable,
   useTabsStore,
   type Tab,
   type TabId,
@@ -58,18 +60,6 @@ const EMPTY_PANEL: PanelData = {
   keys: null,
   capped: false,
 };
-
-/** Quote mixed-case / reserved identifiers (legacy `qid`). */
-function quoteIdent(name: string, engine: string): string {
-  if (/^[a-z_][a-z0-9_$]*$/.test(name)) return name;
-  if (engine === "mysql") return `\`${name.replaceAll("`", "``")}\``;
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-function previewSql(table: string, engine: string): string {
-  const target = engine !== "mysql" && table.includes(".") ? table : quoteIdent(table, engine);
-  return `select * from ${target} limit 5`;
-}
 
 /** Cell type classes for coloring — the legacy `cellClass` rules verbatim. */
 function cellClass(v: unknown): string {
@@ -171,6 +161,7 @@ export default function ResultWorkbench() {
   const [connInfoOpen, setConnInfoOpen] = useState(false);
   const [explainBusy, setExplainBusy] = useState(false);
   const [loadMoreBusy, setLoadMoreBusy] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
 
   // Per-tab in-flight bookkeeping: a request snapshots its issuing tab and a
   // sequence number, so a later request on the same tab always wins and a
@@ -467,7 +458,39 @@ export default function ResultWorkbench() {
     if (!loaded || linkHandledRef.current) return;
     linkHandledRef.current = true;
     const payload = deepLinkRef.current;
-    if (!payload) return;
+    if (!payload) {
+      const focus = decodeFocus(window.location.search);
+      if (focus) {
+        const item = findItem(focus.db);
+        if (item) {
+          const tabsState = useTabsStore.getState();
+          const plan = focusRestorePlan(
+            tabsState.tabs,
+            tabsState.activeId,
+            focus.db,
+            focus.env,
+            focus.table,
+            item.engine,
+          );
+          if (plan.action === "reuse" || plan.action === "same") {
+            if (plan.tabId !== tabsState.activeId) tabsState.switchTab(plan.tabId);
+          } else if (plan.action === "new") {
+            tabsState.addTab({ db: focus.db, env: focus.env });
+          }
+          if (focus.table && plan.action !== "same") {
+            useTabsStore.getState().updateActiveTab({
+              db: focus.db,
+              env: focus.env,
+              sql: previewSql(focus.table, item.engine),
+            });
+            useConnStore.getState().setCurrentTable(focus.table);
+          }
+          selectDb(focus.db, focus.env, { force: true });
+        }
+      }
+      setSessionReady(true);
+      return;
+    }
     const tabsState = useTabsStore.getState();
     const existing = tabsState.tabs.find(
       (tb) =>
@@ -486,51 +509,55 @@ export default function ResultWorkbench() {
       });
     }
 
-    const item = findItem(payload.db);
-    if (!item) {
-      const state = useConnStore.getState();
-      state.setCurrent(null);
-      state.setCurrentTable(null);
-      panelKeyRef.current = null;
-      setPanel(EMPTY_PANEL);
-      toast(t("share_link_db_missing"), false);
-      return;
-    }
+    try {
+      const item = findItem(payload.db);
+      if (!item) {
+        const state = useConnStore.getState();
+        state.setCurrent(null);
+        state.setCurrentTable(null);
+        panelKeyRef.current = null;
+        setPanel(EMPTY_PANEL);
+        toast(t("share_link_db_missing"), false);
+        return;
+      }
 
-    const normalized = normalizeEnvForItem(item, payload.env);
-    selectDb(payload.db, normalized.env, { force: true });
-    if (!normalized.ok) {
-      toast(t("share_link_env_missing"), false);
-      return;
-    }
-    const currentSql = payload.sql.trim();
-    if (!currentSql) return;
-    pushHist(currentSql, payload.db, normalized.env);
-    const ctx = startReq(useTabsStore.getState().activeId, {
-      db: payload.db,
-      env: normalized.env,
-    });
-    runQuery({
-      db: payload.db,
-      env: normalized.env,
-      sql: currentSql,
-      maxRows,
-    })
-      .then((data) => {
-        applyTabResult(ctx, () => ({
-          result: data,
-          queryDb: payload.db,
-          queryEnv: normalized.env,
-          querySql: currentSql,
-        }));
+      const normalized = normalizeEnvForItem(item, payload.env);
+      selectDb(payload.db, normalized.env, { force: true });
+      if (!normalized.ok) {
+        toast(t("share_link_env_missing"), false);
+        return;
+      }
+      const currentSql = payload.sql.trim();
+      if (!currentSql) return;
+      pushHist(currentSql, payload.db, normalized.env);
+      const ctx = startReq(useTabsStore.getState().activeId, {
+        db: payload.db,
+        env: normalized.env,
+      });
+      runQuery({
+        db: payload.db,
+        env: normalized.env,
+        sql: currentSql,
+        maxRows,
       })
-      .catch((e) => reqFailed(ctx, e))
-      .finally(() => endReq(ctx));
+        .then((data) => {
+          applyTabResult(ctx, () => ({
+            result: data,
+            queryDb: payload.db,
+            queryEnv: normalized.env,
+            querySql: currentSql,
+          }));
+        })
+        .catch((e) => reqFailed(ctx, e))
+        .finally(() => endReq(ctx));
+    } finally {
+      setSessionReady(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
   // The current-table highlight only holds while the editor still shows the
-  // generated `limit 5` preview; editing it away clears the highlight.
+  // generated preview; editing it away clears the highlight.
   useEffect(() => {
     if (!currentTable || !current) return;
     if (sql.trim() !== previewSql(currentTable, current.engine)) {
@@ -538,13 +565,46 @@ export default function ResultWorkbench() {
     }
   }, [sql, currentTable, current]);
 
+  useEffect(() => {
+    if (!sessionReady) return;
+    const db = current?.db ?? null;
+    const env = current?.env ?? null;
+    const table = currentTable ?? parseMainTable(sql);
+    const search = encodeFocusSearch({ db, env, table });
+    const url = new URL(window.location.href);
+    if (url.search !== search) {
+      window.history.replaceState(null, "", `${url.pathname}${search}${url.hash}`);
+    }
+    document.title = focusTitle({ db, env, table });
+  }, [sessionReady, current, currentTable, sql]);
+
   const handleTableClick = (table: string, altKey: boolean): void => {
     const cur = useConnStore.getState().current;
     if (!cur) return;
     const next = previewSql(table, cur.engine);
-    keepDraft(sqlRef.current, next, cur.db, cur.env);
-    setSql(next);
-    if (altKey) return; // Alt+click: insert only, don't run
+    if (altKey) {
+      keepDraft(sqlRef.current, next, cur.db, cur.env);
+      setSql(next);
+      return;
+    }
+    const tabsState = useTabsStore.getState();
+    const plan = tableClickPlan(tabsState.tabs, tabsState.activeId, cur.db, cur.env, table, cur.engine);
+    if (plan.action === "reuse") {
+      const tab = tabsState.tabs.find((tb) => tb.id === plan.tabId);
+      if (tab && tab.id !== tabsState.activeId) {
+        tabsState.switchTab(tab.id);
+        revalidateTab(tab);
+      }
+      useConnStore.getState().setCurrentTable(table);
+      if (!useTabsStore.getState().results[plan.tabId]?.result) {
+        void run({ db: cur.db, env: cur.env }, next);
+      }
+      return;
+    }
+    if (plan.action === "new") {
+      tabsState.addTab({ db: cur.db, env: cur.env });
+    }
+    useTabsStore.getState().updateActiveTab({ db: cur.db, env: cur.env, sql: next });
     useConnStore.getState().setCurrentTable(table);
     void run({ db: cur.db, env: cur.env }, next);
   };
