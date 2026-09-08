@@ -278,7 +278,10 @@ export default function ResultWorkbench() {
         else if (starter.action === "new") tabsState.addTab({ db, env: realEnv });
         if (starter.action !== "none") {
           useTabsStore.getState().updateActiveTab({ db, env: realEnv, sql: starter.sql });
-          if (!hasResult) void run({ db, env: realEnv }, starter.sql);
+          if (!hasResult) {
+            if ((realEnv || "").toLowerCase() === "prod") toast(t("prod_no_autorun"), false);
+            else void run({ db, env: realEnv }, starter.sql);
+          }
         }
       }
       state.setCurrent({

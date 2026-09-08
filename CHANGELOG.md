@@ -35,7 +35,8 @@ All notable changes to Quarry are documented here. The format follows
   and register it independently. Selecting a Neptune connection in the GUI now
   opens or reuses a query tab prefilled with a safe read query for both dev and
   local environments, runs it immediately, and does not overwrite an existing
-  draft or re-run an already-loaded starter tab.
+  draft or re-run an already-loaded starter tab. Production retains the GUI's
+  existing no-auto-run guard.
 
 - **GUI address bar and tab title follow the current selection**: selecting
   a connection or table updates `?db=&env=&table=` and `document.title`

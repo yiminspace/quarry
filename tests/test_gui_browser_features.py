@@ -100,6 +100,13 @@ engine = "neptune"
 env = "local"
 db = "graph"
 group = "brain"
+
+[graph_prod]
+url = "https://prod.example.neptune.amazonaws.com:8182"
+engine = "neptune"
+env = "prod"
+db = "graph"
+group = "brain"
 """
 
 
@@ -489,6 +496,11 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
     page.locator('.pill[data-db="graph"][data-env="dev"]').click()
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
     assert len(tabs) == 3
+    assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
+
+    page.locator('.pill[data-db="graph"][data-env="prod"]').click()
+    page.wait_for_selector("#toast", state="visible")
+    assert "prod" in page.locator("#toast").inner_text().lower()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
     page.wait_for_timeout(200)
     assert [(query["db"], query["env"], query["sql"]) for query in queries] == [
