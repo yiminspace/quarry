@@ -252,6 +252,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
+| 107 | sidebar/tabs | selecting any Neptune environment (dev or local) opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`, runs it immediately, preserves existing drafts, and avoids re-running a reused tab that already has a result | F:test_neptune_connection_opens_and_runs_starter_tabs, connectionStarter.test.ts | ✅ |
 
 ### Design gaps (capability-audit output — missing on purpose until scheduled)
 

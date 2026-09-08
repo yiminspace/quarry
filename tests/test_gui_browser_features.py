@@ -59,7 +59,7 @@ def _console_clean(request):
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_saved", "page_missing_group")
+                       "page_saved", "page_missing_group", "page_neptune")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -85,6 +85,32 @@ env = "prod"
 db = "shop"
 group = "acme"
 """
+
+NEPTUNE_ENVSET_TOML = """
+[graph_dev]
+url = "https://dev.example.neptune.amazonaws.com:8182"
+engine = "neptune"
+env = "dev"
+db = "graph"
+group = "brain"
+
+[graph_local]
+url = "https://localhost:18182"
+engine = "neptune"
+env = "local"
+db = "graph"
+group = "brain"
+"""
+
+
+@pytest.fixture()
+def page_neptune(_pw_browser, tmp_path):
+    with _running_gui(tmp_path, extra_conn=NEPTUNE_ENVSET_TOML) as url:
+        ctx, pg = _mk_page(_pw_browser, url)
+        try:
+            yield pg
+        finally:
+            ctx.close()
 
 
 @pytest.fixture()
@@ -426,6 +452,49 @@ def test_nonprod_env_switch_autoruns(page_envset):
     page.wait_for_selector("#grid table tbody tr")
     page.wait_for_timeout(300)
     assert len(queries) == 1
+
+
+def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
+    page = page_neptune
+    queries = []
+    def query_response(route):
+        queries.append(route.request.post_data_json)
+        route.fulfill(json={
+            "columns": [], "rows": [], "rowCount": 0, "truncated": False,
+            "elapsedMs": 1, "engine": "neptune",
+            "sql": "MATCH (n) RETURN n LIMIT 25", "downloadBytes": 14,
+            "sizeIsEstimated": False,
+        })
+    page.route("**/api/query", query_response)
+
+    _select_testpg(page)
+    _set_sql(page, "select 42 as draft")
+    page.locator('.dbrow[data-db="graph"]').click()
+    assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
+    page.wait_for_function("() => document.querySelector('#status').style.display !== 'none'")
+    tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
+    assert [(tab["db"], tab["env"], tab["sql"]) for tab in tabs] == [
+        ("testpg", "test", "select 42 as draft"),
+        ("graph", "dev", "MATCH (n) RETURN n LIMIT 25")
+    ]
+
+    page.locator('.pill[data-db="graph"][data-env="local"]').click()
+    assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
+    page.wait_for_function("() => JSON.parse(localStorage.getItem('qy_tabres'))[2] !== null")
+    tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
+    assert [(tab["db"], tab["env"]) for tab in tabs] == [
+        ("testpg", "test"), ("graph", "dev"), ("graph", "local")
+    ]
+
+    page.locator('.pill[data-db="graph"][data-env="dev"]').click()
+    tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
+    assert len(tabs) == 3
+    assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
+    page.wait_for_timeout(200)
+    assert [(query["db"], query["env"], query["sql"]) for query in queries] == [
+        ("graph", "dev", "MATCH (n) RETURN n LIMIT 25"),
+        ("graph", "local", "MATCH (n) RETURN n LIMIT 25"),
+    ]
 
 
 def test_local_env_sorts_first_and_is_default_without_dev(page_envset_local):
