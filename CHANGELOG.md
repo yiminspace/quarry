@@ -271,6 +271,22 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.25.0 (2026-09-08)
+
+### Bug Fixes
+
+- Preserve Neptune prod query guard ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+### Features
+
+- Add empty local Neptune service ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+- 增加本地空 Neptune 服务 ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+
 ## v0.24.0 (2026-09-07)
 
 ### Bug Fixes
