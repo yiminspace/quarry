@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { cellOpensInspector, cellPreview, cellText } from "./cellValue";
 import { copy } from "./clip";
+import { connectionStarterPlan } from "./connectionStarter";
 import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
@@ -262,6 +263,27 @@ export default function ResultWorkbench() {
       const realEnv = multi
         ? (env ?? defaultEnvFor(item))
         : (env ?? item.envs[0]?.env ?? null);
+      if (!opts?.force) {
+        const tabsState = useTabsStore.getState();
+        const starter = connectionStarterPlan(
+          tabsState.tabs,
+          tabsState.activeId,
+          db,
+          realEnv,
+          item.engine,
+        );
+        const hasResult =
+          starter.action === "reuse" && !!tabsState.results[starter.tabId]?.result;
+        if (starter.action === "reuse") tabsState.switchTab(starter.tabId);
+        else if (starter.action === "new") tabsState.addTab({ db, env: realEnv });
+        if (starter.action !== "none") {
+          useTabsStore.getState().updateActiveTab({ db, env: realEnv, sql: starter.sql });
+          if (!hasResult) {
+            if ((realEnv || "").toLowerCase() === "prod") toast(t("prod_no_autorun"), false);
+            else void run({ db, env: realEnv }, starter.sql);
+          }
+        }
+      }
       state.setCurrent({
         db,
         env: realEnv,
@@ -269,9 +291,14 @@ export default function ResultWorkbench() {
         isRedis: item.engine === "redis",
       });
       setPanelOpen(true);
-      updateActiveTab({ db, env: realEnv });
+      if (opts?.force || item.engine !== "neptune") updateActiveTab({ db, env: realEnv });
       loadTables(db, realEnv, false);
-      if (opts?.viaPill && sqlRef.current.trim() && item.engine !== "redis") {
+      if (
+        opts?.viaPill &&
+        sqlRef.current.trim() &&
+        item.engine !== "redis" &&
+        item.engine !== "neptune"
+      ) {
         // env switch re-runs the current SQL — but never auto-run on prod
         if ((realEnv || "").toLowerCase() === "prod") toast(t("prod_no_autorun"), false);
         else void run({ db, env: realEnv });

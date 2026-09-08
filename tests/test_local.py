@@ -136,8 +136,8 @@ def test_port_in_use():
 # ---------------------------------------------------------------------------
 
 def test_specs_for():
-    assert [s.engine for s in local.specs_for(None)] == ["postgres", "redis"]
-    assert [s.engine for s in local.specs_for("all")] == ["postgres", "redis"]
+    assert [s.engine for s in local.specs_for(None)] == ["postgres", "redis", "neptune"]
+    assert [s.engine for s in local.specs_for("all")] == ["postgres", "redis", "neptune"]
     assert [s.engine for s in local.specs_for("redis")] == ["redis"]
 
 
@@ -145,6 +145,7 @@ def test_spec_url():
     assert local.PG_SPEC.url("shop") == "postgresql://quarry:quarry@localhost:5433/shop"
     assert local.REDIS_SPEC.url("shop") == "redis://localhost:6380/0"
     assert local.REDIS_SPEC.url("shop", redis_db=3) == "redis://localhost:6380/3"
+    assert local.NEPTUNE_SPEC.url("graph") == "https://localhost:18182"
 
 
 def test_redis_db_of():
@@ -494,6 +495,17 @@ def test_register_redis_carries_source_db_index(local_ws):
     assert _read_conns(local_ws)[key]["url"] == "redis://localhost:6380/2"
 
 
+def test_register_neptune_empty_connection(local_ws):
+    key, created = local.register_local_connection("neptune", local.NEPTUNE_SPEC)
+    assert created is True
+    assert key == "neptune_local"
+    reg = _read_conns(local_ws)[key]
+    assert reg["url"] == "https://localhost:18182"
+    assert reg["engine"] == "neptune"
+    assert reg["local_backend"] == "empty"
+    assert "local_volume" not in reg
+
+
 def test_source_redis_db_prefers_default_env(local_ws):
     header, data = core._read_connections_file_parts()
     data["cache_jp"] = {"url": "redis://jp-host:6379/5", "engine": "redis",
@@ -596,6 +608,11 @@ def test_resolve_target_unknown_redis(local_ws):
     assert spec.engine == "redis"
 
 
+def test_resolve_target_unknown_neptune(local_ws):
+    _, spec, _ = cli._resolve_local_target("neptune", "neptune")
+    assert spec.engine == "neptune"
+
+
 def test_resolve_target_invalid_name(local_ws):
     with pytest.raises(core.QuarryError):
         cli._resolve_local_target("bad-name", None)
@@ -608,6 +625,15 @@ def test_cmd_local_up_no_key(monkeypatch, capsys):
     assert cli.cmd_local_up(args) == core.EXIT_OK
     out = capsys.readouterr().out
     assert "redis" in out and "created" in out
+
+
+def test_cmd_local_up_neptune(monkeypatch, capsys, local_ws):
+    monkeypatch.setattr(local, "start_container", lambda spec, image=None: "created")
+    args = argparse.Namespace(key="neptune", engine="neptune", image=None)
+    assert cli.cmd_local_up(args) == core.EXIT_OK
+    out = capsys.readouterr().out
+    assert "Neptune empty endpoint created" in out
+    assert _read_conns(local_ws)["neptune_local"]["local_backend"] == "empty"
 
 
 def test_cmd_local_up_with_key_postgres(monkeypatch, capsys, local_ws):

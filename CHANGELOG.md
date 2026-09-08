@@ -28,6 +28,16 @@ All notable changes to Quarry are documented here. The format follows
 
 ### Added
 
+- **Empty local Neptune endpoint**: `qy local up` now includes a local HTTPS
+  openCypher service on port 18182 alongside Postgres and Redis. It accepts
+  Quarry and AWS Neptune Data API request shapes, always returns empty results,
+  and never persists writes; `qy local up neptune --engine neptune` can manage
+  and register it independently. Selecting a Neptune connection in the GUI now
+  opens or reuses a query tab prefilled with a safe read query for both dev and
+  local environments, runs it immediately, and does not overwrite an existing
+  draft or re-run an already-loaded starter tab. Production retains the GUI's
+  existing no-auto-run guard.
+
 - **GUI address bar and tab title follow the current selection**: selecting
   a connection or table updates `?db=&env=&table=` and `document.title`
   (`db@env · table`) so a shared GUI host tells an agent what you mean.

@@ -1,10 +1,9 @@
-"""Local dev containers — `qy local up/down/status`.
+"""Local development services — `qy local up/down/status`.
 
-Bring a Postgres/Redis instance up in a docker container so a locally-running
-service talks only to `localhost` instead of a shared remote (dev) database. It
-shells out to the `docker` CLI (same style as the `psql` / `redis-cli` calls
-elsewhere — no new SDK dependency) and, on `up <key>`, auto-registers an
-`env=local` connection into `connections.toml`.
+Bring Postgres, Redis, and an empty Neptune-compatible endpoint up so a
+locally-running service talks only to `localhost` instead of shared dev data.
+Postgres and Redis use Docker; the Neptune endpoint is a small local process.
+`up <key>` auto-registers an `env=local` connection into `connections.toml`.
 
 Shared-container model: ONE Postgres container hosts many logical databases
 (one per connection key); it is not a container-per-key. Data lives on a named
@@ -13,11 +12,18 @@ docker volume so it survives `down` (and `stop`/`start`) unless `--purge`.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import socket
+import ssl
 import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import core
 from .core import EXIT_CONNECTION_ERROR, CONN_KEY_RE, QuarryError
@@ -47,7 +53,9 @@ class EngineSpec:
         if self.engine == "postgres":
             return (f"postgresql://{LOCAL_PG_USER}:{LOCAL_PG_PASSWORD}"
                     f"@localhost:{self.port}/{dbname}")
-        return f"redis://localhost:{self.port}/{redis_db if redis_db is not None else 0}"
+        if self.engine == "redis":
+            return f"redis://localhost:{self.port}/{redis_db if redis_db is not None else 0}"
+        return f"https://localhost:{self.port}"
 
 
 PG_SPEC = EngineSpec(
@@ -58,12 +66,18 @@ REDIS_SPEC = EngineSpec(
     engine="redis", container="quarry-local-redis", volume="quarry-local-redisdata",
     port=6380, internal_port=6379, default_image="redis:7-alpine",
 )
-SPECS: dict[str, EngineSpec] = {"postgres": PG_SPEC, "redis": REDIS_SPEC}
+NEPTUNE_SPEC = EngineSpec(
+    engine="neptune", container="quarry-local-neptune-empty", volume="",
+    port=18182, internal_port=18182, default_image="empty",
+)
+SPECS: dict[str, EngineSpec] = {
+    "postgres": PG_SPEC, "redis": REDIS_SPEC, "neptune": NEPTUNE_SPEC,
+}
 
 
 def specs_for(engine: str | None) -> list[EngineSpec]:
     if engine in (None, "all"):
-        return [PG_SPEC, REDIS_SPEC]
+        return [PG_SPEC, REDIS_SPEC, NEPTUNE_SPEC]
     return [SPECS[engine]]
 
 
@@ -176,6 +190,8 @@ def _docker_run_args(spec: EngineSpec, image: str) -> list[str]:
 def start_container(spec: EngineSpec, *, image: str | None = None) -> str:
     """Bring the container up idempotently. Returns 'running' (already up),
     'started' (a stopped container resumed), or 'created' (freshly run)."""
+    if spec.engine == "neptune":
+        return start_neptune_empty(spec)
     require_docker()
     state = container_state(spec.container)
     if state == "running":
@@ -264,6 +280,8 @@ def ensure_pg_database(spec: EngineSpec, dbname: str, *, retry_for: float = 15.0
 def down_engine(spec: EngineSpec, *, purge: bool) -> dict:
     """Stop the container. With purge=True also remove it and its data volume.
     Returns a summary dict for the CLI to render."""
+    if spec.engine == "neptune":
+        return down_neptune_empty(spec, purge=purge)
     require_docker()
     state = container_state(spec.container)
     result = {"engine": spec.engine, "was": state, "stopped": False,
@@ -292,6 +310,8 @@ def down_engine(spec: EngineSpec, *, purge: bool) -> dict:
 
 def engine_status(spec: EngineSpec) -> dict:
     """Read-only container status. Never raises on a missing daemon — reports it."""
+    if spec.engine == "neptune":
+        return neptune_empty_status(spec)
     if not docker_available():
         return {"engine": spec.engine, "docker": False, "running": False,
                 "state": "unknown", "port": spec.port, "image": None,
@@ -301,6 +321,142 @@ def engine_status(spec: EngineSpec) -> dict:
     return {"engine": spec.engine, "docker": True, "running": state == "running",
             "state": state, "port": spec.port, "image": image,
             "volume": spec.volume, "volume_exists": volume_exists(spec.volume)}
+
+
+# ---------------------------------------------------------------------------
+# local empty Neptune process
+# ---------------------------------------------------------------------------
+
+def neptune_state_dir() -> Path:
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return base / "quarry" / "neptune-empty"
+
+
+def _neptune_paths() -> tuple[Path, Path, Path, Path]:
+    state = neptune_state_dir()
+    return state / "pid", state / "cert.pem", state / "key.pem", state / "server.log"
+
+
+def _read_neptune_pid() -> int | None:
+    pid_path, _, _, _ = _neptune_paths()
+    try:
+        return int(pid_path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _owned_neptune_pid(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    proc = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, check=False,
+    )
+    return proc.returncode == 0 and "quarry.neptune_empty" in proc.stdout
+
+
+def _ensure_neptune_certificate(cert: Path, key: Path) -> None:
+    if cert.exists() and key.exists():
+        return
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise QuarryError(
+            "openssl not found in PATH — required for the local Neptune HTTPS endpoint",
+            exit_code=EXIT_CONNECTION_ERROR,
+        )
+    proc = subprocess.run([
+        openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+        "-keyout", str(key), "-out", str(cert), "-subj", "/CN=localhost",
+        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise QuarryError(
+            f"failed to create local Neptune TLS certificate: {proc.stderr.strip()}",
+            exit_code=EXIT_CONNECTION_ERROR,
+        )
+
+
+def _neptune_health(port: int, *, timeout: float = 1.0) -> bool:
+    context = ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(
+            f"https://127.0.0.1:{port}/health", timeout=timeout, context=context,
+        ) as response:
+            payload = json.loads(response.read())
+        return response.status == 200 and payload.get("backend") == "empty"
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def start_neptune_empty(spec: EngineSpec = NEPTUNE_SPEC, *, timeout: float = 10.0) -> str:
+    pid_path, cert, key, log = _neptune_paths()
+    pid = _read_neptune_pid()
+    if _owned_neptune_pid(pid) and _neptune_health(spec.port):
+        return "running"
+    if port_in_use(spec.port):
+        raise QuarryError(
+            f"port {spec.port} is already in use — free it or stop the conflicting service",
+            exit_code=EXIT_CONNECTION_ERROR,
+        )
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_neptune_certificate(cert, key)
+    with log.open("ab") as output:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "quarry.neptune_empty", "--port", str(spec.port),
+             "--cert", str(cert), "--key", str(key)],
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _neptune_health(spec.port):
+            return "created"
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    detail = log.read_text(encoding="utf-8", errors="replace")[-500:] if log.exists() else ""
+    raise QuarryError(
+        f"local Neptune empty endpoint did not become ready: {detail.strip()}",
+        exit_code=EXIT_CONNECTION_ERROR,
+    )
+
+
+def down_neptune_empty(spec: EngineSpec = NEPTUNE_SPEC, *, purge: bool) -> dict:
+    pid_path, cert, key, log = _neptune_paths()
+    pid = _read_neptune_pid()
+    running = _owned_neptune_pid(pid)
+    result = {"engine": spec.engine, "was": "running" if running else "absent",
+              "stopped": False, "purged": purge, "removed_volume": False}
+    if running and pid is not None:
+        os.kill(pid, 15)
+        deadline = time.monotonic() + 5
+        while _owned_neptune_pid(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if _owned_neptune_pid(pid):
+            os.kill(pid, 9)
+        result["stopped"] = True
+    pid_path.unlink(missing_ok=True)
+    if purge:
+        for path in (cert, key, log):
+            path.unlink(missing_ok=True)
+        try:
+            pid_path.parent.rmdir()
+        except OSError:
+            pass
+    return result
+
+
+def neptune_empty_status(spec: EngineSpec = NEPTUNE_SPEC) -> dict:
+    pid = _read_neptune_pid()
+    running = _owned_neptune_pid(pid) and _neptune_health(spec.port)
+    return {"engine": spec.engine, "backend": "empty", "docker": None,
+            "running": running, "state": "running" if running else "absent",
+            "port": spec.port, "image": None, "volume": None,
+            "volume_exists": False, "pid": pid if running else None}
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +556,10 @@ def register_local_connection(
             fields["group"] = group
         if image:
             fields["local_image"] = image
-        fields["local_volume"] = spec.volume
+        if spec.volume:
+            fields["local_volume"] = spec.volume
+        if spec.engine == "neptune":
+            fields["local_backend"] = "empty"
         data[key] = fields
         core._write_connections_file(header, data)
         return key, True

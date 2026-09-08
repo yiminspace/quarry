@@ -86,7 +86,7 @@ Resolution order: `--workspace PATH` → `~/.config/quarry/config.toml` → curr
 | `qy list / describe / validate / fingerprint / audit` | Manage named queries |
 | `qy workspace list/add/remove` | Manage aggregated workspaces |
 | `qy up/down/status [--format text\|json]` | Workspace tunnel keep-alive keeper |
-| `qy local up/down/status/sync [--engine postgres\|redis\|all]` | Local dev containers (see below) |
+| `qy local up/down/status/sync [--engine postgres\|redis\|neptune\|all]` | Local dev services (see below) |
 | `qy gui` | Launch the local GUI |
 | `qy mcp [--write]` | Serve the MCP face over stdio (for AI agents) |
 
@@ -252,6 +252,8 @@ service talks only to `localhost`:
 
 ```bash
 qy local up shop            # start local Postgres + register a shop `local` connection
+qy local up                 # start Postgres, Redis, and the empty Neptune endpoint
+qy local up neptune --engine neptune  # register neptune@local independently
 qy connections              # shop now shows a [local] env alongside [dev]
 qy run active_customers --env local
 
@@ -260,6 +262,11 @@ qy local sync shop          # copy dev schema into local (staging db + rename sw
 qy local down               # stop, keep the data volume (data survives)
 qy local down --purge       # stop + delete the volume (next up is an empty DB)
 ```
+
+The local Neptune service listens on `https://localhost:18182`, accepts both
+Quarry and AWS Neptune Data API openCypher requests, and always returns an empty
+result. Writes are acknowledged but intentionally not persisted, so each local
+matrix-runtime run starts without Mind Graph memory.
 
 One shared Postgres container hosts a logical database per connection key (fixed
 port `5433`; redis `6380`), and data lives on a named docker volume. Requires a

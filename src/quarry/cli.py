@@ -1070,7 +1070,7 @@ def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local
         logical = match.logical_db
         eng = connection_engine(match)
         if eng not in local.SPECS:
-            err(f"engine '{eng}' has no local-container support (postgres/redis only)",
+            err(f"engine '{eng}' has no local support (postgres/redis/neptune only)",
                 exit_code=EXIT_USAGE)
         if engine_flag not in (None, "all") and engine_flag != eng:
             err(f"connection '{arg}' is engine {eng}, not {engine_flag}", exit_code=EXIT_USAGE)
@@ -1090,11 +1090,14 @@ def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local
 def cmd_local_up(args: argparse.Namespace) -> int:
     if args.key:
         logical, spec, group = _resolve_local_target(args.key, args.engine)
-        image = args.image or local.stored_local_image(logical)
+        image = None if spec.engine == "neptune" else args.image or local.stored_local_image(logical)
         state = local.start_container(spec, image=image)
-        actual_image = local.container_image(spec.container) or image or spec.default_image
-        print(f"✓ local {spec.engine} container {_state_word(state)} "
-              f"(port {spec.port}, image {actual_image})")
+        if spec.engine == "neptune":
+            print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
+        else:
+            actual_image = local.container_image(spec.container) or image or spec.default_image
+            print(f"✓ local {spec.engine} container {_state_word(state)} "
+                  f"(port {spec.port}, image {actual_image})")
         # Register the connection right away so it reflects the container that
         # now exists even if the readiness wait below times out.
         redis_db = local.source_redis_db(logical) if spec.engine == "redis" else None
@@ -1114,9 +1117,12 @@ def cmd_local_up(args: argparse.Namespace) -> int:
 
     for spec in local.specs_for(args.engine):
         state = local.start_container(spec, image=args.image)
-        actual_image = local.container_image(spec.container) or args.image or spec.default_image
-        print(f"✓ local {spec.engine} container {_state_word(state)} "
-              f"(port {spec.port}, image {actual_image})")
+        if spec.engine == "neptune":
+            print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
+        else:
+            actual_image = local.container_image(spec.container) or args.image or spec.default_image
+            print(f"✓ local {spec.engine} container {_state_word(state)} "
+                  f"(port {spec.port}, image {actual_image})")
     return EXIT_OK
 
 
@@ -1128,13 +1134,14 @@ def _state_word(state: str) -> str:
 def cmd_local_down(args: argparse.Namespace) -> int:
     for spec in local.specs_for(args.engine):
         res = local.down_engine(spec, purge=args.purge)
+        noun = "endpoint" if spec.engine == "neptune" else "container"
         if res["was"] == "absent":
-            print(f"· local {spec.engine} container not present")
+            print(f"· local {spec.engine} {noun} not present")
             if res["removed_volume"]:
                 print(f"✓ removed volume {spec.volume}")
             continue
         action = "stopped" if res["stopped"] else "already stopped"
-        line = f"✓ local {spec.engine} container {action}"
+        line = f"✓ local {spec.engine} {noun} {action}"
         if args.purge:
             line += " and removed"
         print(line)
@@ -1164,6 +1171,12 @@ def cmd_local_status(args: argparse.Namespace) -> int:
         sys.stdout.write("\n")
         return EXIT_OK
     for st in statuses:
+        if st["engine"] == "neptune":
+            if st["running"]:
+                print(f"  ✓ {'neptune':<9} running  port {st['port']}  backend empty")
+            else:
+                print("  ✗ neptune   not running — run `qy local up neptune --engine neptune`")
+            continue
         if not st["docker"]:
             print(f"  ? {st['engine']:<9} docker unavailable")
             continue
@@ -1420,23 +1433,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_keepalive_status)
 
     p_local = sub.add_parser(
-        "local", help="Manage local dev containers (postgres/redis) for env=local connections")
+        "local", help="Manage local dev services for env=local connections")
     local_sub = p_local.add_subparsers(dest="local_cmd", metavar="<subcommand>", required=True)
     p_lu = local_sub.add_parser(
         "up", help="Start local container(s); with a key, auto-register an env=local connection")
     p_lu.add_argument("key", nargs="?",
                       help="Connection key / logical db to bring up + auto-register (env=local)")
-    p_lu.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_lu.add_argument("--image", default=None, help="Override the container image tag")
     p_lu.set_defaults(func=cmd_local_up)
     p_ld = local_sub.add_parser(
         "down", help="Stop local container(s); --purge also deletes the data volume")
-    p_ld.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_ld.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_ld.add_argument("--purge", action="store_true",
                       help="Also delete the named data volume (destroys local data)")
     p_ld.set_defaults(func=cmd_local_down)
     p_ls = local_sub.add_parser("status", help="Show local container status (running / port / image)")
-    p_ls.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_ls.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_ls.add_argument("--format", choices=["text", "json"], default="text")
     p_ls.set_defaults(func=cmd_local_status)
     p_lsync = local_sub.add_parser(

@@ -573,7 +573,7 @@ def api_local_up(body: dict) -> dict:
            or next((m for e, m in sorted(members.items()) if e.lower() != local.LOCAL_ENV),
                    members[sorted(members)[0]]))
     engine = core.connection_engine(src)
-    if engine not in local.SPECS:
+    if engine not in {"postgres", "redis"}:
         raise QuarryError(
             f"engine '{engine}' has no local-container support (postgres/redis only)")
     if not local.SAFE_DB_RE.match(db):
