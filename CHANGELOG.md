@@ -303,6 +303,17 @@ All notable changes to Quarry are documented here. The format follows
 
 <!-- version list -->
 
+## v0.25.1 (2026-09-09)
+
+### Bug Fixes
+
+- Resolve scan and Cypher review regressions ([#126](https://github.com/yiminspace/quarry/pull/126),
+  [`c71a879`](https://github.com/yiminspace/quarry/commit/c71a8799535e88eebb0cd58215cb9a8787528590))
+
+- 修复 1.0 发布前的查询安全、结果保真与兼容性问题 ([#126](https://github.com/yiminspace/quarry/pull/126),
+  [`c71a879`](https://github.com/yiminspace/quarry/commit/c71a8799535e88eebb0cd58215cb9a8787528590))
+
+
 ## v0.25.0 (2026-09-08)
 
 ### Bug Fixes
