@@ -3,16 +3,16 @@
   "name": "io.github.Wangggym/quarry",
   "description": "Safety-railed database access for agents: Postgres, MySQL, Redis. Read-only by default.",
   "repository": {
-    "url": "https://github.com/Wangggym/quarry",
+    "url": "https://github.com/yiminspace/quarry",
     "source": "github"
   },
-  "websiteUrl": "https://quarry.yiminlab.site",
-  "version": "0.2.2",
+  "websiteUrl": "https://yiminspace.github.io/quarry/",
+  "version": "1.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "quarry-db",
-      "version": "0.2.2",
+      "version": "1.0.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {

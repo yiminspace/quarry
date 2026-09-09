@@ -115,6 +115,7 @@ export default function SqlEditor({
   const pendingCaretRef = useRef<number | null>(null);
   const columnsCacheRef = useRef<Record<string, string[]>>({});
   const inFlightRef = useRef<Set<string>>(new Set());
+  const acDismissedRef = useRef(false);
 
   const [acItems, setAcItems] = useState<AcItem[]>([]);
   const [acIndex, setAcIndex] = useState(0);
@@ -145,7 +146,7 @@ export default function SqlEditor({
 
   const updateSuggestions = useCallback(() => {
     const ta = taRef.current;
-    if (!ta || !db || isRedis || document.activeElement !== ta) {
+    if (acDismissedRef.current || !ta || !db || isRedis || document.activeElement !== ta) {
       closeAc();
       return;
     }
@@ -239,6 +240,12 @@ export default function SqlEditor({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     const meta = e.metaKey || e.ctrlKey;
+    if (e.key === "Escape" && !meta) {
+      acDismissedRef.current = true;
+      e.preventDefault();
+      closeAc();
+      return;
+    }
     // Cmd/Ctrl combos (run, history) always pass through the AC box.
     if (acOpen && !meta) {
       if (e.key === "ArrowDown") {
@@ -254,11 +261,6 @@ export default function SqlEditor({
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
         acAccept();
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeAc();
         return;
       }
     }
@@ -313,6 +315,7 @@ export default function SqlEditor({
           placeholder={placeholder}
           value={value}
           onChange={(e) => {
+            acDismissedRef.current = false;
             onChange(e.target.value);
             requestAnimationFrame(updateSuggestions);
           }}

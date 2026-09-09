@@ -1019,6 +1019,51 @@ def test_saved_query_result_persisted_under_producing_connection(page_saved_mult
 # 13. Autocomplete: table.column via /api/columns
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("late_source", ["input_frame", "column_lookup"])
+def test_autocomplete_escape_blocks_late_refresh(page, late_source):
+    _select_testpg(page)
+    ta = page.locator("#sql")
+    ta.fill("sel")
+    page.wait_for_selector(".acbox", state="visible")
+    if late_source == "input_frame":
+        page.evaluate("""() => {
+            window.originalRaf = window.requestAnimationFrame;
+            window.pendingFrames = [];
+            window.requestAnimationFrame = cb => {
+                window.pendingFrames.push(cb); return 999999;
+            };
+        }""")
+        ta.type("e")
+    else:
+        page.evaluate("""() => {
+            const originalFetch = window.fetch;
+            window.fetch = (...args) => String(args[0]).includes('/api/columns?')
+                ? new Promise(resolve => {
+                    window.releaseColumns = () => resolve(new Response(
+                        JSON.stringify({columns: ['name', 'email']}),
+                        {headers: {'Content-Type': 'application/json'}}));
+                }) : originalFetch(...args);
+        }""")
+        ta.fill("customers.")
+        page.wait_for_function("typeof window.releaseColumns === 'function'")
+    ta.press("Escape")
+    page.wait_for_selector(".acbox", state="hidden")
+    page.evaluate("""async source => {
+        if (source === 'input_frame') {
+            window.requestAnimationFrame = window.originalRaf;
+            window.pendingFrames.forEach(cb => cb(performance.now()));
+        } else {
+            window.releaseColumns();
+        }
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }""", late_source)
+    assert not page.locator(".acbox").is_visible()
+    # Dismissal is temporary: the next edit must offer suggestions again.
+    ta.type("c" if late_source == "input_frame" else "n")
+    page.wait_for_selector(".acbox", state="visible")
+    assert page.locator(".acitem", has_text="SELECT" if late_source == "input_frame" else "name").count() >= 1
+
+
 def test_autocomplete_columns_after_table_dot(page):
     _select_testpg(page)
     page.locator("#sql").focus()

@@ -1,6 +1,6 @@
 # Quarry interface and support contract
 
-This is the compatibility target for the 1.0 release. The package remains pre-1.0 until a release is explicitly made. Passing local tests is not a statement that every platform or database version is supported.
+This document defines the stable interface contract starting with Quarry 1.0.0. Experimental capabilities are identified separately. Passing local tests is not a statement that every platform or database version is supported.
 
 ## Entry points
 
@@ -49,17 +49,17 @@ Quarry does not upload connection credentials, queries or results to a Quarry se
 
 ## 1.0 evolution policy
 
-Published CLI command names/options, workspace configuration keys, saved-query metadata, MCP tool names/arguments and names exported by `quarry.__all__` form the public interface. Private helpers and GUI layout are implementation details. Compatible optional fields/features may be added; removals or meaning/type changes require a documented migration and major version after 1.0. This release's lossless numeric representation is a pre-1.0 contract correction.
+Published CLI command names/options, workspace configuration keys, saved-query metadata, MCP tool names/arguments and names exported by `quarry.__all__` form the public interface. Private helpers and GUI layout are implementation details. Compatible optional fields/features may be added; removals or meaning/type changes require a documented migration and major version after 1.0. The lossless numeric representation was introduced in 0.25.1 and is retained in 1.0.0.
 
 Release publication runs the test/build workflow against the exact tag before the PyPI job can run. Main-branch semantic-release can create a version/tag and dispatch this gated publication automatically; merging a release-triggering commit can therefore publish a package.
 
-## Final 1.0 acceptance checklist
+## Release acceptance checklist
 
-- Prepare `1.0.0`, consistent package metadata and release notes, and the Stable development classifier. Keep experimental Neptune labeled separately from the stable interface commitment.
-- Build the intended release candidate and verify a fresh installation through CLI, GUI and MCP. Rehearse upgrading from the latest published 0.x package on that candidate: connections, saved queries, drafts and bounded results must remain usable, with no query automatically executed on reload.
+- Prepare the intended release version, consistent package metadata and release notes, and retain the Stable development classifier. Keep experimental Neptune labeled separately from the stable interface commitment.
+- Build the intended release candidate and verify a fresh installation through CLI, GUI and MCP. Rehearse upgrading from the latest published stable package on that candidate (0.25.1 for the initial 1.0.0 release): connections, saved queries, drafts and bounded results must remain usable, with no query automatically executed on reload.
 - Require all CI/build checks on the exact release tag before PyPI publication. After publication, check the installed artifact and both live landing-page languages against the released contract.
 
-Earlier candidate rehearsals do not replace acceptance of the final 1.0 artifact. This checklist records remaining release work, not a claim that 1.0 is already published.
+Candidate rehearsals do not replace checks on the artifact actually published to PyPI. The checklist applies to each release; previous results do not establish support for untested environments.
 
 ## 中文摘要
 
@@ -71,4 +71,4 @@ Earlier candidate rehearsals do not replace acceptance of the final 1.0 artifact
 - CI 的 Linux/数据库版本矩阵和本机 macOS 验证范围如上；未验证平台不能视为支持承诺。Neptune 为实验性支持，不纳入稳定数据库支持承诺；本地空服务不验证真实 AWS 能力。
 - 浏览器存储可用时保留草稿和有限的结果快照；单结果报告的下载大小超过 512 KiB 时仅留在会话，总持久化预算为 1.5 MiB。清理/禁用存储、空间不足或更换 GUI origin 会影响恢复。
 - 查询发送到配置的数据库，MCP 结果返回所选客户端；Quarry 不向 Quarry 服务上传这些业务数据。GUI 默认绑定 localhost 并检查本地来源，PyPI 更新检查可用 `QUARRY_UPDATE_CHECK=0` 关闭。
-- 1.0 后公开接口的破坏性变更需主版本和迁移说明。main 合并可触发自动版本/tag 及带 CI 门禁的 PyPI 发布。正式 1.0 前需准备版本、Stable 元数据与发行说明，并在最终候选包上验证全新安装、从最新 0.x 升级、草稿/结果恢复及不自动执行查询；此前候选包演练不能替代最终验收。
+- 1.0 后公开接口的破坏性变更需主版本和迁移说明。main 合并可触发自动版本/tag 及带 CI 门禁的 PyPI 发布。每次发布均需准备目标版本、一致的 Stable 元数据与发行说明，并在最终候选包上验证全新安装、从当前最新正式版升级（首次 1.0.0 使用 0.25.1）、草稿/结果恢复及不自动执行查询；发布后还需核对 PyPI 正式产物，候选包演练不能替代最终验收。
