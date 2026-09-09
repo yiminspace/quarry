@@ -32,6 +32,19 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.1.0 (2026-09-09)
+
+### Bug Fixes
+
+- **gui**: 侧栏查询分组时精确连接 key 优先于逻辑库名 ([#129](https://github.com/yiminspace/quarry/pull/129),
+  [`83f30cf`](https://github.com/yiminspace/quarry/commit/83f30cf1facc0b317e6abfd2ee5949c28f4f6375))
+
+### Features
+
+- **gui**: 侧栏按引擎整理连接，状态栏补指标说明 ([#129](https://github.com/yiminspace/quarry/pull/129),
+  [`83f30cf`](https://github.com/yiminspace/quarry/commit/83f30cf1facc0b317e6abfd2ee5949c28f4f6375))
+
+
 ## [1.0.0] — 2026-09-09
 
 ### Stable interface
