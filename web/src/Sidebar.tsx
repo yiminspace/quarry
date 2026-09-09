@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
+import { groupQueriesByDb, itemsInEngineOrder } from "./sidebarLayout";
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 
@@ -234,12 +235,15 @@ function TablePanel({
       ) : (
         <>
           <div className="vg-trow trow">
-            <input
-              className="vg-input tsearch"
-              placeholder={isRedis ? t("filter_keys") : t("filter_tables")}
-              value={filter}
-              onChange={(e) => onFilterChange(e.target.value)}
-            />
+            <label className="vg-tfilter">
+              <i className="ti ti-search" aria-hidden="true" />
+              <input
+                className="vg-input tsearch"
+                placeholder={isRedis ? t("filter_keys") : t("filter_tables")}
+                value={filter}
+                onChange={(e) => onFilterChange(e.target.value)}
+              />
+            </label>
             <button className="vg-iconbtn treload" title={t("refresh_list")} onClick={onRefresh}>
               <i className="ti ti-refresh" />
             </button>
@@ -298,9 +302,9 @@ function TablePanel({
   );
 }
 
-/** The connection sidebar: workspace-grouped rows with health dots, env
- * pills, the selected connection's table/key panel, and saved queries —
- * legacy DOM (`.grp/.gbody/.dbrow/.pills/.qname`) throughout. */
+/** The connection sidebar: workspace-grouped rows with health dots,
+ * engine-sorted connections, the selected connection's table/key panel,
+ * and saved queries — legacy DOM (`.grp/.gbody/.dbrow/.qname`) throughout. */
 export default function Sidebar(props: SidebarProps) {
   const { current, panelOpen, onSelect, savedQueries, onOpenSaved } = props;
   const loaded = useConnStore((s) => s.loaded);
@@ -348,10 +352,9 @@ export default function Sidebar(props: SidebarProps) {
               )}
             </div>
             <div className="gbody" style={{ display: isCollapsed ? "none" : undefined }}>
-              {g.items.map((item) => {
+              {itemsInEngineOrder(g.items).map((item) => {
                 const isCurrent = current?.db === item.db;
                 const h = health[item.db];
-                const defEnv = defaultEnvFor(item);
                 return (
                   <div key={item.db}>
                     <div
@@ -362,40 +365,8 @@ export default function Sidebar(props: SidebarProps) {
                     >
                       <span className={dotClass(item.db)} />
                       {item.db}
-                      <small>{item.engine}</small>
+                      <small className="vg-engine-tag">{item.engine}</small>
                     </div>
-                    {item.envs.length > 1 && (
-                      <div className="vg-pills pills">
-                        {item.envs.map((e) => {
-                          const on = isCurrent ? current?.env === e.env : e.env === defEnv;
-                          return (
-                            <span
-                              key={e.env ?? ""}
-                              className={`vg-pill pill${on ? " on" : ""}${e.env === "prod" ? " prod" : ""}`}
-                              data-db={item.db}
-                              data-env={e.env ?? ""}
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                onSelect(item.db, e.env ?? null, { viaPill: true });
-                              }}
-                            >
-                              {e.env || "default"}
-                              {e.proxied && (
-                                <span
-                                  className="vg-proxy-badge proxy-badge"
-                                  data-testid="proxy-badge"
-                                  data-db={item.db}
-                                  data-env={e.env ?? ""}
-                                  title={t("proxy_badge_title")}
-                                >
-                                  ⇄
-                                </span>
-                              )}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
                     {isCurrent && (
                       <TablePanel
                         current={current}
@@ -429,21 +400,31 @@ export default function Sidebar(props: SidebarProps) {
             {t("saved_queries")}
           </div>
           <div className="gbody" style={{ display: collapsed.has("__saved__") ? "none" : undefined }}>
-            {savedQueries.map((q) => (
-              <div
-                key={q.name}
-                className="vg-tname qname"
-                data-q={q.name}
-                title={q.desc || q.name}
-                onClick={() => onOpenSaved(q.name)}
-              >
-                <i className="ti ti-bookmark" />
-                {q.name}
-                {q.params.length > 0 && (
-                  <span className="vg-rbadge rbadge">
-                    {q.params.length} {t("params_suffix")}
-                  </span>
-                )}
+            {groupQueriesByDb(
+              savedQueries,
+              groups.flatMap((g) => itemsInEngineOrder(g.items)),
+            ).map((section) => (
+              <div key={section.db}>
+                <div className="vg-qsrc" data-qsrc={section.db}>
+                  {section.db}
+                </div>
+                {section.queries.map((q) => (
+                  <div
+                    key={q.name}
+                    className="vg-tname qname"
+                    data-q={q.name}
+                    title={q.desc || q.name}
+                    onClick={() => onOpenSaved(q.name)}
+                  >
+                    <i className="ti ti-bookmark" />
+                    <span className="vg-qname-label">{q.name}</span>
+                    {q.params.length > 0 && (
+                      <span className="vg-rbadge rbadge">
+                        {q.params.length} {t("params_suffix")}
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
             ))}
           </div>

@@ -12,15 +12,57 @@
 /* ---- 侧栏里 voyage 组件层没有覆盖到的边角 ---- */
 .grp .ti{font-size:13px}
 .vg-ws-note{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg3);font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
+/* Engine type stays quiet like the origin path, but in mono so it doesn't
+   read as another workspace folder. */
+.vg-row small.vg-engine-tag{
+  margin-left:auto;
+  color:var(--fg3);
+  font-size:10px;
+  font-family:var(--vg-mono);
+  letter-spacing:0;
+  font-weight:400;
+  background:none;
+  padding:0;
+}
+.vg-trow{
+  display:flex;
+  align-items:center;
+  gap:2px;
+  padding:4px 8px 6px 10px;
+}
+.vg-tfilter{
+  flex:1;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  background:var(--bg2);
+  border:1px solid transparent;
+  border-radius:var(--r-btn);
+  padding:0 8px;
+}
+.vg-tfilter:focus-within{border-color:var(--line2-c, var(--line2))}
+.vg-tfilter .ti{font-size:13px;color:var(--fg3);flex:none}
+.trow .tsearch{flex:1;width:auto;margin:0;min-width:0}
+.vg-trow .tsearch{
+  background:transparent;
+  border:0;
+  border-radius:0;
+  padding:5px 0;
+  font-size:12px;
+  box-shadow:none;
+}
+.vg-trow .tsearch:focus{outline:none}
+.vg-trow .treload{flex:none}
 .dbrow.down{opacity:.5}
 .dbrow.down:hover{opacity:.85}
 .tname .ti,.qname .ti{font-size:14px;color:var(--fg3);flex:none}
-.trow .tsearch{flex:1;width:auto;margin:0}
-.tsearch{width:calc(100% - 24px);margin:3px 12px 5px}
+.vg-qsrc{font-size:11px;color:var(--fg3);padding:8px 12px 2px 22px;font-family:var(--vg-mono)}
+.vg-qname-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .esw{display:flex;gap:5px}
-/* Voyage 0.15 的浅色 --on-fg 是黑色, 放在 prod 红底上不足 4.5:1；
+/* Voyage 0.15 的浅色 --on-fg 是黑色, 放在 header prod 红底上不足 4.5:1；
    复用各主题已有的实色控件 ink token，保持生产环境安全提示可读。 */
-.vg[data-mode='light'] .vg-pill.on.prod,.vg[data-mode='light'] .vg-ep.on.prod{color:var(--accent-ink)}
+.vg[data-mode='light'] .vg-ep.on.prod{color:var(--accent-ink)}
 
 /* ---- SQL 编辑器: 高亮 <pre> 叠在透明 <textarea> 上的经典双层技巧 ---- */
 .edwrap{position:relative;background:var(--surf-2);overflow:hidden}

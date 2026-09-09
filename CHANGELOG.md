@@ -7,6 +7,29 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+### Added
+
+- Status bar metrics (rows, elapsed, size, speed, truncation, Load more, and
+  the result target) now have hover explanations, matching the existing
+  large-result session notice. The max-rows control also spells out that the
+  number is per fetch.
+
+### Changed
+
+- Sidebar no longer shows environment pills. Switch env from the query header
+  `runs on` control; a live proxy mark stays on that header env.
+- Connections inside a workspace group are ordered by engine (postgres, mysql,
+  redis, neptune) with a quiet mono type suffix, distinct from the sans
+  workspace origin path on group headers.
+- Table and key filtering is an inline search field plus a refresh icon,
+  instead of a boxed full-width input.
+- A group's workspace origin label follows the workspace that owns most of
+  its members, so a few local copies in another directory no longer relabel
+  the whole group.
+- The sidebar query list is titled `queries` and grouped by logical database
+  (`@db` connection keys resolve to the same sidebar db; environments are not
+  split). Long names ellipsize.
+
 <!-- version list -->
 
 ## [1.0.0] — 2026-09-09

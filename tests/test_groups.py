@@ -168,6 +168,32 @@ def test_inherited_group_uses_the_declaring_siblings_workspace_origin(tmp_path):
         workspace.configure_workspace(None)
 
 
+def test_group_workspace_origin_prefers_majority_source(tmp_path):
+    # Local copies in the first-listed workspace must not steal the origin
+    # label from the workspace that actually owns most members of the group.
+    yiminlab = tmp_path / "yiminlab"
+    brain = tmp_path / "brain"
+    yiminlab.mkdir()
+    brain.mkdir()
+    (yiminlab / "connections.toml").write_text(
+        '[one_local]\nurl = "postgresql://u@127.0.0.1/one"\n'
+        'group = "brain"\ndb = "one"\nenv = "local"\n',
+        encoding="utf-8",
+    )
+    (brain / "connections.toml").write_text(
+        '[one_dev]\nurl = "postgresql://u@dev/one"\ngroup = "brain"\ndb = "one"\nenv = "dev"\n'
+        '[two_dev]\nurl = "postgresql://u@dev/two"\ngroup = "brain"\ndb = "two"\nenv = "dev"\n'
+        '[three_dev]\nurl = "postgresql://u@dev/three"\ngroup = "brain"\ndb = "three"\nenv = "dev"\n',
+        encoding="utf-8",
+    )
+    try:
+        workspace.configure_workspace(f"{yiminlab}{os.pathsep}{brain}")
+        group = next(g for g in core.group_connections() if g["group"] == "brain")
+        assert group["ws"] == str(brain.resolve())
+    finally:
+        workspace.configure_workspace(None)
+
+
 def test_prod_write_is_read_only_by_default():
     # engine-level: write blocked unless allow_write
     with pytest.raises(core.QuarryError):

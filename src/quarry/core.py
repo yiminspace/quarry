@@ -326,6 +326,7 @@ def group_connections() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for g in order:
         items = []
+        all_members = [m for members in groups[g].values() for m in members]
         for ldb, members in groups[g].items():
             # local pinned first regardless of registration order, so it's the
             # default pick (envs.find(dev) || envs[0]) when there's no dev env,
@@ -341,8 +342,33 @@ def group_connections() -> list[dict[str, Any]]:
                     for m in ordered
                 ],
             })
-        out.append({"group": g or None, "ws": gsrc.get(g), "items": items})
+        out.append({
+            "group": g or None,
+            "ws": _majority_source(all_members, gsrc.get(g)),
+            "items": items,
+        })
     return out
+
+
+def _majority_source(
+    members: list[Connection], fallback: str | None,
+) -> str | None:
+    """Workspace origin shown on a sidebar group.
+
+    A group can span workspaces (local env copies in one dir, remotes in
+    another). First-seen source then labels every group with whichever
+    workspace happened to load first. Prefer the source that owns the most
+    members; keep `fallback` (first-seen / inherited sibling) on a tie.
+    """
+    counts: dict[str, int] = {}
+    for m in members:
+        if m.source:
+            counts[m.source] = counts.get(m.source, 0) + 1
+    if not counts:
+        return fallback
+    top = max(counts.values())
+    winners = [source for source, n in counts.items() if n == top]
+    return winners[0] if len(winners) == 1 else fallback
 
 
 def infer_engine(url: str, explicit: str | None = None) -> str:
