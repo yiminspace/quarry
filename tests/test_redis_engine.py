@@ -39,18 +39,18 @@ def test_resolve_redis_cli_missing_raises(monkeypatch):
 
 def test_run_redis_rows(monkeypatch):
     monkeypatch.setattr(redis_engine, "resolve_redis_cli", lambda: "redis-cli")
-    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout="a\nb\nc\n"))
+    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout='["a","b","c"]\n'))
     rows, download_bytes = redis_engine.run_redis(URL, "LRANGE k 0 -1")
     assert rows == [{"value": "a"}, {"value": "b"}, {"value": "c"}]
-    assert download_bytes == len("a\nb\nc\n".encode("utf-8"))
+    assert download_bytes == len('["a","b","c"]\n'.encode("utf-8"))
 
 
-def test_run_redis_trims_trailing_blank(monkeypatch):
+def test_run_redis_preserves_trailing_newlines(monkeypatch):
     monkeypatch.setattr(redis_engine, "resolve_redis_cli", lambda: "redis-cli")
-    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout="x\n\n"))
+    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout='"x\\n\\n"\n'))
     rows, download_bytes = redis_engine.run_redis(URL, "GET k")
-    assert rows == [{"value": "x"}]
-    assert download_bytes == len("x\n\n".encode("utf-8"))
+    assert rows == [{"value": "x\n\n"}]
+    assert download_bytes == len('"x\\n\\n"\n'.encode("utf-8"))
 
 
 def test_run_redis_error_returncode(monkeypatch):
@@ -85,7 +85,7 @@ def test_run_redis_password_adds_auth_flags(monkeypatch):
 
     def capture(cmd, **k):
         seen["cmd"] = cmd
-        return _proc(stdout="PONG")
+        return _proc(stdout='"PONG"')
     monkeypatch.setattr(redis_engine.subprocess, "run", capture)
     redis_engine.run_redis("redis://:secret@h:6379/2", "PING")
     assert "-a" in seen["cmd"] and "secret" in seen["cmd"] and "--no-auth-warning" in seen["cmd"]

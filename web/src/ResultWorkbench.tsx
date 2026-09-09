@@ -14,7 +14,7 @@ import {
   type SavedQuery,
   type TablesResponse,
 } from "./api";
-import { cellOpensInspector, cellPreview, cellText } from "./cellValue";
+import { cellOpensInspector, cellPreview, cellText, compareCellValues } from "./cellValue";
 import { copy } from "./clip";
 import { connectionStarterPlan } from "./connectionStarter";
 import ConnInfoModal from "./ConnInfoModal";
@@ -85,15 +85,13 @@ function formatBytes(n: number): string {
 
 /** Numeric-aware sort — the legacy comparator ('10' > '9', nulls last). */
 function sortRowsBy(rows: Row[], col: string, dir: 1 | -1): Row[] {
-  const numish = (v: unknown): boolean =>
-    typeof v === "number" || (typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)));
   return rows.slice().sort((a, b) => {
     const x = a[col];
     const y = b[col];
+    if (x == null && y == null) return 0;
     if (x === null || x === undefined) return 1;
     if (y === null || y === undefined) return -1;
-    if (numish(x) && numish(y)) return (Number(x) - Number(y)) * dir;
-    return String(x).localeCompare(String(y)) * dir;
+    return compareCellValues(x, y) * dir;
   });
 }
 
@@ -102,9 +100,9 @@ function toCSV(columns: QueryColumn[], rows: Row[]): string {
   const esc = (v: unknown): string => {
     const s = cellText(v);
     if (s === null) return "";
-    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+    return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
   };
-  return [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
+  return [cols.map(esc).join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
 }
 
 function download(name: string, text: string, type: string): void {
@@ -1162,7 +1160,7 @@ export default function ResultWorkbench() {
             <div className="vg-err err">{gridError}</div>
           ) : !result ? (
             <div className="vg-empty empty">{t("empty_grid")}</div>
-          ) : shownRows.length === 0 ? (
+          ) : shownRows.length === 0 && result.columns.length === 0 ? (
             <div className="vg-empty empty">0 {t("rows")}</div>
           ) : (
             <table className="vg-table">
@@ -1194,6 +1192,9 @@ export default function ResultWorkbench() {
                 </tr>
               </thead>
               <tbody>
+                {shownRows.length === 0 && (
+                  <tr><td colSpan={result.columns.length + 1} className="vg-empty empty">0 {t("rows")}</td></tr>
+                )}
                 {shownRows.map((r, ri) => (
                   <tr key={ri}>
                     <td

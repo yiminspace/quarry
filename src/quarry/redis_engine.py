@@ -8,6 +8,7 @@ through the same QueryResult contract / GUI grid as SQL engines.
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import shutil
 import subprocess
@@ -42,7 +43,20 @@ _REDIS_COND_WRITE = {
     "georadius": {"store", "storedist"},
     "georadiusbymember": {"store", "storedist"},
     "bitfield": {"set", "incrby", "overflow"},
+    "memory": {"purge"},
 }
+
+# Unknown/module commands are not implicitly trusted as reads. New commands
+# require an explicit classification before agents may use them read-only.
+_REDIS_READ = set("""
+get mget getrange strlen exists type ttl pttl expiretime pexpiretime
+hget hmget hgetall hexists hkeys hvals hlen hstrlen hscan httl hpttl hexpiretime hpexpiretime hrandfield
+lindex llen lrange lpos scard sismember smismember smembers srandmember sscan sinter sintercard sunion sdiff
+zcard zcount zlexcount zrange zrangebyscore zrangebylex zrevrange zrevrangebyscore zrevrangebylex
+zrank zrevrank zscore zmscore zscan zrandmember zdiff zinter zintercard zunion
+getbit bitcount bitpos bitfield bitfield_ro pfcount geodist geohash geopos georadius georadiusbymember geosearch
+xlen xrange xrevrange xread xinfo scan keys randomkey dbsize ping echo time info role command object memory pubsub dump sort sort_ro
+""".split())
 
 
 def resolve_redis_cli() -> str:
@@ -85,7 +99,7 @@ def is_redis_read_only(command: str) -> bool:
             rest = {a.lower() for a in command.split()[1:]}
         if rest & cond:
             return False
-    return True
+    return cmd in _REDIS_READ
 
 
 def _cli_base(url: str) -> list[str]:
@@ -102,7 +116,9 @@ def run_redis(url: str, command: str, *, timeout: int = 30) -> tuple[list[dict[s
     text, UTF-8 encoded — an approximation of the real wire-protocol payload,
     since redis-cli doesn't expose that."""
     argv = shlex.split(command)
-    cmd = _cli_base(url) + argv
+    # RESP-aware output distinguishes nil, an empty string and embedded
+    # newlines. -e makes server errors fail instead of becoming data rows.
+    cmd = [arg for arg in _cli_base(url) if arg != "--raw"] + ["--json", "-e"] + argv
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -112,11 +128,13 @@ def run_redis(url: str, command: str, *, timeout: int = 30) -> tuple[list[dict[s
     if proc.returncode != 0 or proc.stderr.strip():
         from .core import EXIT_SQL_ERROR, QuarryError
         raise QuarryError(f"redis error: {proc.stderr.strip() or proc.stdout.strip()}", exit_code=EXIT_SQL_ERROR)
-    lines = [ln for ln in proc.stdout.splitlines()]
-    # Trim a single trailing blank line redis-cli sometimes emits.
-    while lines and lines[-1] == "":
-        lines.pop()
-    return [{"value": ln} for ln in lines], len(proc.stdout.encode("utf-8"))
+    try:
+        value = json.loads(proc.stdout, parse_int=str, parse_float=str)
+    except json.JSONDecodeError as exc:
+        from .core import EXIT_SQL_ERROR, QuarryError
+        raise QuarryError("redis-cli returned invalid JSON (requires redis-cli 6+)", exit_code=EXIT_SQL_ERROR) from exc
+    values = value if isinstance(value, list) else [value]
+    return [{"value": item} for item in values], len(proc.stdout.encode("utf-8"))
 
 
 def scan_keys(url: str, *, pattern: str = "*", count: int = 500) -> list[str]:

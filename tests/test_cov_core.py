@@ -791,7 +791,7 @@ def test_run_query_redis_truncates(monkeypatch):
 def test_run_query_mysql_branch(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=60, connect_timeout=None: ([{"id": 1}, {"id": 2}], 17))
+                        lambda url, sql, params=None, timeout=60, connect_timeout=None, read_only=False: ([{"id": 1}, {"id": 2}], 17))
     res = core.run_query(_mysql_conn(), "SELECT id FROM t", with_types=True)
     assert res.engine == "mysql"
     assert res.rows == [{"id": 1}, {"id": 2}]
@@ -819,7 +819,7 @@ def test_run_query_neptune_branch(monkeypatch):
 def test_run_query_mysql_truncates(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=60, connect_timeout=None:
+                        lambda url, sql, params=None, timeout=60, connect_timeout=None, read_only=False:
                         ([{"id": i} for i in range(10)], 0))
     res = core.run_query(_mysql_conn(), "SELECT id FROM t", max_rows=3)
     # applied_limit trims and marks truncated (812/995-997)
@@ -895,7 +895,7 @@ def test_execute_sql_redis_unknown_format(monkeypatch):
 def test_execute_sql_mysql_json(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=None, connect_timeout=None:
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False:
                         ([{"id": 1}, {"id": 2}], 11))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     stats = {}
@@ -909,7 +909,7 @@ def test_execute_sql_mysql_json(monkeypatch, capsys):
 def test_execute_sql_mysql_json_truncates(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=None, connect_timeout=None:
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False:
                         ([{"id": i} for i in range(10)], 0))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t",
@@ -986,11 +986,13 @@ def test_validate_query_mysql(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     captured = {}
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=20: captured.setdefault("sql", sql) or [])
+                        lambda url, sql, params=None, timeout=20, read_only=False:
+                        captured.update(sql=sql, read_only=read_only) or [])
     q = core.Query(name="q", db="d", sql="SELECT 1")
     rc = core.validate_query(q, _mysql_conn())
     assert rc == core.EXIT_OK
     assert captured["sql"].startswith("EXPLAIN ")
+    assert captured["read_only"] is True
 
 
 @pytest.mark.unit
@@ -1180,7 +1182,7 @@ def test_run_query_postgres_truncation_applied_limit(ws):
 def test_execute_sql_mysql_csv(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=None, connect_timeout=None: ([{"id": 1}], 0))
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False: ([{"id": 1}], 0))
     rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t",
                           psql_vars={}, fmt="csv")
     assert rc == core.EXIT_OK

@@ -450,7 +450,7 @@ class TestDescribeTableMysql:
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
         monkeypatch.setattr(
             core, "run_mysql_query",
-            lambda url, sql, *, params=None, timeout=15, connect_timeout=None: (list(_MYSQL_COLS), 0))
+            lambda url, sql, *, params=None, timeout=15, connect_timeout=None, read_only=False: (list(_MYSQL_COLS), 0))
         rc = run_cli(wsdir, "describe-table", "shop", "widgets", "--format", "text")
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -464,7 +464,7 @@ class TestDescribeTableMysql:
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
         monkeypatch.setattr(
             core, "run_mysql_query",
-            lambda url, sql, *, params=None, timeout=15, connect_timeout=None: ([], 0))
+            lambda url, sql, *, params=None, timeout=15, connect_timeout=None, read_only=False: ([], 0))
         rc = run_cli(wsdir, "describe-table", "shop", "ghost", "--format", "text")
         assert rc == EXIT_OK
         assert "not found or has no columns" in capsys.readouterr().out
@@ -474,7 +474,7 @@ class TestDescribeTableMysql:
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
         monkeypatch.setattr(
             core, "run_mysql_query",
-            lambda url, sql, *, params=None, timeout=15, connect_timeout=None: (list(_MYSQL_COLS), 0))
+            lambda url, sql, *, params=None, timeout=15, connect_timeout=None, read_only=False: (list(_MYSQL_COLS), 0))
         rc = run_cli(wsdir, "describe-table", "shop", "widgets", "--format", "json")
         assert rc == EXIT_OK
         obj = json.loads(capsys.readouterr().out)
@@ -489,7 +489,7 @@ class TestDescribeTableMysql:
         _write_conn(wsdir, "shop", "mysql://u:p@localhost:3306/shopdb", "mysql")
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
 
-        def boom(url, sql, *, params=None, timeout=15, connect_timeout=None):
+        def boom(url, sql, *, params=None, timeout=15, connect_timeout=None, read_only=False):
             raise core.QuarryError("mysql error: mysql exploded", exit_code=EXIT_SQL_ERROR)
 
         monkeypatch.setattr(core, "run_mysql_query", boom)
@@ -508,7 +508,7 @@ class TestDescribeTableMysql:
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
         calls = []
 
-        def counting_query(url, sql, *, params=None, timeout=15, connect_timeout=None):
+        def counting_query(url, sql, *, params=None, timeout=15, connect_timeout=None, read_only=False):
             calls.append(sql)
             return list(_MYSQL_COLS), 0
 

@@ -221,10 +221,9 @@ def test_serialize_row_bare_date():
 
 
 @pytest.mark.unit
-def test_serialize_row_decimal_becomes_float():
+def test_serialize_row_decimal_is_lossless_string():
     out = core.serialize_row({"amount": Decimal("12.50")})
-    assert out["amount"] == 12.5
-    assert isinstance(out["amount"], float)
+    assert out["amount"] == "12.50"
 
 
 @pytest.mark.unit
@@ -234,9 +233,9 @@ def test_serialize_row_bytes_decoded():
 
 
 @pytest.mark.unit
-def test_serialize_row_bytes_invalid_utf8_replaced():
+def test_serialize_row_bytes_invalid_utf8_is_lossless_base64():
     out = core.serialize_row({"b": b"\xff\xfe"})
-    assert out["b"] == "��"  # errors="replace"
+    assert out["b"] == "base64://4="
 
 
 @pytest.mark.unit
@@ -884,6 +883,7 @@ def _make_fake_pymysql(*, cursor=None, connect_error=None):
     err_mod.MySQLError = _FakeMySQLError
     cursors_mod = types.ModuleType("pymysql.cursors")
     cursors_mod.DictCursor = object
+    cursors_mod.Cursor = object
     mod.err = err_mod
     mod.cursors = cursors_mod
     captured = {}
@@ -911,7 +911,7 @@ def test_run_mysql_query_serializes_rows(monkeypatch):
     fake = _make_fake_pymysql(cursor=cur)
     monkeypatch.setattr(core, "import_pymysql", lambda: fake)
     rows, download_bytes = core.run_mysql_query("mysql://u:p@h/db", "SELECT * FROM t")
-    assert rows == [{"id": 1, "amount": 9.99, "when": "2020-01-01 00:00:00"}]
+    assert rows == [{"id": 1, "amount": "9.99", "when": "2020-01-01 00:00:00"}]
     assert download_bytes == len(json.dumps(rows, default=str).encode("utf-8"))
     # connection config was derived from the URL
     assert fake._captured["host"] == "h"

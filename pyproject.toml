@@ -32,9 +32,10 @@ Changelog = "https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Wangggym/quarry/issues"
 
 [project.optional-dependencies]
-mysql = ["pymysql>=1.1"]
-gui = ["flask>=3.0"]
-dev = ["pymysql>=1.1", "flask>=3.0", "pytest>=8.0", "pytest-cov>=5.0"]
+mysql = ["pymysql[rsa]>=1.1"]
+# Retained for compatibility with existing install commands; GUI uses stdlib.
+gui = []
+dev = ["pymysql[rsa]>=1.1", "pytest>=8.0", "pytest-cov>=5.0", "hatchling"]
 # Browser-driven GUI e2e (headless Chromium). After install, run:
 #   python -m playwright install chromium
 e2e = ["pytest>=8.0", "playwright>=1.40"]
@@ -105,7 +106,7 @@ branch = true
 
 [tool.coverage.report]
 # The 95% gate applies to unit + integration (see `make cov`). Frontend JS lives
-# in the INDEX_HTML string literal and is exercised by the browser suite, not by
+# in web/ and is exercised by the browser suite, not by
 # line coverage. Defensive/unreachable lines are excluded explicitly.
 precision = 1
 show_missing = true

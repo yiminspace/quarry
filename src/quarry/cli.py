@@ -496,7 +496,9 @@ def _confirm_prod_write(conn, sql, args) -> bool:
     """prod safety: a write against a prod connection needs explicit confirmation."""
     if (conn.env or "").lower() != "prod":
         return True
-    if not getattr(args, "write", False) or core.is_read_only(sql):
+    # An apparently read-only SELECT can call a writing function once the
+    # database read-only transaction is lifted. Confirm every prod write opt-in.
+    if not getattr(args, "write", False):
         return True
     if getattr(args, "yes", False):
         return True
@@ -1211,8 +1213,8 @@ def _add_safety_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--env", default=None, help="Target env for an env-set (dev/prod/jp; default: dev)")
     p.add_argument("--write", action="store_true", help="Allow write/DDL (off by default — read-only)")
     p.add_argument("--yes", action="store_true", help="Skip the prod-write confirmation prompt")
-    p.add_argument("--max-rows", type=int, default=None,
-                   help="Cap rows when SQL has no LIMIT (safety; default: unlimited for CLI)")
+    p.add_argument("--max-rows", type=int, default=core.DEFAULT_MAX_ROWS,
+                   help="Cap rows when the outer query has no LIMIT (default: 500; 0: unlimited)")
     p.add_argument("--timeout", type=_positive_int, default=None,
                    help="Query execution timeout in seconds (env: QUARRY_TIMEOUT; "
                         "connections.toml `timeout`; default: 300s)")
@@ -1223,7 +1225,7 @@ def _add_safety_flags(p: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qy",
-        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, Neptune)",
+        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, Redis, Neptune)",
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace dir (connections.toml + queries/); overrides $QUARRY_WORKSPACE")
@@ -1468,6 +1470,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("mcp", help="Serve the MCP face over stdio (for AI agents)")
+    p.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace directory")
     p.add_argument("--write", action="store_true",
                    help="Allow tool calls to request writes (per-call opt-in still required)")
     p.set_defaults(func=cmd_mcp)

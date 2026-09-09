@@ -16,6 +16,7 @@ Workspace (see workspace.py); reference `workspace.WS` at call time so that
 from __future__ import annotations
 
 import contextlib
+import base64
 import csv
 import hashlib
 import io
@@ -811,7 +812,7 @@ def _strip_leading_comments(sql: str) -> str:
     return out
 
 
-def sql_skeleton(sql: str) -> str:
+def sql_skeleton(sql: str, *, backslash_escapes: bool = False) -> str:
     """Blank out comments, string literals, dollar-quoted bodies, and quoted
     identifiers so keyword scanning and `;` splitting can't be fooled by content
     inside them (e.g. `WHERE x = 'DELETE; DROP'` or a column named "limit")."""
@@ -825,15 +826,20 @@ def sql_skeleton(sql: str) -> str:
             out.append(" ")
             continue
         if c == "/" and i + 1 < n and sql[i + 1] == "*":            # block comment
+            executable = sql.startswith("/*!", i)
             i += 2
             while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
                 i += 1
             i += 2
-            out.append(" ")
+            out.append("/*!*/" if executable else " ")
             continue
         if c == "'":                                                 # string literal
+            escapes = backslash_escapes or (i > 0 and sql[i - 1] in "eE" and (i < 2 or not sql[i - 2].isalnum()))
             i += 1
             while i < n:
+                if escapes and sql[i] == "\\":
+                    i += 2
+                    continue
                 if sql[i] == "'" and i + 1 < n and sql[i + 1] == "'":
                     i += 2
                     continue
@@ -843,13 +849,17 @@ def sql_skeleton(sql: str) -> str:
                 i += 1
             out.append("''")
             continue
-        if c == '"':                                                 # quoted identifier
+        if c in ('"', '`'):                                          # SQL/Cypher quoted identifier
+            quote = c
             i += 1
             while i < n:
-                if sql[i] == '"' and i + 1 < n and sql[i + 1] == '"':
+                if backslash_escapes and sql[i] == "\\":
                     i += 2
                     continue
-                if sql[i] == '"':
+                if sql[i] == quote and i + 1 < n and sql[i + 1] == quote:
+                    i += 2
+                    continue
+                if sql[i] == quote:
                     i += 1
                     break
                 i += 1
@@ -882,14 +892,61 @@ def is_read_only(sql: str) -> bool:
     (`WITH d AS (DELETE ...) SELECT ...`).
     """
     stmts = _statements(sql)
-    if len(stmts) > 1:                       # only one statement may run read-only
+    if len(stmts) != 1:                      # fail closed for unknown/empty commands
         return False
     head = (stmts[0] if stmts else sql_skeleton(sql)).lstrip()
+    if "\\" in head:
+        return False
     if _WRITE_RE.match(head):
         return False
     if re.match(r"\s*with\b", head, re.IGNORECASE) and _CTE_WRITE_RE.search(head):
         return False
-    return True
+    if re.match(r"explain\b", head, re.IGNORECASE) and re.search(
+        r"\b(insert|update|delete|merge|create|drop|alter|into|call)\b", head, re.IGNORECASE
+    ):
+        return False
+    if re.search(r"\binto\b", head, re.IGNORECASE):
+        return False
+    return bool(re.match(r"(?:select|with|show|explain|table|values)\b", head, re.IGNORECASE))
+
+
+def _check_query_input(sql: str, engine: str) -> None:
+    skeleton = sql_skeleton(sql, backslash_escapes=engine in {"mysql", "neptune"})
+    if engine == "mysql" and "/*!" in skeleton:
+        raise QuarryError("executable MySQL comments are not supported; use plain SQL")
+    if "\\" in skeleton:
+        raise QuarryError("client backslash commands are not SQL and cannot be executed")
+    if len(_statements(skeleton)) != 1:
+        raise QuarryError("execute one non-empty statement at a time", exit_code=EXIT_SAFETY_BLOCKED)
+
+
+def is_query_read_only(query: str, engine: str) -> bool:
+    if engine == "redis":
+        return redis_engine.is_redis_read_only(query)
+    if engine == "neptune":
+        statements = _statements(sql_skeleton(query, backslash_escapes=True))
+        if len(statements) != 1:
+            return False
+        skeleton = statements[0].strip()
+        return bool(re.match(r"(?:match|optional|return|with|unwind|explain|profile)\b", skeleton, re.I)) and not re.search(
+            r"\b(create|merge|set|delete|detach|remove|drop|call|foreach|load)\b", skeleton, re.I
+        )
+    return is_read_only(sql_skeleton(query, backslash_escapes=True)) if engine == "mysql" else is_read_only(query)
+
+
+def _top_level_sql(sql: str) -> str:
+    """Keep only outer clauses, ignoring nested queries, literals and comments."""
+    depth = 0
+    out = []
+    for char in sql_skeleton(sql):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+            out.append(" ")
+        elif depth == 0:
+            out.append(char)
+    return "".join(out)
 
 
 def _strip_trailing_semicolons(sql: str) -> str:
@@ -899,7 +956,7 @@ def _strip_trailing_semicolons(sql: str) -> str:
 def has_limit(sql: str) -> bool:
     """True if the query already bounds its rows (LIMIT or FETCH FIRST/NEXT).
     Scans the skeleton so `WHERE x = 'LIMIT'` is not a false positive."""
-    sk = sql_skeleton(sql)
+    sk = _top_level_sql(sql)
     return bool(re.search(r"\bLIMIT\b", sk, re.IGNORECASE) or _FETCH_RE.search(sk))
 
 
@@ -909,6 +966,7 @@ def enforce_safety(
     allow_write: bool,
     max_rows: int | None,
     offset: int = 0,
+    engine: str = "postgres",
 ) -> tuple[str, int | None]:
     """Return (possibly-modified sql, applied_limit).
 
@@ -921,17 +979,25 @@ def enforce_safety(
       applied_limit; a query that already has its own LIMIT ignores offset
       (we never rewrite hand-written SQL).
     """
-    if not allow_write and not is_read_only(sql):
+    if max_rows is not None and max_rows < 0 or offset < 0:
+        raise QuarryError("max_rows and offset must be non-negative")
+    if max_rows == 0:
+        max_rows = None
+    read_only = is_query_read_only(sql, engine)
+    if not allow_write and not read_only:
         raise QuarryError(
             "blocked a write/DDL statement (read-only by default; pass --write to allow)",
             exit_code=EXIT_SAFETY_BLOCKED,
         )
-    if max_rows is not None and is_read_only(sql) and not has_limit(sql):
-        sk = sql_skeleton(sql)
+    sk = sql_skeleton(sql, backslash_escapes=engine in {"mysql", "neptune"})
+    if max_rows is not None and read_only and not has_limit(sk):
         cleaned = sk.lstrip()
         # only statements that accept a trailing LIMIT (not EXPLAIN/SHOW/utility
         # output, and not a locking clause which must come after LIMIT)
-        if re.match(r"^(select|with|table|values)\b", cleaned, re.IGNORECASE) and not _LOCK_RE.search(sk):
+        if engine == "neptune" and re.search(r"\breturn\b", cleaned, re.I):
+            clause = f"SKIP {offset} " if offset else ""
+            return (f"{_strip_trailing_semicolons(sql)}\n{clause}LIMIT {max_rows + 1}", max_rows)
+        if engine != "neptune" and re.match(r"^(select|with|table|values)\b", cleaned, re.IGNORECASE) and not _LOCK_RE.search(sk):
             inner = _strip_trailing_semicolons(sql)
             clause = f"LIMIT {max_rows + 1}"
             if offset:
@@ -1011,6 +1077,8 @@ def _psql_error_message(rc: int, errout: str) -> tuple[str, int]:
     distinguish a connection failure (2) from a script/statement error (any
     other nonzero, incl. 3 under ON_ERROR_STOP) — see `man psql` EXIT STATUS."""
     msg = errout.strip()
+    if "read-only transaction" in msg.lower():
+        return (f"blocked by database read-only transaction: {msg}", EXIT_SAFETY_BLOCKED)
     if rc == 2:
         return (f"postgres connection failed: {msg}", EXIT_CONNECTION_ERROR)
     if "statement timeout" in msg.lower():
@@ -1082,17 +1150,55 @@ def substitute_params(sql: str, params: dict[str, str]) -> str:
     return _PARAM_RE.sub(repl, sql)
 
 
+def _unique_names(names: list[str]) -> list[str]:
+    used: set[str] = set()
+    out = []
+    for name in names:
+        candidate, suffix = name, 2
+        while candidate in used:
+            candidate = f"{name}_{suffix}"
+            suffix += 1
+        used.add(candidate)
+        out.append(candidate)
+    return out
+
+
+def _json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    return dict(zip(_unique_names([key for key, _ in pairs]), [value for _, value in pairs]))
+
+
+def _json_int(value: str) -> int | str:
+    number = int(value)
+    return number if abs(number) <= 2**53 - 1 else value
+
+
+def _lossless_json(text: str) -> Any:
+    return json.loads(text, parse_int=_json_int, parse_float=str, object_pairs_hook=_json_pairs)
+
+
+class ResultRows(list):
+    """Rows with column names even when a query returns no records."""
+    def __init__(self, rows=(), columns=()):
+        super().__init__(rows)
+        self.columns = list(columns)
+
+
 def serialize_row(row: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in row.items():
         if isinstance(value, datetime):
-            out[key] = value.isoformat(sep=" ", timespec="seconds")
+            out[key] = value.isoformat(sep=" ")
         elif isinstance(value, date):        # bare date: isoformat() takes no kwargs
             out[key] = value.isoformat()
         elif isinstance(value, Decimal):
-            out[key] = float(value)
+            out[key] = str(value)
         elif isinstance(value, (bytes, bytearray, memoryview)):
-            out[key] = bytes(value).decode("utf-8", errors="replace")
+            try:
+                out[key] = bytes(value).decode("utf-8")
+            except UnicodeDecodeError:
+                out[key] = "base64:" + base64.b64encode(bytes(value)).decode("ascii")
+        elif isinstance(value, int) and abs(value) > 2**53 - 1:
+            out[key] = str(value)
         else:
             out[key] = value
     return out
@@ -1105,6 +1211,7 @@ def run_mysql_query(
     params: dict[str, str] | None = None,
     timeout: int = 60,
     connect_timeout: int | None = None,
+    read_only: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """Returns (rows, download_bytes) — pymysql exposes no raw response buffer,
     so download_bytes (issue #104) is the rows re-serialized to JSON, an
@@ -1126,7 +1233,7 @@ def run_mysql_query(
         conn = pymysql.connect(
             host=cfg["host"], port=cfg["port"], user=cfg["user"], password=cfg["password"],
             database=cfg["database"], connect_timeout=ct, read_timeout=timeout,
-            write_timeout=timeout, cursorclass=pymysql.cursors.DictCursor,
+            write_timeout=timeout, cursorclass=pymysql.cursors.Cursor,
         )
     except pymysql.err.MySQLError as exc:
         raise QuarryError(f"mysql connection failed: {exc}", exit_code=EXIT_CONNECTION_ERROR) from exc
@@ -1147,11 +1254,17 @@ def run_mysql_query(
                 cur.execute(f"SET SESSION MAX_EXECUTION_TIME = {stmt_timeout_ms}")
             with contextlib.suppress(pymysql.err.MySQLError):
                 cur.execute(f"SET SESSION max_statement_time = {max(1, timeout)}")
+            if read_only:
+                cur.execute("START TRANSACTION READ ONLY")
             cur.execute(rendered)
-            rows = cur.fetchall() if cur.description else []
+            names = _unique_names([c[0] for c in cur.description]) if cur.description else []
+            fetched = cur.fetchall() if cur.description else []
+            rows = [dict(row) if isinstance(row, dict) else dict(zip(names, row)) for row in fetched]
         conn.commit()
     except pymysql.err.MySQLError as exc:
         msg = str(exc)
+        if "read only transaction" in msg.lower() or "read-only transaction" in msg.lower():
+            raise QuarryError(f"blocked by database read-only transaction: {msg}", exit_code=EXIT_SAFETY_BLOCKED) from exc
         if "timed out" in msg.lower() or "timeout" in msg.lower():
             msg = _with_timeout_hint(msg)
         raise QuarryError(f"mysql error: {msg}", exit_code=EXIT_SQL_ERROR) from exc
@@ -1160,7 +1273,7 @@ def run_mysql_query(
                           exit_code=EXIT_SQL_ERROR) from exc
     finally:
         conn.close()
-    serialized = [serialize_row(dict(row)) for row in rows]
+    serialized = ResultRows([serialize_row(dict(row)) for row in rows], names)
     download_bytes = len(json.dumps(serialized, default=str).encode("utf-8"))
     return serialized, download_bytes
 
@@ -1399,7 +1512,7 @@ def run_neptune_cypher(
                           exit_code=EXIT_CONNECTION_ERROR) from exc
     raw = raw_bytes.decode("utf-8")
     try:
-        payload = json.loads(raw) if raw.strip() else []
+        payload = _lossless_json(raw) if raw.strip() else []
     except json.JSONDecodeError as exc:
         raise QuarryError(f"neptune returned non-JSON body: {raw[:200]}", exit_code=EXIT_SQL_ERROR) from exc
     return _extract_neptune_rows(payload), len(raw_bytes)
@@ -1457,6 +1570,7 @@ _PG_TEXT_STMT_RE = re.compile(r"^\s*(explain|show)\b", re.IGNORECASE)
 def _rows_postgres(
     url: str, sql: str, params: dict[str, str], execute_timeout: int,
     connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
+    read_only: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """Returns (rows, download_bytes) — download_bytes is psql's stdout text,
     UTF-8 encoded (issue #104: an approximation of the real wire-protocol
@@ -1465,6 +1579,8 @@ def _rows_postgres(
     # connect and execute is enforced server-side (PGCONNECT_TIMEOUT + statement_timeout).
     total_timeout = connect_timeout + execute_timeout
     prefix = _pg_statement_timeout_prefix(execute_timeout)
+    if read_only:
+        prefix += "SET default_transaction_read_only = on;\n"
     # EXPLAIN / SHOW can't live inside a subquery -> run raw, one text row per line.
     cleaned = _strip_leading_comments(sql).lstrip()
     m = _PG_TEXT_STMT_RE.match(cleaned)
@@ -1477,7 +1593,24 @@ def _rows_postgres(
         col = "QUERY PLAN" if m.group(1).lower() == "explain" else "output"
         rows = [{col: line} for line in out.rstrip("\n").splitlines()]
         return rows, len(out.encode("utf-8"))
-    wrapped = wrap_for_json(sql)
+    wrapped = None
+    if not is_read_only(sql):
+        # DML RETURNING can be queried through a CTE; ordinary writes/DDL
+        # have no result rows and must never be embedded in FROM (...).
+        if re.match(r"\s*(insert|update|delete)\b", sql_skeleton(sql), re.I) and re.search(r"\breturning\b", sql_skeleton(sql), re.I):
+            wrapped = (f"WITH _qy_write AS ({_strip_trailing_semicolons(sql)}) "
+                       "SELECT COALESCE(json_agg(row_to_json(_qy_write)), '[]'::json)::text FROM _qy_write")
+        else:
+            if re.match(r"\s*with\b", sql_skeleton(sql), re.I):
+                raise QuarryError("data-modifying CTEs are not supported; execute a standalone write with RETURNING")
+            rc, out, errout = run_psql_capture(url, prefix + sql, psql_vars=params,
+                                               timeout=total_timeout, connect_timeout=connect_timeout)
+            if rc != 0:
+                msg, code = _psql_error_message(rc, errout)
+                raise QuarryError(msg, exit_code=code)
+            return [], len(out.encode("utf-8"))
+    if wrapped is None:
+        wrapped = wrap_for_json(sql)
     rc, out, errout = run_psql_capture(url, prefix + wrapped, psql_vars=params,
                                         timeout=total_timeout, connect_timeout=connect_timeout)
     if rc != 0:
@@ -1485,7 +1618,7 @@ def _rows_postgres(
         raise QuarryError(msg, exit_code=code)
     text = out.strip() or "[]"
     try:
-        rows = json.loads(text)
+        rows = _lossless_json(text)
     except json.JSONDecodeError as exc:
         raise QuarryError(f"postgres returned non-JSON body: {text[:200]}", exit_code=EXIT_SQL_ERROR) from exc
     return rows, len(out.encode("utf-8"))
@@ -1497,12 +1630,12 @@ def _pg_column_types(url: str, sql: str, params: dict[str, str], timeout: int = 
     rc, out, _ = run_psql_capture(url, probe, psql_vars=params, timeout=timeout)
     if rc != 0:
         return {}
-    types: dict[str, str] = {}
+    pairs = []
     for line in out.strip().splitlines():
         if "|" in line:
             name, _, typ = line.partition("|")
-            types[name.strip()] = typ.strip()
-    return types
+            pairs.append((name.strip(), typ.strip()))
+    return _json_pairs(pairs)
 
 
 def run_query(
@@ -1538,6 +1671,12 @@ def run_query(
     other engines leave column types null (the GUI infers from values)."""
     params = params or {}
     engine = connection_engine(conn)
+    if engine != "redis":
+        _check_query_input(substitute_params(sql, params), engine)
+    if not allow_write and not is_query_read_only(substitute_params(sql, params), engine):
+        raise QuarryError("blocked a write statement (read-only by default; pass --write to allow)", exit_code=EXIT_SAFETY_BLOCKED)
+    if max_rows == 0:
+        max_rows = None
     col_types: dict[str, str] = {}
     execute_timeout = resolve_timeout(conn, timeout, default=default_timeout)
     conn_timeout = connect_timeout if connect_timeout is not None else DEFAULT_CONNECT_TIMEOUT_SEC
@@ -1557,7 +1696,7 @@ def run_query(
         size_is_estimated = True
     else:
         safe_sql, applied_limit = enforce_safety(
-            sql, allow_write=allow_write, max_rows=max_rows, offset=offset
+            sql, allow_write=allow_write, max_rows=max_rows, offset=offset, engine=engine
         )
         sql = safe_sql
         start = time.monotonic()
@@ -1569,12 +1708,13 @@ def run_query(
                 size_is_estimated = False
             elif engine == "mysql":
                 rows, download_bytes = run_mysql_query(url, sql, params=params, timeout=execute_timeout,
-                                                        connect_timeout=conn_timeout)
+                                                        connect_timeout=conn_timeout, read_only=not allow_write)
                 size_is_estimated = True
             else:
-                rows, download_bytes = _rows_postgres(url, sql, params, execute_timeout, connect_timeout=conn_timeout)
+                rows, download_bytes = _rows_postgres(url, sql, params, execute_timeout, connect_timeout=conn_timeout,
+                                                      read_only=not allow_write)
                 size_is_estimated = True
-                if with_types:
+                if with_types or not rows and is_read_only(sql):
                     col_types = _pg_column_types(url, sql, params)
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -1584,6 +1724,8 @@ def run_query(
         truncated = True
 
     columns = _columns_from_rows(rows)
+    if not columns:
+        columns = [{"name": name, "type": None} for name in (getattr(rows, "columns", None) or col_types)]
     if col_types:
         for c in columns:
             c["type"] = col_types.get(c["name"])
@@ -1883,7 +2025,7 @@ def emit_rows_table(rows: list[dict[str, Any]]) -> None:
 def emit_json(stdout_text: str) -> None:
     text = stdout_text.strip() or "[]"
     try:
-        data = json.loads(text)
+        data = _lossless_json(text)
     except json.JSONDecodeError:
         sys.stdout.write(text + "\n")
         return
@@ -1898,7 +2040,7 @@ def emit_json(stdout_text: str) -> None:
 def emit_ndjson(stdout_text: str) -> None:
     text = stdout_text.strip() or "[]"
     try:
-        data = json.loads(text)
+        data = _lossless_json(text)
     except json.JSONDecodeError:
         sys.stdout.write(text + "\n")
         return
@@ -1977,6 +2119,10 @@ def execute_sql(
     as QueryResult, see run_query) are surfaced via this optional out-param
     instead of changing either."""
     engine = connection_engine(conn)
+    if engine != "redis":
+        _check_query_input(substitute_params(sql, psql_vars), engine)
+    if not allow_write and not is_query_read_only(substitute_params(sql, psql_vars), engine):
+        raise QuarryError("blocked a write statement (read-only by default; pass --write to allow)", exit_code=EXIT_SAFETY_BLOCKED)
     execute_timeout = resolve_timeout(conn, timeout, default=DEFAULT_EXECUTE_TIMEOUT_SEC)
     conn_timeout = connect_timeout if connect_timeout is not None else DEFAULT_CONNECT_TIMEOUT_SEC
     start = time.monotonic()
@@ -1990,6 +2136,12 @@ def execute_sql(
             stats["size_is_estimated"] = engine != "neptune"
         return exit_code
 
+    def bounded(rows, limit):
+        if limit is not None and len(rows) > limit:
+            err(f"result truncated to {limit} rows; raise --max-rows or use --max-rows 0 for all rows")
+            return rows[:limit]
+        return rows
+
     if engine == "redis":
         if not allow_write and not redis_engine.is_redis_read_only(sql):
             raise QuarryError(
@@ -1998,9 +2150,9 @@ def execute_sql(
             )
         with tunnel.open_tunnel(conn, engine, connect_timeout=conn_timeout, use_proxy=use_proxy) as url:
             rows, download_bytes = redis_engine.run_redis(url, sql, timeout=execute_timeout)
-        return _finish(_emit_rows(rows, fmt), download_bytes)
+        return _finish(_emit_rows(bounded(rows, max_rows or None), fmt), download_bytes)
 
-    safe_sql, applied_limit = enforce_safety(sql, allow_write=allow_write, max_rows=max_rows)
+    safe_sql, applied_limit = enforce_safety(sql, allow_write=allow_write, max_rows=max_rows, engine=engine)
 
     if engine in ("neptune", "mysql"):
         with tunnel.open_tunnel(conn, engine, connect_timeout=conn_timeout, use_proxy=use_proxy) as url:
@@ -2009,14 +2161,19 @@ def execute_sql(
                                    workspace_home=_connection_workspace_home(conn))
                 if engine == "neptune"
                 else run_mysql_query(url, safe_sql, params=psql_vars, timeout=execute_timeout,
-                                     connect_timeout=conn_timeout))
-        if applied_limit is not None and len(rows) > applied_limit:
-            rows = rows[:applied_limit]           # drop the +1 truncation-probe row
+                                     connect_timeout=conn_timeout, read_only=not allow_write))
+        rows = bounded(rows, applied_limit)
         return _finish(_emit_rows(rows, fmt), download_bytes)
 
     total_timeout = conn_timeout + execute_timeout
     prefix = _pg_statement_timeout_prefix(execute_timeout)
+    if not allow_write:
+        prefix += "SET default_transaction_read_only = on;\n"
     with tunnel.open_tunnel(conn, engine, connect_timeout=conn_timeout, use_proxy=use_proxy) as url:
+        if not is_read_only(safe_sql) or _PG_TEXT_STMT_RE.match(_strip_leading_comments(safe_sql)):
+            rows, download_bytes = _rows_postgres(url, safe_sql, psql_vars, execute_timeout,
+                                                  connect_timeout=conn_timeout, read_only=not allow_write)
+            return _finish(_emit_rows(rows, fmt), download_bytes)
         if fmt in ("json", "ndjson"):
             rc, out, errout = run_psql_capture(url, prefix + wrap_for_json(safe_sql), psql_vars=psql_vars,
                                                timeout=total_timeout, connect_timeout=conn_timeout)
@@ -2025,8 +2182,8 @@ def execute_sql(
                 err(msg, exit_code=code)
             download_bytes = len(out.encode("utf-8"))
             if applied_limit is not None:
-                data = json.loads(out.strip() or "[]")
-                data = data[:applied_limit] if isinstance(data, list) else data
+                data = _lossless_json(out.strip() or "[]")
+                data = bounded(data, applied_limit) if isinstance(data, list) else data
                 emit_rows_json(data) if fmt == "json" else emit_rows_ndjson(data)
             else:
                 emit_json(out) if fmt == "json" else emit_ndjson(out)
@@ -2039,6 +2196,8 @@ def execute_sql(
                 err(msg, exit_code=code)
             download_bytes = len(out.encode("utf-8"))
             if applied_limit is not None:
+                if len(list(csv.reader(io.StringIO(out)))) > applied_limit + 1:
+                    err(f"result truncated to {applied_limit} rows; raise --max-rows or use --max-rows 0 for all rows")
                 out = _csv_limit(out, applied_limit)
             emit_csv(out) if fmt == "csv" else emit_table(out)
             return _finish(EXIT_OK, download_bytes)
@@ -2073,7 +2232,9 @@ def validate_query(q: Query, conn: Connection, *, use_proxy: bool | None = None)
     engine = connection_engine(conn)
     # Validation must be side-effect-free: a multi-statement or data-modifying
     # body would otherwise execute its writes under `EXPLAIN <body>`.
-    ok = redis_engine.is_redis_read_only(q.sql) if engine == "redis" else is_read_only(q.sql)
+    if engine != "redis":
+        _check_query_input(substitute_params(q.sql, psql_vars), engine)
+    ok = is_query_read_only(substitute_params(q.sql, psql_vars), engine)
     if not ok:
         err("validation failed: query is not read-only (writes/DDL or multiple statements)",
             exit_code=EXIT_SAFETY_BLOCKED)
@@ -2088,9 +2249,10 @@ def validate_query(q: Query, conn: Connection, *, use_proxy: bool | None = None)
                 run_neptune_cypher(url, q.sql, params=psql_vars, timeout=20, use_proxy=use_proxy,
                                    workspace_home=_connection_workspace_home(conn))
             elif engine == "mysql":
-                run_mysql_query(url, explain_sql, params=psql_vars, timeout=20)
+                run_mysql_query(url, explain_sql, params=psql_vars, timeout=20, read_only=True)
             else:
-                rc, _out, errout = run_psql_capture(url, explain_sql, psql_vars=psql_vars, timeout=20)
+                rc, _out, errout = run_psql_capture(url, "SET default_transaction_read_only = on;\n" + explain_sql,
+                                                   psql_vars=psql_vars, timeout=20)
                 if rc != 0:
                     err(f"validation failed: {errout.strip()}")
                     return EXIT_SQL_ERROR
