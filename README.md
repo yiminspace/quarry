@@ -2,20 +2,20 @@
 
 > **The database workbench built for the AI era** — one kernel, many faces (CLI / GUI / MCP / agent skill).
 
-[![CI](https://github.com/Wangggym/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/Wangggym/quarry/actions/workflows/ci.yml)
+[![CI](https://github.com/yiminspace/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/yiminspace/quarry/actions/workflows/ci.yml)
 [![Coverage ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](TESTING.md)
 [![PyPI](https://img.shields.io/pypi/v/quarry-db)](https://pypi.org/project/quarry-db/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/quarry-db/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[中文文档 →](README.zh-CN.md) · [Website →](https://quarry.yiminlab.site)
+[中文文档 →](README.zh-CN.md) · [Website →](https://yiminspace.github.io/quarry/)
 
 ![Quarry demo](site/assets/demo.svg)
 
 Every database tool you know — DBeaver, TablePlus, pgAdmin — assumes a *human* at the keyboard. But increasingly, the entity running your queries is an **AI agent**, and agents need different guarantees:
 
 - **Results a machine can parse**, not a screen a human can read
-- **Safety rails that live in the kernel**, so no client can forget them
+- **Shared query safety policies**, with explicit authorization by entry point
 - **Deterministic error contracts** (stable exit codes), not stack traces to scrape
 - **Configuration as files**, not clicks — so it can be versioned, diffed, and shared with agents
 
@@ -25,13 +25,13 @@ Quarry inverts the traditional design: it is a **query kernel with an agent-safe
 
 1. **One core, many faces.** Connection management, query execution, schema introspection, and safety rails live in an importable kernel (`quarry.core`). The CLI (`qy`), the GUI, the MCP server, and agent skills are thin shells. Fix a bug once, every face gets it.
 
-2. **Read-only by default; escalation is explicit and graduated.** Writes and DDL are blocked (exit code `8`) unless you pass `--write`. Production connections require an *additional* confirmation on top of `--write`. Read queries without an outer LIMIT default to a 500-row cap; `--max-rows 0` explicitly disables it. PostgreSQL/MySQL query execution also uses database read-only transactions unless writes are authorized.
+2. **Read-only by default; escalation is explicit and graduated.** CLI writes require `--write`; prod additionally needs confirmation or `--yes`. MCP requires server and per-call authorization, plus `confirm_prod` for prod. GUI queries are read-only; Python callers obtain authorization before passing `allow_write=True`. Read queries without an outer LIMIT default to a 500-row cap; `--max-rows 0` explicitly disables it. PostgreSQL/MySQL query execution also uses database read-only transactions unless writes are authorized.
 
-3. **A contract machines can trust.** GUI/MCP/Python queries return `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`. CLI JSON remains an array of rows; diagnostics and truncation notices go to stderr. Exit codes are stable API: `0` ok, `2` connection error, `3` SQL error, `8` safety block. An agent can branch on outcomes without parsing prose.
+3. **A contract machines can trust.** GUI/MCP/Python queries return `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`. CLI JSON remains an array of rows; diagnostics and truncation notices go to stderr. Exit codes are stable API: `0` ok, `2` connection error, `3` SQL error, `8` safety block. CLI argument syntax errors also use `2`; other commands have their own codes (for example `ping` returns `1` on failure). GUI/MCP/Python report structured errors.
 
-4. **Workspace as code.** A workspace is just a directory: `connections.toml` + `queries/**/*.sql` (named queries with `-- @meta` headers). It lives in *your* repo, versioned by git, shared between teammates and agents alike. The kernel itself carries zero business logic and zero secrets.
+4. **Workspace as code.** A workspace is just a directory: `connections.toml` + `queries/**/*.sql` (named queries with `-- @meta` headers). Share query files and credential-free templates through *your* repo; keep actual connection credentials local.
 
-5. **Nearly zero dependencies.** Pure stdlib. PostgreSQL goes through your system `psql`, Redis through `redis-cli`, SSH tunnels through system `ssh`. MySQL is one optional `pymysql`. No Electron or cloud service; the optional `qy up` keeper runs in the background.
+5. **Nearly zero dependencies.** The base package and GUI use Python 3.11+ stdlib. PostgreSQL uses system `psql`, Redis needs `redis-cli` 6+, SSH uses system `ssh`, and MySQL uses the optional `quarry-db[mysql]` dependencies. No Electron or cloud service; the optional `qy up` keeper runs in the background.
 
 ## Install
 
@@ -101,7 +101,6 @@ claude mcp add quarry -- qy mcp --workspace ~/my-workspace
 ```
 
 ```json
-// or any MCP client (.mcp.json)
 { "mcpServers": { "quarry": { "command": "qy", "args": ["mcp", "--workspace", "/path/to/workspace"] } } }
 ```
 
@@ -109,10 +108,10 @@ Published in the [MCP Registry](https://registry.modelcontextprotocol.io/) as `m
 
 ## Safety rails (the AI-native moat)
 
-- **Read-only by default**: writes/DDL blocked with exit code `8`; `--write` to allow
+- **CLI read-only default**: writes/DDL blocked with exit code `8`; `--write` to allow
 - **Automatic row cap**: read queries without an outer LIMIT default to 500 rows; raise with `--max-rows N`, disable with `--max-rows 0` (utility/locking queries are not rewritten; Redis caps after receipt)
-- **Graduated prod protection**: all envs default read-only → dev needs `--write` → prod needs `--write` *plus* an interactive confirmation (`--yes` for automation)
-- **Stable exit-code contract**: `0` ok / `2` connection / `3` SQL / `8` safety block
+- **CLI prod protection**: all envs default read-only → dev needs `--write` → prod needs `--write` *plus* an interactive confirmation (`--yes` for automation)
+- **Query exit codes**: `0` success (rows optional), `1` usage, `2` connection or CLI argument syntax, `3` execution, `8` safety block; other commands have their own documented codes
 
 ## Timeouts
 
@@ -220,12 +219,18 @@ Connections can be organized into **project folders** (`group`) and **env-sets**
 
 ```toml
 [shop_dev]
-url = "postgresql://…dev…/shop";  group = "shop"; db = "shop"; env = "dev"
+url = "postgresql://user:password@dev.example.com:5432/shop"
+group = "shop"
+db = "shop"
+env = "dev"
 [shop_prod]
-url = "postgresql://…prod…/shop"; group = "shop"; db = "shop"; env = "prod"
+url = "postgresql://user:password@prod.example.com:5432/shop"
+group = "shop"
+db = "shop"
+env = "prod"
 ```
 
-- Connections with the same `db` fold into one env-set — one saved query runs against any environment: `qy exec shop --env prod`
+- Connections with the same `db` fold into one env-set — one saved query runs against any environment: `qy run recent_orders --env prod`
 - `qy connections add/set` accepts `--db` and `--group`; when a new key such as `shop_prod --env prod` matches an existing env-set, Quarry inherits that identity automatically
 - If one env member omits `group` but every grouped sibling agrees, CLI/GUI/MCP keep the logical DB together in that group instead of creating a duplicate under `OTHER`
 - Unspecified env defaults to `dev` (the safest)
@@ -280,22 +285,27 @@ docker daemon; the image tag is overridable with `--image`.
 `qy gui` — a local, zero-build web GUI (Slate & Copper theme, light/dark):
 
 - Grouped sidebar tree with env switcher (prod turns red), connection health dots
-- **Multi-tab editor** — each tab remembers its SQL + connection, across restarts
+- **Multi-tab editor** — SQL and connection drafts persist when browser storage is available; result snapshots are bounded and large results remain in-session
 - SQL highlighting + local autocomplete (keywords / tables / columns)
 - **EXPLAIN button** — one click to the query plan
 - Type-aware data grid: sorting, column resize, **keyboard navigation** (arrows + Enter), cell inspection with a **collapsible JSON tree**
 - CSV/JSON export, **searchable query history** (with connection + time)
-- TYPE-aware Redis key browsing
+- TYPE-aware Redis key browsing with a collapsible namespace tree
 - **Update check** — a background thread polls PyPI once every 24h and shows
   a header badge (with the upgrade command + release notes) when a newer
   `quarry-db` is out. Editable/dev installs are skipped automatically; set
   `QUARRY_UPDATE_CHECK=0` to disable it entirely.
 
+## Privacy and support boundaries
+
+Quarry does not upload connection credentials, queries or results to a Quarry service. Queries travel to the databases you configure. The GUI binds to localhost by default and checks local origins. Installed GUI packages periodically check PyPI for updates; set `QUARRY_UPDATE_CHECK=0` to disable this.
+
+Neptune/openCypher is **experimental**, outside the stable database support commitment. Its endpoint and local empty-service tests do not verify real AWS/IAM behavior. See [COMPATIBILITY.md](COMPATIBILITY.md) for supported test environments, persistence limits and the final 1.0 acceptance checklist.
+
 ## Roadmap
 
 - Column types in the result contract for all engines
 - SQLite & DuckDB engines (zero-setup local demo)
-- Redis key-namespace folding tree
 - Cross-environment schema/data diff
 - Write audit log (who ran what, where, when)
 - Single-binary distribution

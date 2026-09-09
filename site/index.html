@@ -8,12 +8,12 @@
 <meta property="og:title" content="Quarry — The database workbench built for the AI era">
 <meta property="og:description" content="One safety-railed query kernel, many faces: CLI, GUI, agent skill, MCP. Read-only by default, structured results, workspace as code.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://quarry.yiminlab.site/">
-<meta property="og:image" content="https://quarry.yiminlab.site/assets/social-card.png">
+<meta property="og:url" content="https://yiminspace.github.io/quarry/">
+<meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://quarry.yiminlab.site/assets/social-card.png">
-<link rel="alternate" hreflang="en" href="https://quarry.yiminlab.site/">
-<link rel="alternate" hreflang="zh" href="https://quarry.yiminlab.site/zh.html">
+<meta name="twitter:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
+<link rel="alternate" hreflang="en" href="https://yiminspace.github.io/quarry/">
+<link rel="alternate" hreflang="zh" href="https://yiminspace.github.io/quarry/zh.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c1f24'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-weight='bold' fill='%23c47a3d' text-anchor='middle'%3EQ%3C/text%3E%3C/svg%3E">
 <style>
   :root {
@@ -209,7 +209,7 @@
       <a href="#workspace">Workspace</a>
       <a href="#roadmap">Roadmap</a>
       <a href="zh.html">中文</a>
-      <a class="gh" href="https://github.com/Wangggym/quarry">GitHub ↗</a>
+      <a class="gh" href="https://github.com/yiminspace/quarry">GitHub ↗</a>
     </div>
   </div>
 </nav>
@@ -225,7 +225,7 @@
           <span class="dollar">$</span><span id="pipcmd">pipx install quarry-db</span>
           <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="Copy">⧉</button>
         </div>
-        <a class="btn btn-copper" href="https://github.com/Wangggym/quarry">Star on GitHub</a>
+        <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">Star on GitHub</a>
       </div>
     </div>
     <div class="showcase">
@@ -254,11 +254,11 @@
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> Rails that live in the kernel</h3>
-        <p>Read-only by default, automatic row caps, graduated prod confirmation. The rails are in the kernel, so no client — human or agent — can pick an entry point that skips them.</p>
+        <p>Query entry points share read-only defaults and row caps. Write authorization is explicit: CLI and MCP add prod confirmation; Python callers supply their own authorization. The GUI query interface stays read-only.</p>
       </div>
       <div class="card">
         <h3><span class="ico">±</span> Deterministic error contract</h3>
-        <p>Exit codes are API: <code>0</code> ok, <code>2</code> connection, <code>3</code> SQL, <code>8</code> safety block. An agent branches on outcomes instead of guessing from stack traces.</p>
+        <p>CLI query exit codes distinguish success, connection/execution failures and safety blocks. Parameter and command-specific errors have their own meanings; GUI/MCP/Python expose structured errors. See the contract below.</p>
       </div>
     </div>
     <p class="manifesto">We didn't bolt a chatbot onto a database GUI.<br><span class="dim">Your agent already is one — Quarry gives it a safe socket into your data.</span></p>
@@ -269,7 +269,7 @@
   <div class="wrap">
     <div class="eyebrow">The human face</div>
     <h2>And a real workbench for you</h2>
-    <p class="lede"><code>qy gui</code> serves a local, zero-build web workbench over the same kernel: grouped connection tree with an environment switcher (prod turns red), a multi-tab SQL editor with autocomplete, one-click EXPLAIN, a type-aware grid with keyboard navigation and a collapsible JSON inspector, searchable history — light &amp; dark, English &amp; 中文, drafts and bounded result snapshots persist across restarts.</p>
+    <p class="lede"><code>qy gui</code> serves a local, zero-build web workbench over the same kernel: grouped connection tree with an environment switcher (prod turns red), a multi-tab SQL editor with autocomplete, one-click EXPLAIN, a type-aware grid with keyboard navigation and a collapsible JSON inspector, searchable history — light &amp; dark, English &amp; 中文, drafts and bounded result snapshots persist when browser storage is available. Large results stay in-session. Redis keys already support a collapsible namespace tree.</p>
     <div style="display:flex;justify-content:flex-end;margin-top:34px">
       <button id="shotTheme" onclick="const i=document.getElementById('guiShot');const d=i.src.includes('gui-dark');i.src=d?'assets/gui-light.png?v=020':'assets/gui-dark.png?v=020';this.textContent=d?'◐ Dark theme':'◑ Light theme'"
         style="background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 14px;font-size:13px;cursor:pointer">◑ Light theme</button>
@@ -282,7 +282,7 @@
   <div class="wrap">
     <div class="eyebrow">Architecture</div>
     <h2>One core, many faces</h2>
-    <p class="lede">Connection management, query execution, schema introspection, and safety rails live in one importable kernel. Everything else is a thin shell. Fix a bug once — every face gets it. Add a rail once — no face can forget it.</p>
+    <p class="lede">Connection management, query execution, schema introspection, and safety rails live in one importable kernel. Everything else is a thin shell. Shared fixes benefit the query interfaces; each interface defines its own authorization and error presentation.</p>
     <div class="faces">
       <div class="kernel">
         <div class="mono">quarry.core</div>
@@ -303,11 +303,11 @@
   <div class="wrap">
     <div class="eyebrow">Safety rails</div>
     <h2>Read-only by default. Escalation is explicit and graduated.</h2>
-    <p class="lede">Writes and DDL are blocked unless you pass <code>--write</code>. Production connections require an additional confirmation on top of that. Read queries without an outer LIMIT default to 500 rows; <code>--max-rows 0</code> disables the cap. Utility/locking queries are not rewritten; Redis caps after receipt. Environments default to <code>dev</code>.</p>
+    <p class="lede">CLI writes require <code>--write</code>; prod also requires confirmation or <code>--yes</code>. MCP writes need server and per-call opt-in, plus <code>confirm_prod</code> on prod. Python callers authorize with <code>allow_write=True</code>; GUI queries are read-only. Read queries without an outer LIMIT default to 500 rows; <code>--max-rows 0</code> disables the cap. Utility/locking queries are not rewritten; Redis caps after receipt. Environments default to <code>dev</code>.</p>
     <div class="exits">
-      <div class="exit e0"><div class="code">0</div><div class="name">ok — rows returned</div></div>
-      <div class="exit e2"><div class="code">2</div><div class="name">connection error</div></div>
-      <div class="exit e3"><div class="code">3</div><div class="name">SQL error</div></div>
+      <div class="exit e0"><div class="code">0</div><div class="name">success — rows optional</div></div>
+      <div class="exit e2"><div class="code">2</div><div class="name">connection / CLI syntax error</div></div>
+      <div class="exit e3"><div class="code">3</div><div class="name">query execution error</div></div>
       <div class="exit e8"><div class="code">8</div><div class="name">safety block</div></div>
     </div>
   </div>
@@ -317,20 +317,22 @@
   <div class="wrap">
     <div class="eyebrow">Workspace as code</div>
     <h2>Your connections and queries are files, not clicks</h2>
-    <p class="lede">A workspace is just a directory: <code>connections.toml</code> plus named queries as plain <code>.sql</code> files with metadata headers. It lives in <em>your</em> repo, versioned by git, shared between teammates and agents alike. The kernel itself carries zero secrets and zero business logic — and Quarry aggregates multiple workspaces into one view.</p>
+    <p class="lede">A workspace is just a directory: <code>connections.toml</code> plus named queries as plain <code>.sql</code> files with metadata headers. Version query files and credential-free configuration templates in <em>your</em> repo; keep real connection credentials local. Quarry aggregates multiple workspaces into one view.</p>
     <div class="codes">
       <div class="code-pane">
         <div class="head">connections.toml</div>
         <pre><span class="cp">[shop_dev]</span>
-<span class="k">url</span>    = <span class="s">"postgresql://…dev…/shop"</span>
-<span class="k">db</span>     = <span class="s">"shop"</span>; <span class="k">env</span> = <span class="s">"dev"</span>
+<span class="k">url</span>    = <span class="s">"postgresql://user:password@dev.example.com:5432/shop"</span>
+<span class="k">db</span>     = <span class="s">"shop"</span>
+<span class="k">env</span>    = <span class="s">"dev"</span>
 
 <span class="cp">[shop_prod]</span>
-<span class="k">url</span>    = <span class="s">"postgresql://…prod…/shop"</span>
-<span class="k">db</span>     = <span class="s">"shop"</span>; <span class="k">env</span> = <span class="s">"prod"</span>
+<span class="k">url</span>    = <span class="s">"postgresql://user:password@prod.example.com:5432/shop"</span>
+<span class="k">db</span>     = <span class="s">"shop"</span>
+<span class="k">env</span>    = <span class="s">"prod"</span>
 
 <span class="cp">[internal_db]</span>
-<span class="k">url</span>      = <span class="s">"postgresql://…@127.0.0.1/appdb"</span>
+<span class="k">url</span>      = <span class="s">"postgresql://user:password@127.0.0.1:5432/appdb"</span>
 <span class="k">ssh_host</span> = <span class="s">"bastion.example.com"</span>  <span class="c"># auto tunnel</span></pre>
       </div>
       <div class="code-pane">
@@ -353,23 +355,25 @@
   <div class="wrap">
     <div class="eyebrow">Engines &amp; footprint</div>
     <h2>Nearly zero dependencies</h2>
-    <p class="lede">Pure Python stdlib. Engines shell out to the battle-tested clients you already have — no Electron, no cloud, no telemetry. The optional keeper runs in the background. Install with pipx, it just runs.</p>
+    <p class="lede">The base package and GUI use Python 3.11+ stdlib. PostgreSQL, Redis and SSH use system clients; MySQL uses an optional Python driver. The optional keeper runs in the background. No Electron or Quarry-hosted service is required.</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · system psql</span>
       <span class="engine"><b>MySQL</b> · optional pymysql</span>
-      <span class="engine"><b>Redis</b> · system redis-cli</span>
+      <span class="engine"><b>Redis</b> · redis-cli 6+</span>
+      <span class="engine"><b>Neptune</b> · experimental openCypher</span>
       <span class="engine"><b>SSH tunnels</b> · system ssh</span>
       <span class="engine soon"><b>SQLite</b> · planned</span>
       <span class="engine soon"><b>DuckDB</b> · planned</span>
     </div>
+    <p class="lede" style="margin-top:26px">Neptune is experimental: the openCypher endpoint integration is available, but real AWS/IAM behavior has not completed release acceptance. The local empty endpoint does not execute or store graph data. See the <a href="https://github.com/yiminspace/quarry/blob/main/COMPATIBILITY.md">support and interface contract</a> for tested environments, persistence limits and error codes.</p>
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> A real library, importable</h3>
         <p><code>from quarry import run_query</code> — the same kernel the CLI, GUI and MCP server use is three lines away in your own tooling, with shared query policies and a structured QueryResult; CLI JSON renders row arrays.</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▣</span> No telemetry, no cloud</h3>
-        <p>Your connections, queries and results never leave your machine. The GUI binds to localhost and rejects non-local origins. There is nothing to phone home to.</p>
+        <h3><span class="ico">▣</span> Local app, your databases</h3>
+        <p>Quarry does not upload connection credentials, queries or results to a Quarry service. Queries go to your configured databases. The GUI binds to localhost by default and checks local origins; PyPI update checks can be disabled with <code>QUARRY_UPDATE_CHECK=0</code>.</p>
       </div>
     </div>
   </div>
@@ -385,14 +389,13 @@
       <div class="rm"><b>Cross-env diff</b> compare schema &amp; data across environments</div>
       <div class="rm"><b>Write audit log</b> who ran what, where, when</div>
       <div class="rm"><b>Single binary</b> distribution beyond pip/pipx</div>
-      <div class="rm"><b>Redis namespace tree</b> fold key families in the GUI</div>
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">
         <span class="dollar">$</span><span>pipx install quarry-db</span>
         <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="Copy">⧉</button>
       </div>
-      <a class="btn btn-copper" href="https://github.com/Wangggym/quarry">View source on GitHub</a>
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">View source on GitHub</a>
     </div>
   </div>
 </section>
@@ -400,7 +403,7 @@
 <footer>
   <div class="wrap">
     <span>Quarry · MIT License</span>
-    <span><a href="https://github.com/Wangggym/quarry">GitHub</a> · <a href="zh.html">中文</a> · <a href="https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md">Changelog</a></span>
+    <span><a href="https://github.com/yiminspace/quarry">GitHub</a> · <a href="zh.html">中文</a> · <a href="https://github.com/yiminspace/quarry/blob/main/CHANGELOG.md">Changelog</a></span>
   </div>
 </footer>
 
