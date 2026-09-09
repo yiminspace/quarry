@@ -177,7 +177,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 29 | editor | autocomplete: keywords + tables | B:test_autocomplete_keyword_and_table | ✅ |
 | 30 | editor | autocomplete: `table.column` via /api/columns | F:test_autocomplete_columns_after_table_dot | ✅ |
 | 31 | editor | autocomplete: FROM/JOIN table-only filter; dedup; 12-item cap | F:test_autocomplete_from_narrows_to_tables (dedup/cap unasserted) | 🟡 |
-| 32 | editor | autocomplete keyboard nav (↑↓ Tab Enter Esc) + mouse pick | B/F autocomplete tests (partial) | 🟡 |
+| 32 | editor | autocomplete keyboard nav (↑↓ Tab Enter Esc) + mouse pick | B/F autocomplete tests; F:test_autocomplete_escape_blocks_late_refresh covers queued input + late column lookup, then typing resumes (other keys partial) | 🟡 |
 | 33 | editor | editor height drag + persistence | F:test_editor_height_drag_persists | ✅ |
 | 34 | editor | tabs: add/switch/close/persist | B:test_tabs_add_switch_restore_and_close | ✅ |
 | 35 | editor | tab title rule (SQL main-table, incl. quoted/backtick identifiers > first words > `db@env` > placeholder), live-updates as SQL changes, distinguishes same-connection tabs; legacy `qy_ui` migration | tabsStore.test.ts, F:test_tab_title_shows_db_at_env, F:test_tab_title_derives_from_sql_table_and_distinguishes_tabs, F:test_tab_title_updates_when_sql_switches_table, F:test_tab_title_distinguishes_quoted_mixed_case_tables, F:test_legacy_qy_ui_migrates_into_tabs | ✅ |

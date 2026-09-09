@@ -30,8 +30,8 @@ pre-1.0 history followed the earlier development policy.
 ### Upgrade from 0.x
 
 - No workspace or saved-query migration is required from 0.25.1. The 1.0 change
-  establishes the stable contract and package metadata; query behavior is unchanged
-  from the audited 0.25.1 implementation.
+  establishes the stable contract and package metadata; database query behavior
+  is unchanged from the audited 0.25.1 implementation.
 - Upgrading from older 0.x versions also adopts the 0.25.1 corrections: CLI
   defaults to 500 rows (`--max-rows 0` disables the cap), big integers/exact
   decimals are strings, and duplicate object-result columns get unique suffixes.
@@ -39,6 +39,11 @@ pre-1.0 history followed the earlier development policy.
 - SQL batches, psql backslash commands and PostgreSQL data-modifying CTEs are
   explicitly unsupported. Use individual authorized statements, with RETURNING
   where rows are needed.
+
+### Fixed
+
+- GUI autocomplete stays closed after Escape even when an earlier input refresh
+  or column lookup finishes late. Typing again enables suggestions normally.
 
 ### Release validation
 
