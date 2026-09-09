@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+<!-- version list -->
+
 ## [1.0.0] — 2026-09-09
 
 ### Stable interface
@@ -352,7 +354,6 @@ pre-1.0 history followed the earlier development policy.
   `--ssh-user`/`--ssh-key`/`--ssh-port` flags); and an `env=local` key that
   doesn't follow the `<name>_local` convention gets a naming suggestion.
 
-<!-- version list -->
 
 ## v0.25.1 (2026-09-09)
 
