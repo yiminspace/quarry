@@ -1078,6 +1078,17 @@ export default function ResultWorkbench() {
                   onClick={() => selectDb(current.db, e.env ?? null, { viaPill: true })}
                 >
                   {e.env || "default"}
+                  {e.proxied && (
+                    <span
+                      className="vg-proxy-badge proxy-badge"
+                      data-testid="proxy-badge"
+                      data-db={current.db}
+                      data-env={e.env ?? ""}
+                      title={t("proxy_badge_title")}
+                    >
+                      ⇄
+                    </span>
+                  )}
                 </span>
               ))}
           </span>
@@ -1236,24 +1247,32 @@ export default function ResultWorkbench() {
         >
           {result && (
             <>
-              <span>
+              <span id="statusRows" title={t("rows_tip")}>
                 <span className="vg-cu cu">{result.rowCount}</span> {t("rows")}
               </span>
-              <span>
+              <span id="statusElapsed" title={t("elapsed_tip")}>
                 <i className="ti ti-clock" /> {result.elapsedMs} ms
               </span>
               {result.downloadBytes != null && (
                 <>
                   <span
                     id="dlSize"
-                    title={result.sizeIsEstimated ? t("size_estimated_tip") : undefined}
+                    title={
+                      result.sizeIsEstimated
+                        ? `${t("size_tip")} (${t("size_estimated_tip")})`
+                        : t("size_tip")
+                    }
                   >
                     <i className="ti ti-download" /> {result.sizeIsEstimated ? "≈" : ""}
                     {formatBytes(result.downloadBytes)}
                   </span>
                   <span
                     id="avgSpeed"
-                    title={result.sizeIsEstimated ? t("size_estimated_tip") : undefined}
+                    title={
+                      result.sizeIsEstimated
+                        ? `${t("speed_tip")} (${t("size_estimated_tip")})`
+                        : t("speed_tip")
+                    }
                   >
                     <i className="ti ti-gauge" /> {result.sizeIsEstimated ? "≈" : ""}
                     {formatBytes(result.downloadBytes / ((result.elapsedMs / 1000) || 0.001))}/s
@@ -1261,7 +1280,7 @@ export default function ResultWorkbench() {
                 </>
               )}
               {result.truncated && (
-                <span className="vg-tr tr">
+                <span className="vg-tr tr" id="statusTruncated" title={t("truncated_tip")}>
                   <i className="ti ti-arrow-narrow-down" /> {t("truncated")}
                 </span>
               )}
@@ -1274,6 +1293,7 @@ export default function ResultWorkbench() {
                 <button
                   className="vg-lmbtn lmBtn"
                   id="loadMoreBtn"
+                  title={t("load_more_tip")}
                   disabled={loadMoreBusy}
                   onClick={() => void onLoadMore()}
                 >
@@ -1281,7 +1301,7 @@ export default function ResultWorkbench() {
                 </button>
               )}
               <span style={{ flex: 1 }} />
-              <span>
+              <span id="statusTarget" title={t("result_target_tip")}>
                 {queryDb}
                 {queryEnv ? `@${queryEnv}` : ""} · {result.engine}
               </span>

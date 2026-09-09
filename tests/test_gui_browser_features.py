@@ -394,14 +394,16 @@ def _contrast_ratio(locator) -> tuple[str, str, float]:
 def test_env_pills_default_dev_and_prod_badge(page_envset):
     page = page_envset
     page.wait_for_selector('.dbrow[data-db="shop"]')
-    # sidebar pills: dev selected by default, prod styled as prod
-    assert "on" in page.locator('.pill[data-db="shop"][data-env="dev"]').first.get_attribute("class").split()
-    assert "prod" in page.locator('.pill[data-db="shop"][data-env="prod"]').first.get_attribute("class").split()
+    assert page.locator("#side .pill").count() == 0
     page.locator('.dbrow[data-db="shop"]').click()
-    page.wait_for_selector("#esw .ep")               # header env switcher appears
+    page.wait_for_selector("#esw .ep")
+    assert page.locator("#side .pill").count() == 0
+    assert "on" in page.locator('#esw .ep[data-env="dev"]').get_attribute("class").split()
+    assert "prod" in page.locator('#esw .ep[data-env="prod"]').get_attribute("class").split()
     assert page.locator("#prodBadge").is_hidden()
     page.locator('#esw .ep[data-env="prod"]').click()
     page.wait_for_selector("#prodBadge", state="visible")
+    assert page.locator("#side .pill").count() == 0
 
 
 def test_selected_prod_pills_keep_accessible_contrast_in_light_themes(page_envset):
@@ -412,21 +414,16 @@ def test_selected_prod_pills_keep_accessible_contrast_in_light_themes(page_envse
     page.locator(".vg-switcher-mode").click()
     assert page.evaluate("document.documentElement.dataset.mode") == "light"
 
-    selectors = (
-        '.pill[data-db="shop"][data-env="prod"]',
-        '#esw .ep[data-env="prod"]',
-    )
     for theme, expected_bg in (("slate", "rgb(178, 59, 52)"),
                                ("signal", "rgb(179, 45, 45)")):
         if theme == "signal":
             page.locator(".vg-switcher-trigger").click()
             page.get_by_role("menuitemradio", name="Signal").click()
         assert page.evaluate("document.documentElement.dataset.theme") == theme
-        for selector in selectors:
-            fg, bg, ratio = _contrast_ratio(page.locator(selector).first)
-            assert fg == "rgb(255, 255, 255)"
-            assert bg == expected_bg
-            assert ratio >= 4.5, (theme, selector, fg, bg, ratio)
+        fg, bg, ratio = _contrast_ratio(page.locator('#esw .ep[data-env="prod"]').first)
+        assert fg == "rgb(255, 255, 255)"
+        assert bg == expected_bg
+        assert ratio >= 4.5, (theme, fg, bg, ratio)
 
 
 def test_prod_env_switch_does_not_autorun(page_envset):
@@ -485,7 +482,7 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
         ("graph", "dev", "MATCH (n) RETURN n LIMIT 25")
     ]
 
-    page.locator('.pill[data-db="graph"][data-env="local"]').click()
+    page.locator('#esw .ep[data-env="local"]').click()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
     page.wait_for_function("() => JSON.parse(localStorage.getItem('qy_tabres'))[2] !== null")
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
@@ -493,12 +490,12 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
         ("testpg", "test"), ("graph", "dev"), ("graph", "local")
     ]
 
-    page.locator('.pill[data-db="graph"][data-env="dev"]').click()
+    page.locator('#esw .ep[data-env="dev"]').click()
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
     assert len(tabs) == 3
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
 
-    page.locator('.pill[data-db="graph"][data-env="prod"]').click()
+    page.locator('#esw .ep[data-env="prod"]').click()
     page.wait_for_selector("#toast", state="visible")
     assert "prod" in page.locator("#toast").inner_text().lower()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
@@ -514,11 +511,10 @@ def test_local_env_sorts_first_and_is_default_without_dev(page_envset_local):
     # still be the leftmost pill/tab and the default-selected env (issue #44).
     page = page_envset_local
     page.wait_for_selector('.dbrow[data-db="stash"]')
-    pills = page.locator('.pill[data-db="stash"]')
-    assert [pills.nth(i).get_attribute("data-env") for i in range(pills.count())] == ["local", "prod"]
-    assert "on" in pills.nth(0).get_attribute("class").split()
+    assert page.locator("#side .pill").count() == 0
     page.locator('.dbrow[data-db="stash"]').click()
     page.wait_for_selector("#esw .ep")
+    assert page.locator("#side .pill").count() == 0
     eps = page.locator("#esw .ep")
     assert [eps.nth(i).get_attribute("data-env") for i in range(eps.count())] == ["local", "prod"]
     assert "on" in eps.nth(0).get_attribute("class").split()
@@ -528,10 +524,43 @@ def test_missing_group_env_sibling_stays_in_one_sidebar_env_set(page_missing_gro
     page = page_missing_group
     page.wait_for_selector('.dbrow[data-db="queue"]')
     assert page.locator('.dbrow[data-db="queue"]').count() == 1
-    pills = page.locator('.pill[data-db="queue"]')
-    assert [pills.nth(i).get_attribute("data-env") for i in range(pills.count())] == ["local", "dev"]
+    page.locator('.dbrow[data-db="queue"]').click()
+    page.wait_for_selector("#esw .ep")
+    eps = page.locator("#esw .ep")
+    assert [eps.nth(i).get_attribute("data-env") for i in range(eps.count())] == ["local", "dev"]
     group = page.locator('[data-grp]', has_text="acme")
     assert group.count() == 1
+
+
+MIXED_ENGINE_TOML = f"""
+[shop]
+url = "{TEST_DB_URL}"
+engine = "postgres"
+group = "acme"
+
+[cache]
+url = "redis://127.0.0.1:6379/0"
+engine = "redis"
+group = "acme"
+"""
+
+
+def test_sidebar_groups_mixed_engines_under_workspace_group(_pw_browser, tmp_path):
+    with _running_gui(tmp_path, extra_conn=MIXED_ENGINE_TOML) as url:
+        ctx, page = _mk_page(_pw_browser, url)
+        try:
+            page.wait_for_selector('.dbrow[data-db="shop"]')
+            assert page.locator("[data-engine]").count() == 0
+            assert page.locator('.dbrow[data-db="shop"] small').inner_text() == "postgres"
+            assert page.locator('.dbrow[data-db="cache"] small').inner_text() == "redis"
+            names = [el.get_attribute("data-db") for el in page.locator(".dbrow").all()]
+            assert names.index("shop") < names.index("cache")
+            assert page.locator("#side .pill").count() == 0
+            errors = [e for e in page._console_errors
+                      if "Failed to load resource" not in e and "net::ERR_" not in e]
+            assert not errors, f"console errors: {errors}"
+        finally:
+            ctx.close()
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +620,8 @@ def _proxied_envset_page(browser, tmp_path, monkeypatch, *, enabled: bool, disco
 def test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active(_pw_browser, tmp_path, monkeypatch):
     with _proxied_envset_page(_pw_browser, tmp_path, monkeypatch, enabled=True, discovered=True) as (page, _state):
         page.wait_for_selector('.dbrow[data-db="shop"]')
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.wait_for_selector("#esw .ep")
         # shop_dev has a live, actually-proxied tunnel -> badge visible
         page.wait_for_selector('[data-testid="proxy-badge"][data-db="shop"][data-env="dev"]')
         # shop_prod has no ssh_host at all -> never a candidate for the badge
@@ -600,12 +631,16 @@ def test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active(_pw_browse
 def test_proxy_badge_hidden_when_workspace_toggle_off(_pw_browser, tmp_path, monkeypatch):
     with _proxied_envset_page(_pw_browser, tmp_path, monkeypatch, enabled=False, discovered=True) as (page, _state):
         page.wait_for_selector('.dbrow[data-db="shop"]')
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.wait_for_selector("#esw .ep")
         assert page.locator('[data-testid="proxy-badge"]').count() == 0
 
 
 def test_proxy_badge_hidden_when_nothing_discovered(_pw_browser, tmp_path, monkeypatch):
     with _proxied_envset_page(_pw_browser, tmp_path, monkeypatch, enabled=True, discovered=False) as (page, _state):
         page.wait_for_selector('.dbrow[data-db="shop"]')
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.wait_for_selector("#esw .ep")
         assert page.locator('[data-testid="proxy-badge"]').count() == 0
 
 
@@ -613,6 +648,9 @@ def test_proxy_badge_follows_server_state_across_reload(_pw_browser, tmp_path, m
     """The badge is a live reflection of server state (not cached client-side):
     the underlying tunnel fact changing and reloading must flip the badge too."""
     with _proxied_envset_page(_pw_browser, tmp_path, monkeypatch, enabled=True, discovered=True) as (page, state):
+        page.wait_for_selector('.dbrow[data-db="shop"]')
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.wait_for_selector("#esw .ep")
         page.wait_for_selector('[data-testid="proxy-badge"][data-db="shop"][data-env="dev"]')
 
         state["proxied"] = False
@@ -757,6 +795,31 @@ def test_status_bar_shows_download_size_and_speed(page):
     assert speed.inner_text().strip().endswith("/s")
     assert dl.get_attribute("title")
     assert speed.get_attribute("title")
+
+
+def test_status_bar_metric_tooltips(page):
+    # every status-bar metric explains itself on hover (same native `title`
+    # pattern as the large-result session notice). The toolbar cap is per
+    # fetch, so the rows tip must not just repeat the visible count.
+    _select_testpg(page)
+    page.select_option("#maxRows", "100")
+    _run_sql(page, "select * from generate_series(1,250)")
+    page.wait_for_selector("#statusTruncated")
+    tips = {
+        "#statusRows": "per-fetch",
+        "#statusElapsed": "Wall time",
+        "#dlSize": "Payload size",
+        "#avgSpeed": "throughput",
+        "#statusTruncated": "max-rows cap",
+        "#loadMoreBtn": "next page",
+        "#statusTarget": "Connection",
+        "#maxRows": "per fetch",
+    }
+    for sel, needle in tips.items():
+        title = page.locator(sel).get_attribute("title") or ""
+        assert needle.lower() in title.lower(), (sel, title)
+    assert "estimated" in (page.locator("#dlSize").get_attribute("title") or "").lower()
+    assert "estimated" in (page.locator("#avgSpeed").get_attribute("title") or "").lower()
 
 
 def test_load_more_paginates_truncated_result(page):
@@ -991,6 +1054,32 @@ def test_saved_query_without_params_runs_directly(page_noparam):
     assert page.locator(".modal").count() == 0
     assert page.locator("#grid tbody tr").count() == 3
     assert "customers" in page.locator("#sql").input_value().lower()
+    assert page.locator('[data-qsrc="testpg"]').inner_text() == "testpg"
+
+
+def test_saved_queries_group_by_logical_db(_pw_browser, tmp_path):
+    queries = {
+        "session-west": "-- @name: session-west\n-- @db: shop_dev\nSELECT 1\n",
+        "session-east": "-- @name: session-east\n-- @db: shop_prod\nSELECT 1\n",
+        "all-cust": "-- @name: all-cust\n-- @db: testpg\nSELECT 1\n",
+    }
+    with _running_gui(tmp_path, extra_conn=ENVSET_TOML, seed_queries=queries) as url:
+        ctx, page = _mk_page(_pw_browser, url)
+        try:
+            page.wait_for_selector('.qname[data-q="session-west"]')
+            assert page.locator('[data-qsrc="shop"]').count() == 1
+            assert page.locator('[data-qsrc="shop_dev"]').count() == 0
+            assert page.locator('[data-qsrc="testpg"]').count() == 1
+            shop = page.locator('[data-qsrc="shop"]').locator("xpath=..")
+            assert shop.locator('.qname[data-q="session-west"]').count() == 1
+            assert shop.locator('.qname[data-q="session-east"]').count() == 1
+            assert shop.locator('.qname[data-q="all-cust"]').count() == 0
+            assert "queries" in page.locator('[data-gkey="__saved__"]').inner_text().lower()
+            errors = [e for e in page._console_errors
+                      if "Failed to load resource" not in e and "net::ERR_" not in e]
+            assert not errors, f"console errors: {errors}"
+        finally:
+            ctx.close()
 
 
 def test_saved_query_result_persisted_under_producing_connection(page_saved_multi):
@@ -1821,7 +1910,8 @@ def test_conn_info_offers_create_local_when_set_has_none(page):
 def test_conn_info_offers_sync_on_local_env(page_localenv):
     page = page_localenv
     page.locator('.dbrow[data-db="shoploc"]').click()
-    page.locator('.pill[data-db="shoploc"][data-env="local"]').click()
+    page.wait_for_selector("#esw .ep")
+    page.locator('#esw .ep[data-env="local"]').click()
     page.wait_for_selector("#tbl-panel")
     page.locator("#ciBtn").click()
     page.wait_for_selector(".modal .cirow")

@@ -252,3 +252,55 @@ def test_signal_theme_four_axes_colors_and_reload_persistence(page):
     assert _style(page, "body", "backgroundColor") == "rgb(255, 255, 255)"
     assert _style(page, "header", "backgroundColor") == "rgb(255, 255, 255)"
     assert page._console_errors == []
+
+
+def _token_color(page, name: str) -> str:
+    return page.evaluate(
+        """(name) => {
+          const probe = document.createElement('span');
+          probe.style.color = `var(${name})`;
+          document.body.appendChild(probe);
+          const value = getComputedStyle(probe).color;
+          probe.remove();
+          return value;
+        }""",
+        name,
+    )
+
+
+def _token_bg(page, name: str) -> str:
+    return page.evaluate(
+        """(name) => {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = `var(${name})`;
+          document.body.appendChild(probe);
+          const value = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return value;
+        }""",
+        name,
+    )
+
+
+def test_engine_tag_differs_from_workspace_origin(page):
+    _select_testpg(page)
+    page.locator(".dbrow small.vg-engine-tag").wait_for()
+    engine = page.locator(".dbrow small.vg-engine-tag").first
+    assert _style(page, ".dbrow small.vg-engine-tag", "color") == _token_color(page, "--fg3")
+    assert _style(page, ".dbrow small.vg-engine-tag", "backgroundColor") in ("rgba(0, 0, 0, 0)", "transparent")
+    fam = engine.evaluate("el => getComputedStyle(el).fontFamily")
+    assert "monospace" in fam.lower() or "mono" in fam.lower() or "Menlo" in fam
+    origin = page.locator(".vg-ws-note")
+    if origin.count():
+        assert _style(page, ".vg-ws-note", "color") == _token_color(page, "--fg3")
+        origin_fam = origin.first.evaluate("el => getComputedStyle(el).fontFamily")
+        assert fam != origin_fam
+
+
+def test_table_filter_uses_surface_tokens(page):
+    _select_testpg(page)
+    page.locator("#tbl-panel .tsearch").wait_for()
+    assert _style(page, ".vg-tfilter", "backgroundColor") == _token_bg(page, "--bg2")
+    assert _style(page, "#tbl-panel .tsearch", "backgroundColor") in ("rgba(0, 0, 0, 0)", "transparent")
+    assert page.locator(".vg-tfilter .ti-search").count() == 1
+    assert page.locator("#tbl-panel .treload").is_visible()
