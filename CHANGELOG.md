@@ -9,6 +9,32 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v0.25.2 (2026-09-09)
+
+### Bug Fixes
+
+- **gui**: Keep autocomplete dismissed after Escape
+  ([#128](https://github.com/yiminspace/quarry/pull/128),
+  [`14755ba`](https://github.com/yiminspace/quarry/commit/14755baa851ef88e027c2f12f7b3c9478fab2ad5))
+
+### Chores
+
+- **release**: Prepare 1.0.0 ([#128](https://github.com/yiminspace/quarry/pull/128),
+  [`14755ba`](https://github.com/yiminspace/quarry/commit/14755baa851ef88e027c2f12f7b3c9478fab2ad5))
+
+- **release**: 准备 1.0.0 稳定版发布 ([#128](https://github.com/yiminspace/quarry/pull/128),
+  [`14755ba`](https://github.com/yiminspace/quarry/commit/14755baa851ef88e027c2f12f7b3c9478fab2ad5))
+
+### Documentation
+
+- 对齐发布前的双语页面与支持契约 ([#127](https://github.com/yiminspace/quarry/pull/127),
+  [`df4730a`](https://github.com/yiminspace/quarry/commit/df4730a3e91037a68f01c4ec49c2a95b69b9a2bf))
+
+- **release**: Correct changelog insertion and acceptance checklist
+  ([#128](https://github.com/yiminspace/quarry/pull/128),
+  [`14755ba`](https://github.com/yiminspace/quarry/commit/14755baa851ef88e027c2f12f7b3c9478fab2ad5))
+
+
 ## [1.0.0] — 2026-09-09
 
 ### Stable interface

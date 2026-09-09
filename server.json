@@ -7,12 +7,12 @@
     "source": "github"
   },
   "websiteUrl": "https://yiminspace.github.io/quarry/",
-  "version": "1.0.0",
+  "version": "0.25.2",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "quarry-db",
-      "version": "1.0.0",
+      "version": "0.25.2",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
