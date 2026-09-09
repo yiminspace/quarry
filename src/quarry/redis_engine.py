@@ -12,6 +12,8 @@ import json
 import shlex
 import shutil
 import subprocess
+import time
+import math
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -116,6 +118,8 @@ def run_redis(url: str, command: str, *, timeout: int = 30) -> tuple[list[dict[s
     text, UTF-8 encoded — an approximation of the real wire-protocol payload,
     since redis-cli doesn't expose that."""
     argv = shlex.split(command)
+    if argv and argv[0] == "--scan":
+        return _run_scan(url, argv[1:], timeout=timeout)
     # RESP-aware output distinguishes nil, an empty string and embedded
     # newlines. -e makes server errors fail instead of becoming data rows.
     cmd = [arg for arg in _cli_base(url) if arg != "--raw"] + ["--json", "-e"] + argv
@@ -135,6 +139,42 @@ def run_redis(url: str, command: str, *, timeout: int = 30) -> tuple[list[dict[s
         raise QuarryError("redis-cli returned invalid JSON (requires redis-cli 6+)", exit_code=EXIT_SQL_ERROR) from exc
     values = value if isinstance(value, list) else [value]
     return [{"value": item} for item in values], len(proc.stdout.encode("utf-8"))
+
+
+def _run_scan(url: str, options: list[str], *, timeout: int) -> tuple[list[dict[str, Any]], int]:
+    """Implement CLI scan mode using JSON SCAN replies, keeping even newline keys.
+
+    Only scan options are accepted; never forward unrelated redis-cli modes or
+    connection overrides hidden behind a read-only --scan request.
+    """
+    from .core import EXIT_CONNECTION_ERROR, QuarryError, _with_timeout_hint
+    values = {"--pattern": "*", "--count": "10", "--cursor": "0", "-i": "0"}
+    if len(options) % 2 or any(flag not in values for flag in options[::2]):
+        raise QuarryError("--scan accepts --pattern, --count, --cursor and -i, each with a value")
+    values.update(zip(options[::2], options[1::2]))
+    try:
+        count, cursor = int(values["--count"]), int(values["--cursor"])
+        interval = float(values["-i"])
+        if count < 1 or cursor < 0 or interval < 0 or not math.isfinite(interval):
+            raise ValueError
+    except ValueError as exc:
+        raise QuarryError("--scan requires positive count and non-negative cursor/interval") from exc
+    deadline = time.monotonic() + timeout
+    rows, download_bytes = [], 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise QuarryError(_with_timeout_hint(f"redis-cli timed out after {timeout}s"),
+                              exit_code=EXIT_CONNECTION_ERROR)
+        page, size = run_redis(url, shlex.join(["SCAN", str(cursor), "MATCH", values["--pattern"],
+                                               "COUNT", str(count)]), timeout=remaining)
+        cursor = int(page[0]["value"])
+        rows.extend({"value": key} for key in page[1]["value"])
+        download_bytes += size
+        if cursor == 0:
+            return rows, download_bytes
+        if interval:
+            time.sleep(min(interval, max(0, deadline - time.monotonic())))
 
 
 def scan_keys(url: str, *, pattern: str = "*", count: int = 500) -> list[str]:

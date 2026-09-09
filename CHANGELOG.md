@@ -23,6 +23,9 @@ All notable changes to Quarry are documented here. The format follows
 - **Redis replies preserve nil, empty strings, newlines and nested arrays**;
   server errors now fail instead of appearing as successful data. This requires
   redis-cli 6+ for JSON output.
+- **Redis `--scan` remains supported**, using cursor-based JSON replies to
+  preserve keys with whitespace/newlines. Cypher property/map/label names such
+  as `n.set` are recognized as identifiers without allowing mutation clauses.
 - **CLI defaults to 500 rows**, with `--max-rows 0` for explicitly unlimited
   results and stderr notices on truncation. Inner LIMIT clauses no longer disable
   outer pagination; openCypher RETURN queries receive a limit too. CLI JSON

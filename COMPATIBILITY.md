@@ -29,6 +29,7 @@ SQL read queries and openCypher RETURN queries without an outer LIMIT default to
 - Duplicate object-result names are deterministically suffixed (`id`, `id_2`, `id_3`, ...), avoiding collisions rather than discarding columns. Native PostgreSQL CSV/table output retains positional headers, including duplicates. Use explicit SQL aliases when exact names are important.
 - Empty relational results retain available column metadata; the GUI shows headers and exports a CSV header.
 - Redis requires redis-cli 6+ for JSON responses. Scalars are one `value` row, arrays are multiple `value` rows, nested arrays stay nested, nil is `null`, and empty/multiline strings retain their content. Redis server errors are failures, not successful rows containing error text.
+- Redis `--scan` returns one key per row using cursor-based JSON replies, preserving whitespace and newlines in keys. Supported scan options are `--pattern`, `--count`, `--cursor` and `-i`; other redis-cli modes or connection overrides are rejected.
 - MySQL datetime values preserve subsecond precision. Invalid UTF-8 binary values use a `base64:`-prefixed string; valid UTF-8 bytes remain text.
 - JSON/CSV exports preserve these values in the file. A spreadsheet application may infer types when importing CSV; use its text-column import options for long identifiers.
 

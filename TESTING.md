@@ -259,7 +259,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 `test_release_contracts.py` verifies actual write/readback behavior (Postgres and
 MySQL), read-only function/EXPLAIN protection, Redis prod confirmation and error/
 null/text responses, outer limit pagination, duplicate names, precision and the
-MCP startup argument order. Set `QUARRY_TEST_MYSQL_URL` and
+MCP startup argument order. Redis scan-mode coverage includes real CLI output,
+cursor pagination and whitespace/newline keys; Cypher coverage distinguishes
+property/map/label identifiers from mutation clauses. Set `QUARRY_TEST_MYSQL_URL` and
 `QUARRY_TEST_REDIS_URL` for isolated real services; CI supplies MySQL 8.4 and Redis 7.
 The release workflow reuses CI against its exact tag before publishing to PyPI.
 

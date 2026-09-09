@@ -66,7 +66,9 @@ def _redis_reachable() -> bool:
     if not cli:
         return False
     try:
-        proc = subprocess.run([cli, "ping"], capture_output=True, text=True, timeout=5)
+        target = os.environ.get("QUARRY_TEST_REDIS_URL")
+        args = [cli, "-u", target, "ping"] if target else [cli, "ping"]
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=5)
         return proc.returncode == 0 and "PONG" in proc.stdout.upper()
     except Exception:
         return False

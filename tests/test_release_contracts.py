@@ -119,6 +119,31 @@ def test_escaped_cypher_literals_do_not_hide_write_clauses():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('keyword', ['create', 'merge', 'set', 'delete', 'detach', 'remove', 'drop', 'call', 'foreach', 'load'])
+def test_cypher_property_map_and_label_names_are_reads(keyword):
+    queries = [f'MATCH (n) RETURN n.{keyword}',
+               f'MATCH (n:{keyword} {{{keyword}: 1}}) RETURN n . {keyword}',
+               f'MATCH (n) RETURN {{{keyword}: n.{keyword}}}',
+               f'MATCH (n) RETURN n : {keyword}']
+    for sql in queries:
+        assert core.is_query_read_only(sql, 'neptune')
+        assert core.enforce_safety(sql, allow_write=False, max_rows=5, engine='neptune')[1] == 5
+    # Recognizing a property must never hide the following real write clause.
+    assert not core.is_query_read_only(f'MATCH (n) WHERE n.{keyword}=1 SET n.x=2 RETURN n', 'neptune')
+    assert not core.is_query_read_only(f'MATCH (n:{keyword}) DELETE n', 'neptune')
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('sql', [
+    'MATCH (n) CALL { WITH n SET n.x=1 } RETURN n',
+    'MATCH (n) FOREACH (x IN [1] | SET n.x=x) RETURN n',
+    'MATCH (n) REMOVE n.set RETURN n',
+])
+def test_nested_cypher_mutations_remain_blocked(sql):
+    assert not core.is_query_read_only(sql, 'neptune')
+
+
+@pytest.mark.unit
 def test_mysql_executable_comments_rejected_without_execution():
     conn = core.Connection(key='mysql', url='mysql://localhost/db', engine='mysql')
     with pytest.raises(core.QuarryError, match='executable MySQL comments'):
@@ -151,6 +176,7 @@ def test_limit_validation_and_explicit_disable():
 @pytest.mark.unit
 def test_redis_invalid_json_is_an_error(monkeypatch):
     from quarry import redis_engine
+    monkeypatch.setattr(redis_engine, 'resolve_redis_cli', lambda: 'redis-cli')
     monkeypatch.setattr(redis_engine.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess([], 0, 'invalid', ''))
     with pytest.raises(core.QuarryError) as exc:
         redis_engine.run_redis('redis://localhost', 'PING')
@@ -187,6 +213,29 @@ def test_redis_nil_empty_errors_and_prod_confirmation(tmp_path):
         assert core.run_query(conn, f'GET {key}').rows == [{'value': 'first\nsecond\n'}]
     finally:
         core.run_query(conn, f'DEL {key}', allow_write=True)
+
+
+@requires_redis
+@pytest.mark.integration
+def test_redis_scan_mode_preserves_keys_and_cli_output(tmp_path):
+    url = os.environ.get('QUARRY_TEST_REDIS_URL', 'redis://127.0.0.1:6379/15')
+    prefix = 'qy-scan-' + uuid.uuid4().hex
+    keys = [prefix + suffix for suffix in ['plain', 'two words', 'line\nbreak', '"quoted"']]
+    conn = core.Connection(key='cache', url=url, engine='redis')
+    try:
+        for key in keys:
+            core.run_query(conn, shlex.join(['SET', key, 'v']), allow_write=True)
+        command = f'--scan --pattern {prefix}* --count 1'
+        assert {r['value'] for r in core.run_query(conn, command).rows} == set(keys)
+        assert core.run_query(conn, f'--scan --pattern {prefix}-missing').rows == []
+        (tmp_path / 'connections.toml').write_text(f'[cache]\nurl="{url}"\nengine="redis"\n')
+        proc = subprocess.run([sys.executable, '-m', 'quarry.cli', '--workspace', str(tmp_path),
+                               'exec', 'cache', '--sql', command], capture_output=True, text=True,
+                              env={**os.environ, 'PYTHONPATH': str(Path(__file__).parents[1] / 'src')})
+        assert proc.returncode == 0, proc.stderr
+        assert {r['value'] for r in json.loads(proc.stdout)} == set(keys)
+    finally:
+        core.run_query(conn, shlex.join(['DEL', *keys]), allow_write=True)
 
 
 @requires_mysql

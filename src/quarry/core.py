@@ -928,8 +928,11 @@ def is_query_read_only(query: str, engine: str) -> bool:
         if len(statements) != 1:
             return False
         skeleton = statements[0].strip()
+        # Clauses occur outside patterns, maps and expressions. Property/label
+        # names (n.set, n : create) are identifiers, not mutation clauses.
+        clauses = re.sub(r"[.:]\s*\w+", " ", _top_level_sql(skeleton))
         return bool(re.match(r"(?:match|optional|return|with|unwind|explain|profile)\b", skeleton, re.I)) and not re.search(
-            r"\b(create|merge|set|delete|detach|remove|drop|call|foreach|load)\b", skeleton, re.I
+            r"\b(create|merge|set|delete|detach|remove|drop|call|foreach|load)\b", clauses, re.I
         )
     return is_read_only(sql_skeleton(query, backslash_escapes=True)) if engine == "mysql" else is_read_only(query)
 
