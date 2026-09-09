@@ -1,6 +1,6 @@
 # Quarry interface and support contract
 
-This is the compatibility target for the 1.0 release. The package remains pre-1.0 until a release is explicitly made. Passing local tests is not a statement that every platform or database version is supported.
+This document defines the stable interface contract starting with Quarry 1.0.0. Experimental capabilities are identified separately. Passing local tests is not a statement that every platform or database version is supported.
 
 ## Entry points
 
@@ -49,17 +49,17 @@ Quarry does not upload connection credentials, queries or results to a Quarry se
 
 ## 1.0 evolution policy
 
-Published CLI command names/options, workspace configuration keys, saved-query metadata, MCP tool names/arguments and names exported by `quarry.__all__` form the public interface. Private helpers and GUI layout are implementation details. Compatible optional fields/features may be added; removals or meaning/type changes require a documented migration and major version after 1.0. This release's lossless numeric representation is a pre-1.0 contract correction.
+Published CLI command names/options, workspace configuration keys, saved-query metadata, MCP tool names/arguments and names exported by `quarry.__all__` form the public interface. Private helpers and GUI layout are implementation details. Compatible optional fields/features may be added; removals or meaning/type changes require a documented migration and major version after 1.0. The lossless numeric representation was introduced in 0.25.1 and is retained in 1.0.0.
 
 Release publication runs the test/build workflow against the exact tag before the PyPI job can run. Main-branch semantic-release can create a version/tag and dispatch this gated publication automatically; merging a release-triggering commit can therefore publish a package.
 
-## Final 1.0 acceptance checklist
+## Release acceptance checklist
 
 - Prepare `1.0.0`, consistent package metadata and release notes, and the Stable development classifier. Keep experimental Neptune labeled separately from the stable interface commitment.
 - Build the intended release candidate and verify a fresh installation through CLI, GUI and MCP. Rehearse upgrading from the latest published 0.x package on that candidate: connections, saved queries, drafts and bounded results must remain usable, with no query automatically executed on reload.
 - Require all CI/build checks on the exact release tag before PyPI publication. After publication, check the installed artifact and both live landing-page languages against the released contract.
 
-Earlier candidate rehearsals do not replace acceptance of the final 1.0 artifact. This checklist records remaining release work, not a claim that 1.0 is already published.
+Candidate rehearsals do not replace checks on the artifact actually published to PyPI. The checklist applies to each release; previous results do not establish support for untested environments.
 
 ## 中文摘要
 

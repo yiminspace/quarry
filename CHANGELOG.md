@@ -2,9 +2,53 @@
 
 All notable changes to Quarry are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[SemVer](https://semver.org/) (pre-1.0: minor bumps may break).
+[SemVer](https://semver.org/). Public breaking changes require a major release;
+pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-09-09
+
+### Stable interface
+
+- First stable release of Quarry's CLI, local GUI, MCP server and public Python
+  query API. The documented commands, workspace/saved-query formats and result
+  contracts follow the compatibility policy in COMPATIBILITY.md.
+- PostgreSQL, MySQL and Redis are the stable engine scope within the documented
+  test matrix. Neptune/openCypher remains experimental; its local empty endpoint
+  is not a graph database emulator or proof of AWS/IAM compatibility.
+- Default query execution is read-only. CLI and MCP writes require explicit
+  authorization with additional prod confirmation; GUI queries stay read-only.
+  Python callers are responsible for authorizing `allow_write=True`.
+- Exact numeric strings, duplicate/empty column metadata, Redis JSON replies,
+  bounded results and active-tab exports form the stable result contract.
+  GUI SQL drafts and bounded result snapshots persist when browser storage is
+  available. Large results remain in-session.
+
+### Upgrade from 0.x
+
+- No workspace or saved-query migration is required from 0.25.1. The 1.0 change
+  establishes the stable contract and package metadata; query behavior is unchanged
+  from the audited 0.25.1 implementation.
+- Upgrading from older 0.x versions also adopts the 0.25.1 corrections: CLI
+  defaults to 500 rows (`--max-rows 0` disables the cap), big integers/exact
+  decimals are strings, and duplicate object-result columns get unique suffixes.
+  CLI JSON stays a row array; GUI/MCP/Python return QueryResult.
+- SQL batches, psql backslash commands and PostgreSQL data-modifying CTEs are
+  explicitly unsupported. Use individual authorized statements, with RETURNING
+  where rows are needed.
+
+### Release validation
+
+- Source distributions exclude local audit reports and development artifacts.
+- Candidate acceptance covers clean CLI/GUI/MCP installation and upgrade from
+  0.25.1, including connections, saved queries, drafts, prior results and no
+  automatic query execution on reload.
+- PyPI publication requires passing tests, coverage, browser and package checks
+  against the exact release tag. See COMPATIBILITY.md for platform and network
+  boundaries; the stable package does not promote experimental Neptune support.
+
+## Pre-1.0 development notes
 
 ### Documentation
 

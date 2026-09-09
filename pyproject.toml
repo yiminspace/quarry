@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quarry-db"
-version = "0.25.1"
+version = "1.0.0"
 description = "AI-native database workbench: one safety-railed query kernel, many faces (CLI / GUI / agent skill / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Wangggym" }]
 keywords = ["database", "sql", "postgres", "mysql", "redis", "ai", "agent", "mcp", "cli", "workbench"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
@@ -26,10 +26,10 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Wangggym/quarry"
-Repository = "https://github.com/Wangggym/quarry"
-Changelog = "https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md"
-Issues = "https://github.com/Wangggym/quarry/issues"
+Homepage = "https://yiminspace.github.io/quarry/"
+Repository = "https://github.com/yiminspace/quarry"
+Changelog = "https://github.com/yiminspace/quarry/blob/main/CHANGELOG.md"
+Issues = "https://github.com/yiminspace/quarry/issues"
 
 [project.optional-dependencies]
 mysql = ["pymysql[rsa]>=1.1"]
@@ -46,7 +46,7 @@ quarry = "quarry.cli:main"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-version_variables = ["src/quarry/__init__.py:__version__"]
+version_variables = ["src/quarry/__init__.py:__version__", "server.json:version"]
 allow_zero_version = true
 major_on_zero = false
 tag_format = "v{version}"
@@ -82,6 +82,7 @@ path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "/reports",
   "/web/node_modules",
   "/web/tsconfig.tsbuildinfo",
 ]

@@ -264,6 +264,7 @@ jobs:
           sdist = next(Path("dist").glob("*.tar.gz"))
           names = tarfile.open(sdist, "r:gz").getnames()
           assert not any("node_modules" in n for n in names)
+          assert not any("/reports/" in n for n in names)
           assert not any(n.endswith("tsconfig.tsbuildinfo") for n in names)
           PY
       - name: Check metadata
