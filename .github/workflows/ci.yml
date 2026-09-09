@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        type: string
+        required: false
+        default: ""
 
 jobs:
   # Boundary Python versions run the full layered suite; 3.12 is covered by the
@@ -30,6 +36,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: quarry
+          MYSQL_DATABASE: quarry_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pquarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
       redis:
         image: redis:7
         ports:
@@ -42,9 +60,12 @@ jobs:
 
     env:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
+      QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -53,7 +74,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Build React shell
-        run: npm ci && npm run lint && npm run build
+        run: npm ci && npm run lint && npm run test:unit && npm run build
         working-directory: web
 
       - uses: actions/setup-python@v5
@@ -93,6 +114,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: quarry
+          MYSQL_DATABASE: quarry_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pquarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
       redis:
         image: redis:7
         ports:
@@ -104,8 +137,11 @@ jobs:
           --health-retries 10
     env:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
+      QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -153,6 +189,8 @@ jobs:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -194,6 +232,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

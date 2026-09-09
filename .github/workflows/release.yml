@@ -20,7 +20,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ inputs.tag || github.event.release.tag_name }}
+
   publish:
+    needs: validate
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

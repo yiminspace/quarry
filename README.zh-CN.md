@@ -4,7 +4,6 @@
 
 [![CI](https://github.com/Wangggym/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/Wangggym/quarry/actions/workflows/ci.yml)
 [![覆盖率 ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](TESTING.md)
-[![Tests](https://img.shields.io/badge/tests-723-brightgreen)](TESTING.md)
 [![PyPI](https://img.shields.io/pypi/v/quarry-db)](https://pypi.org/project/quarry-db/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -19,19 +18,19 @@
 - **确定性的错误契约**(稳定退出码),而不是靠爬 stack trace
 - **配置即文件**,而不是点点点 —— 能进 git、能 diff、能共享给 agent
 
-Quarry 把传统设计倒了过来:先做一个**带 agent 安全契约的查询内核**,人类用的 CLI、GUI 只是从同一个内核长出来的薄壳。无论查询来自浏览器里的人、CI 里的脚本,还是跑 skill 的 Claude,都走同一套安全栏、返回同一种结构化结果。
+Quarry 把传统设计倒了过来:先做一个**带 agent 安全契约的查询内核**,人类用的 CLI、GUI 只是从同一个内核长出来的薄壳。无论查询来自浏览器里的人、CI 里的脚本,还是跑 skill 的 Claude,使用共享查询策略。CLI 输出行数组/文本格式,GUI、MCP、Python 返回 QueryResult;具体边界见[接口与支持契约](COMPATIBILITY.md)。
 
 ## 理念
 
 1. **一核多脸。** 连接管理、查询执行、schema 内省、安全栏都在可 import 的内核(`quarry.core`)里。CLI(`qy`)、GUI、MCP server、agent skill 都是薄壳。修一次 bug,所有脸同时受益。
 
-2. **默认只读;放行是显式且分级的。** 写/DDL 默认拦截(退出码 `8`),`--write` 显式放行;prod 连接在 `--write` 之上还需额外确认;每条查询自动注入 `LIMIT 500`,除非 opt-out。因为安全栏在内核,agent 换任何入口都绕不过去。
+2. **默认只读;放行是显式且分级的。** 写/DDL 默认拦截(退出码 `8`),`--write` 显式放行;prod 连接在 `--write` 之上还需额外确认;没有外层 LIMIT 的读查询默认限制 500 行,`--max-rows 0` 可显式取消;工具/锁定查询不改写,Redis 在取回后截断。PostgreSQL/MySQL 默认查询还使用数据库只读事务。
 
-3. **机器可信赖的契约。** 每次查询返回 `{columns, rows, rowCount, truncated, elapsedMs, engine, sql}`。退出码是稳定 API:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截。agent 可以直接对结果分支,不用解析文字。
+3. **机器可信赖的契约。** GUI/MCP/Python 返回 `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`;CLI JSON 保持行数组,诊断和截断提示走 stderr。退出码是稳定 API:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截。agent 可以直接对结果分支,不用解析文字。
 
 4. **Workspace 即代码。** 一个 workspace 就是一个目录:`connections.toml` + `queries/**/*.sql`(带 `-- @meta` 头的命名查询)。它放在*你的*仓库里,git 管理,团队成员和 agent 共用。内核本身零业务、零密钥。
 
-5. **近乎零依赖。** 纯 stdlib。PostgreSQL 走系统 `psql`,Redis 走 `redis-cli`,SSH 隧道走系统 `ssh`;MySQL 只需可选的 `pymysql`。没有 Electron,没有守护进程,没有云。
+5. **近乎零依赖。** 纯 stdlib。PostgreSQL 走系统 `psql`,Redis 走 `redis-cli`,SSH 隧道走系统 `ssh`;MySQL 只需可选的 `pymysql`。无需 Electron 或云服务;可选的 `qy up` keeper 在后台运行。
 
 ## 安装
 
@@ -84,7 +83,9 @@ my-workspace/
 | `qy save <name> --db X --sql "..."` | 存命名查询 |
 | `qy list / describe / validate / fingerprint / audit` | 管理命名查询 |
 | `qy workspace list/add/remove` | 管理聚合 workspace |
-| `qy gui` | 启动本地 GUI |
+| `qy up/down/status` | workspace 隧道后台保活、停止与状态 |
+| `qy local up/down/status/sync` | 本地开发服务与结构同步 |
+| `qy gui` | 启动只读查询 GUI |
 | `qy mcp [--write]` | 起 MCP server(stdio,给 AI agent 用)|
 
 ## MCP(agent 原生脸)
@@ -99,9 +100,32 @@ claude mcp add quarry -- qy mcp --workspace ~/my-workspace
 ## 安全栏(AI 原生护城河)
 
 - **默认只读**:写/DDL 被拦(退出码 `8`),`--write` 显式放行
-- **自动行数上限**:`run_query()` 默认注入 `LIMIT 500`,`--max-rows N` 提高
+- **自动行数上限**:没有外层 LIMIT 的读查询默认 500 行,`--max-rows N` 提高,`--max-rows 0` 取消
 - **分级 prod 保护**:全环境默认只读 → dev 加 `--write` → prod 在 `--write` 之上还需交互确认(自动化用 `--yes`)
 - **稳定退出码契约**:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截
+
+## 超时与结果契约
+
+连接超时默认 15 秒;执行超时 CLI/GUI 默认 300 秒、MCP 默认 120 秒。
+优先级为 `--timeout` → `QUARRY_TIMEOUT` → 连接的 `timeout` → 默认值。
+PostgreSQL 使用服务端 statement_timeout;MySQL 为尽力设置,MAX_EXECUTION_TIME
+只覆盖 SELECT,客户端超时不能证明写入已经取消。
+
+大整数和高精度小数以字符串保真;重复列名加 `_2` 等后缀;空关系查询保留可用字段信息。
+GUI 不提供查询写入开关;Python 的 `allow_write=True` 表示调用方已完成授权,
+不会另外进行交互式 prod 确认。详见[接口与支持契约](COMPATIBILITY.md)。
+
+## Workspace 保活与本地开发服务
+
+`qy up` 启动可选 keeper,`qy status --format json` 查看隧道状态,
+`qy down` 停止。保活和重连设置按 workspace 保存,断线按退避策略重连;
+普通单次查询不依赖 keeper。
+
+`qy local up/down/status` 管理本地 PostgreSQL、Redis 和 Neptune 空服务,
+`qy local sync <db> --from dev` 将来源结构同步到 local PostgreSQL。
+同步必须指向 local、loopback、无 SSH 隧道的目标;会替换本地结构,
+不会把业务数据复制过来。Neptune 本地空服务不存储或执行真实图数据,
+不能替代真实 AWS Neptune 验证。详细参数见 `qy local --help`。
 
 ## 作为库(GUI 和 agent 的用法)
 
@@ -209,18 +233,11 @@ createdb quarry_test && psql quarry_test -f tests/seed.sql   # 或:make seed
 make test        # 分层运行,末尾给每层 PASS/FAIL 汇总
 ```
 
-**723 个测试,分四层**,每个测试按所用 fixture 自动归类,可单独跑任意一层:
-
-| 层 | 数量 | 覆盖 | 依赖 |
-|----|-----:|------|------|
-| `unit` | 568 | 纯逻辑 + mock 引擎(安全栏、SQL 骨架、参数、格式化、缓存) | 无 |
-| `integration` | 110 | 进程内连真库,含 GUI HTTP API 和 CLI/MCP 分发 | Postgres |
-| `e2e` | 45 | 真子进程:`qy` CLI 与 `qy mcp` stdio server | Postgres |
-| `browser` | 20 | **真实 GUI 前端**,无头 Chromium 驱动(Playwright) | Postgres + Playwright |
-
-连库/引擎的测试在引擎不可达时自动 skip,所以裸机上整套也是绿的;CI 提供引擎、跑全套。
-
-**覆盖率门禁 ≥95%**(单元 + 集成),当前 **99.6%**。
+测试分 unit、integration、e2e、browser 四层(browser 同时属于 e2e)。用
+`python -m pytest --collect-only -q` 查看当前数量,以 CI 报告查看当前覆盖率。
+缺少依赖/引擎会 skip,不能把带 skip 的绿灯当作完整发布验收。
+CI 配置 PostgreSQL 16、MySQL 8.4、Redis 7,单元/集成覆盖率门禁 **≥95%**;
+GUI 行为由真实 Chromium 浏览器测试验证。
 
 ### 如何直观看测试情况
 

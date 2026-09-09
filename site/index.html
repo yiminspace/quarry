@@ -250,7 +250,7 @@
     <div class="grid3">
       <div class="card">
         <h3><span class="ico">{}</span> Results a machine can parse</h3>
-        <p>Every query returns <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code> — a stable, structured contract. No screen-scraping, no prose parsing.</p>
+        <p>GUI/MCP/Python return <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code>; CLI JSON returns row arrays — a stable, structured contract. No screen-scraping, no prose parsing.</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> Rails that live in the kernel</h3>
@@ -269,7 +269,7 @@
   <div class="wrap">
     <div class="eyebrow">The human face</div>
     <h2>And a real workbench for you</h2>
-    <p class="lede"><code>qy gui</code> serves a local, zero-build web workbench over the same kernel: grouped connection tree with an environment switcher (prod turns red), a multi-tab SQL editor with autocomplete, one-click EXPLAIN, a type-aware grid with keyboard navigation and a collapsible JSON inspector, searchable history — light &amp; dark, English &amp; 中文, state persists across restarts.</p>
+    <p class="lede"><code>qy gui</code> serves a local, zero-build web workbench over the same kernel: grouped connection tree with an environment switcher (prod turns red), a multi-tab SQL editor with autocomplete, one-click EXPLAIN, a type-aware grid with keyboard navigation and a collapsible JSON inspector, searchable history — light &amp; dark, English &amp; 中文, drafts and bounded result snapshots persist across restarts.</p>
     <div style="display:flex;justify-content:flex-end;margin-top:34px">
       <button id="shotTheme" onclick="const i=document.getElementById('guiShot');const d=i.src.includes('gui-dark');i.src=d?'assets/gui-light.png?v=020':'assets/gui-dark.png?v=020';this.textContent=d?'◐ Dark theme':'◑ Light theme'"
         style="background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 14px;font-size:13px;cursor:pointer">◑ Light theme</button>
@@ -303,7 +303,7 @@
   <div class="wrap">
     <div class="eyebrow">Safety rails</div>
     <h2>Read-only by default. Escalation is explicit and graduated.</h2>
-    <p class="lede">Writes and DDL are blocked unless you pass <code>--write</code>. Production connections require an additional confirmation on top of that. Every query gets an automatic <code>LIMIT 500</code> unless you opt out. Environments default to <code>dev</code> — the safest one.</p>
+    <p class="lede">Writes and DDL are blocked unless you pass <code>--write</code>. Production connections require an additional confirmation on top of that. Read queries without an outer LIMIT default to 500 rows; <code>--max-rows 0</code> disables the cap. Utility/locking queries are not rewritten; Redis caps after receipt. Environments default to <code>dev</code>.</p>
     <div class="exits">
       <div class="exit e0"><div class="code">0</div><div class="name">ok — rows returned</div></div>
       <div class="exit e2"><div class="code">2</div><div class="name">connection error</div></div>
@@ -353,7 +353,7 @@
   <div class="wrap">
     <div class="eyebrow">Engines &amp; footprint</div>
     <h2>Nearly zero dependencies</h2>
-    <p class="lede">Pure Python stdlib. Engines shell out to the battle-tested clients you already have — no Electron, no daemon, no cloud, no telemetry. Install with pipx, it just runs.</p>
+    <p class="lede">Pure Python stdlib. Engines shell out to the battle-tested clients you already have — no Electron, no cloud, no telemetry. The optional keeper runs in the background. Install with pipx, it just runs.</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · system psql</span>
       <span class="engine"><b>MySQL</b> · optional pymysql</span>
@@ -365,7 +365,7 @@
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> A real library, importable</h3>
-        <p><code>from quarry import run_query</code> — the same kernel the CLI, GUI and MCP server use is three lines away in your own tooling, with the same rails and the same result contract.</p>
+        <p><code>from quarry import run_query</code> — the same kernel the CLI, GUI and MCP server use is three lines away in your own tooling, with shared query policies and a structured QueryResult; CLI JSON renders row arrays.</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> No telemetry, no cloud</h3>

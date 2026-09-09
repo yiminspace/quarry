@@ -685,7 +685,51 @@ def test_zero_rows_empty_state(page):
     _select_testpg(page)
     _set_sql(page, "select * from customers where false")
     page.locator("#runBtn").click()
-    page.wait_for_selector('#grid .empty:has-text("0")')   # 0-row state, not a table
+    page.wait_for_selector('#grid .empty:has-text("0")')
+    assert page.locator('#grid thead th[data-i="0"]').inner_text().startswith('id')
+
+
+def test_lossless_numeric_sort_and_export(page, tmp_path):
+    _select_testpg(page)
+    _set_sql(page, "SELECT * FROM (VALUES (9007199254740993::bigint, "
+             "0.123456789012345678901::numeric), (9007199254740992, "
+             "0.123456789012345678902)) AS t(id,amount)")
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid tbody td:nth-child(2)')?.textContent === '9007199254740993'")
+    page.locator('#grid th[data-i="0"]').click()
+    page.wait_for_function("document.querySelector('#grid tbody td:nth-child(2)')?.textContent === '9007199254740992'")
+    with page.expect_download() as event:
+        page.locator('#jsonBtn').click()
+    path = tmp_path / 'exact.json'
+    event.value.save_as(str(path))
+    rows = json.loads(path.read_text())
+    assert rows == [
+        {'id': '9007199254740992', 'amount': '0.123456789012345678902'},
+        {'id': '9007199254740993', 'amount': '0.123456789012345678901'},
+    ]
+    with page.expect_download() as event:
+        page.locator('#csvBtn').click()
+    csv_path = tmp_path / 'exact.csv'
+    event.value.save_as(str(csv_path))
+    assert '9007199254740993,0.123456789012345678901' in csv_path.read_text(encoding='utf-8-sig')
+    # Both sort directions and restoring original order share the same result.
+    page.locator('#grid th[data-i="0"]').click()
+    page.locator('#grid th[data-i="0"]').click()
+    assert _col_values(page)[0] == '9007199254740993'
+
+
+def test_empty_columns_and_duplicate_names_export(page, tmp_path):
+    _select_testpg(page)
+    _set_sql(page, 'SELECT 1 AS "a,b", 2 AS id, 3 AS id WHERE false')
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid .empty:has-text("0")')
+    assert page.locator('#grid th[data-i]').count() == 3
+    assert page.locator('#grid th[data-i="2"]').inner_text().startswith('id_2')
+    with page.expect_download() as event:
+        page.locator('#csvBtn').click()
+    path = tmp_path / 'empty.csv'
+    event.value.save_as(str(path))
+    assert path.read_text(encoding='utf-8-sig') == '"a,b",id,id_2'
 
 
 def test_truncated_badge_shows(page):

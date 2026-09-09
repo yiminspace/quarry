@@ -39,18 +39,18 @@ def test_resolve_redis_cli_missing_raises(monkeypatch):
 
 def test_run_redis_rows(monkeypatch):
     monkeypatch.setattr(redis_engine, "resolve_redis_cli", lambda: "redis-cli")
-    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout="a\nb\nc\n"))
+    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout='["a","b","c"]\n'))
     rows, download_bytes = redis_engine.run_redis(URL, "LRANGE k 0 -1")
     assert rows == [{"value": "a"}, {"value": "b"}, {"value": "c"}]
-    assert download_bytes == len("a\nb\nc\n".encode("utf-8"))
+    assert download_bytes == len('["a","b","c"]\n'.encode("utf-8"))
 
 
-def test_run_redis_trims_trailing_blank(monkeypatch):
+def test_run_redis_preserves_trailing_newlines(monkeypatch):
     monkeypatch.setattr(redis_engine, "resolve_redis_cli", lambda: "redis-cli")
-    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout="x\n\n"))
+    monkeypatch.setattr(redis_engine.subprocess, "run", lambda *a, **k: _proc(stdout='"x\\n\\n"\n'))
     rows, download_bytes = redis_engine.run_redis(URL, "GET k")
-    assert rows == [{"value": "x"}]
-    assert download_bytes == len("x\n\n".encode("utf-8"))
+    assert rows == [{"value": "x\n\n"}]
+    assert download_bytes == len('"x\\n\\n"\n'.encode("utf-8"))
 
 
 def test_run_redis_error_returncode(monkeypatch):
@@ -85,11 +85,44 @@ def test_run_redis_password_adds_auth_flags(monkeypatch):
 
     def capture(cmd, **k):
         seen["cmd"] = cmd
-        return _proc(stdout="PONG")
+        return _proc(stdout='"PONG"')
     monkeypatch.setattr(redis_engine.subprocess, "run", capture)
     redis_engine.run_redis("redis://:secret@h:6379/2", "PING")
     assert "-a" in seen["cmd"] and "secret" in seen["cmd"] and "--no-auth-warning" in seen["cmd"]
     assert "-n" in seen["cmd"] and "2" in seen["cmd"]
+
+
+def test_scan_mode_pages_json_and_keeps_empty_and_newline_keys(monkeypatch):
+    monkeypatch.setattr(redis_engine, "resolve_redis_cli", lambda: "redis-cli")
+    replies = ['["3",["a","line\\nbreak"]]', '["0",["", "two words"]]']
+    commands = []
+    monkeypatch.setattr(redis_engine.time, "sleep", lambda _: None)
+    def capture(cmd, **kwargs):
+        commands.append(cmd)
+        return _proc(stdout=replies[len(commands)-1])
+    monkeypatch.setattr(redis_engine.subprocess, "run", capture)
+    rows, size = redis_engine.run_redis(URL, '--scan --pattern "two *" --count 1 --cursor 2 -i 0.01')
+    assert rows == [{"value": k} for k in ['a', 'line\nbreak', '', 'two words']]
+    assert size == sum(len(r.encode()) for r in replies)
+    assert commands[0][-6:] == ['SCAN', '2', 'MATCH', 'two *', 'COUNT', '1']
+    assert commands[1][-6:] == ['SCAN', '3', 'MATCH', 'two *', 'COUNT', '1']
+
+
+@pytest.mark.parametrize('options', ['--pattern', '--eval script.lua', '--count 0', '--cursor -1', '-i nan', '-i -1', '--count x'])
+def test_scan_mode_rejects_invalid_or_unrelated_options(options, monkeypatch):
+    monkeypatch.setattr(redis_engine, 'resolve_redis_cli', lambda: pytest.fail('invalid scan reached transport'))
+    with pytest.raises(QuarryError):
+        redis_engine.run_redis(URL, '--scan ' + options)
+
+
+def test_scan_mode_has_one_timeout_budget(monkeypatch):
+    ticks = iter([0, 0.5, 1.1])
+    monkeypatch.setattr(redis_engine.time, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(redis_engine, 'resolve_redis_cli', lambda: 'redis-cli')
+    monkeypatch.setattr(redis_engine.subprocess, 'run', lambda *a, **k: _proc(stdout='["1",[]]'))
+    with pytest.raises(QuarryError, match='timed out') as exc:
+        redis_engine.run_redis(URL, '--scan', timeout=1)
+    assert exc.value.exit_code == 2
 
 
 # ---- scan_keys ----

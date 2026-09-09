@@ -23,23 +23,23 @@ if [[ "${1:-}" =~ ^(unit|integration|e2e|browser)$ ]]; then
 fi
 if [[ "${1:-}" == "--" ]]; then shift; PYTEST_EXTRA=("$@"); fi
 
-declare -A RESULT
+RESULT=()
 overall=0
 for layer in "${LAYERS[@]}"; do
   hr; bold "▶ ${layer} tests"; hr
   if python3 -m pytest -m "$layer" "${PYTEST_EXTRA[@]}"; then
-    RESULT[$layer]="PASS"
+    RESULT+=("PASS")
   else
     rc=$?
     # pytest exit 5 = "no tests collected" for this marker — treat as skip, not fail
-    if [[ $rc -eq 5 ]]; then RESULT[$layer]="none"; else RESULT[$layer]="FAIL"; overall=1; fi
+    if [[ $rc -eq 5 ]]; then RESULT+=("none"); else RESULT+=("FAIL"); overall=1; fi
   fi
   echo
 done
 
 hr; bold "Summary"; hr
-for layer in "${LAYERS[@]}"; do
-  printf '  %-12s %s\n' "$layer" "${RESULT[$layer]}"
+for ((i=0; i<${#LAYERS[@]}; i++)); do
+  printf '  %-12s %s\n' "${LAYERS[$i]}" "${RESULT[$i]}"
 done
 hr
 if [[ $overall -eq 0 ]]; then bold "✓ all layers green"; else bold "✗ failures above"; fi

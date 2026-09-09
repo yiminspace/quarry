@@ -229,12 +229,14 @@ class TestPureHelpers:
         args = argparse.Namespace(write=True, yes=False)
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
-    def test_confirm_prod_write_readonly_is_auto_ok(self):
+    def test_confirm_prod_write_opt_in_requires_confirmation_even_for_select(self, monkeypatch):
         import argparse
         conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
         args = argparse.Namespace(write=True, yes=False)
-        # a read-only statement never needs confirmation, even on prod
-        assert cli._confirm_prod_write(conn, "SELECT 1", args) is True
+        import io
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
+        # SELECT can call a writing function after the DB read-only guard is lifted.
+        assert cli._confirm_prod_write(conn, "SELECT 1", args) is False
 
     def test_confirm_prod_write_yes_flag_skips_prompt(self):
         import argparse
@@ -1047,16 +1049,13 @@ class TestExecRunDB:
         assert rc == EXIT_SAFETY_BLOCKED
 
     def test_exec_write_flag_lifts_safety_block(self, wsdir, pg_exec):
-        # --write must pass enforce_safety (no EXIT_SAFETY_BLOCKED). The CLI's
-        # json/csv/table path then wraps the statement in `FROM (<sql>)`, which
-        # Postgres rejects for a bare INSERT — so we get a plain SQL error (3),
-        # NOT the safety block (8). The distinction proves --write took effect.
+        # Authorization must result in a committed write, not just a different error.
         pg_exec("DROP TABLE IF EXISTS cli_tmp_w2; CREATE TABLE cli_tmp_w2(id int)")
         try:
             rc = run_cli(wsdir, "exec", "testpg", "--sql",
                          "INSERT INTO cli_tmp_w2 VALUES (7)", "--write", "--format", "json")
-            assert rc != EXIT_SAFETY_BLOCKED
-            assert rc == EXIT_SQL_ERROR
+            assert rc == 0
+            assert pg_exec("SELECT id FROM cli_tmp_w2")[1].strip() == "7"
         finally:
             pg_exec("DROP TABLE IF EXISTS cli_tmp_w2")
 

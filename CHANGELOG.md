@@ -6,11 +6,43 @@ All notable changes to Quarry are documented here. The format follows
 
 ## [Unreleased]
 
+### Release contract corrections
+
+- **Read-only queries cannot execute mutations through EXPLAIN ANALYZE or
+  Cypher write clauses.** PostgreSQL/MySQL also enforce read-only transactions;
+  Redis unknown commands require explicit write authorization. Every CLI prod
+  `--write` opt-in requires confirmation, including SELECTs that may call functions.
+- **PostgreSQL authorized writes execute and commit**, with INSERT/UPDATE/DELETE
+  RETURNING supported. Client backslash commands, batches and data-modifying
+  CTEs are rejected with an actionable error.
+- **Results preserve precision and columns**: large integers and exact decimals
+  use strings; duplicate object-result columns get unique suffixes; empty
+  relational results retain metadata. GUI sorting and exports preserve exact
+  values, and empty grids show headers. Invalid UTF-8 MySQL bytes use base64
+  rather than replacement characters; datetime fractions are retained.
+- **Redis replies preserve nil, empty strings, newlines and nested arrays**;
+  server errors now fail instead of appearing as successful data. This requires
+  redis-cli 6+ for JSON output.
+- **Redis `--scan` remains supported**, using cursor-based JSON replies to
+  preserve keys with whitespace/newlines. Cypher property/map/label names such
+  as `n.set` are recognized as identifiers without allowing mutation clauses.
+- **CLI defaults to 500 rows**, with `--max-rows 0` for explicitly unlimited
+  results and stderr notices on truncation. Inner LIMIT clauses no longer disable
+  outer pagination; openCypher RETURN queries receive a limit too. CLI JSON
+  remains a row array for compatibility; interface differences are documented.
+- **MCP accepts `--workspace` after the subcommand**, matching the setup examples.
+  Schema sync strips pg_dump's non-schema `transaction_timeout` setting so
+  pg_dump 17 can target PostgreSQL 16. The test runner supports macOS Bash 3.2.
+- **Release publication requires CI on the exact tag**, including real MySQL 8.4
+  regressions and frontend unit tests. GUI no longer installs unused Flask;
+  the empty `[gui]` extra remains compatible. Documentation now defines support,
+  result and compatibility boundaries without stale test-count/coverage claims.
+
 ### Fixed
 
 - **MySQL writes now persist**: successful statements executed through the
   shared MySQL query path are committed before the connection closes, so
-  `qy exec --write`, the GUI, and MCP no longer report success while silently
+  `qy exec --write` and authorized MCP/Python calls no longer report success while silently
   rolling the transaction back.
 
 ### Changed

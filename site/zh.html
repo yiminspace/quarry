@@ -250,7 +250,7 @@
     <div class="grid3">
       <div class="card">
         <h3><span class="ico">{}</span> 机器能解析的结果</h3>
-        <p>每次查询返回 <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code> —— 稳定的结构化契约。不用爬屏幕,不用解析文字。</p>
+        <p>GUI/MCP/Python 返回 <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code>;CLI JSON 输出行数组 —— 稳定的结构化契约。不用爬屏幕,不用解析文字。</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 安全栏长在内核里</h3>
@@ -303,7 +303,7 @@
   <div class="wrap">
     <div class="eyebrow">安全栏</div>
     <h2>默认只读。放行是显式且分级的。</h2>
-    <p class="lede">写/DDL 一律拦截,除非显式 <code>--write</code>;prod 连接在此之上还需再确认一次。每条查询自动注入 <code>LIMIT 500</code>,除非主动放开。环境默认 <code>dev</code> —— 最安全的那个。</p>
+    <p class="lede">写/DDL 一律拦截,除非显式 <code>--write</code>;prod 连接在此之上还需再确认一次。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
     <div class="exits">
       <div class="exit e0"><div class="code">0</div><div class="name">成功 — 返回行</div></div>
       <div class="exit e2"><div class="code">2</div><div class="name">连接错误</div></div>
@@ -353,7 +353,7 @@
   <div class="wrap">
     <div class="eyebrow">引擎与体积</div>
     <h2>近乎零依赖</h2>
-    <p class="lede">纯 Python stdlib。引擎直接调用你机器上久经考验的客户端 —— 没有 Electron、没有守护进程、没有云、没有遥测。pipx 装上就能跑。</p>
+    <p class="lede">纯 Python stdlib。引擎直接调用你机器上久经考验的客户端 —— 无需 Electron、云服务或遥测;可选 keeper 在后台运行。pipx 装上就能跑。</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · 系统 psql</span>
       <span class="engine"><b>MySQL</b> · 可选 pymysql</span>
@@ -365,7 +365,7 @@
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> 真类库,可 import</h3>
-        <p><code>from quarry import run_query</code> —— CLI、GUI、MCP server 用的同一个内核,三行代码进你自己的工具,同样的安全栏、同样的结果契约。</p>
+        <p><code>from quarry import run_query</code> —— CLI、GUI、MCP server 用的同一个内核,三行代码进你自己的工具,共享查询策略并返回 QueryResult;CLI JSON 输出行数组。</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 零遥测,零云端</h3>

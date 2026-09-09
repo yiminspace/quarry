@@ -3,8 +3,26 @@ import {
   cellOpensInspector,
   cellPreview,
   cellText,
+  compareCellValues,
   GRID_CELL_PREVIEW_CHARS,
 } from "./cellValue";
+
+describe("lossless numeric comparison", () => {
+  it.each([
+    ["9007199254740992", "9007199254740993"],
+    ["0.123456789012345678901", "0.123456789012345678902"],
+    ["-9007199254740993", "-9007199254740992"],
+    ["9.99e100", "1e101"],
+    ["0", "0.00000000000000001"],
+  ])("orders %s before %s without rounding", (a, b) => {
+    expect(compareCellValues(a, b)).toBeLessThan(0);
+    expect(compareCellValues(b, a)).toBeGreaterThan(0);
+  });
+  it("treats alternate decimal spellings as equal", () => {
+    expect(compareCellValues("01.000", "1e0")).toBe(0);
+    expect(compareCellValues("-0", 0)).toBe(0);
+  });
+});
 
 describe("cellPreview", () => {
   it("keeps short scalar and JSON values unchanged", () => {

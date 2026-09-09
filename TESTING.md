@@ -40,7 +40,7 @@ pip install -e ".[e2e]" && make browser-install # installs Playwright + headless
 ```
 
 Override the database URL with `QUARRY_TEST_DB_URL` (defaults to
-`postgresql://localhost:5432/quarry_test`). MySQL tests run only when
+`postgresql://localhost:5432/quarry_test`). Real MySQL release-contract tests run only when
 `QUARRY_TEST_MYSQL_URL` is set; Redis and MySQL execution paths are otherwise
 covered by mocked tests so they run everywhere.
 
@@ -57,7 +57,7 @@ unreachable defensive code (blocking `serve_forever`, `# unreachable` lines afte
 ## CI
 
 `.github/workflows/ci.yml` runs four kinds of jobs: the layered suite on the
-boundary Python versions 3.11 and 3.13 (with Postgres + Redis services), a
+boundary Python versions 3.11 and 3.13 (with Postgres + MySQL + Redis services), a
 `coverage` gate job on 3.12 that also runs the e2e layer (so no version×layer
 combination runs twice), a `browser` job (headless Chromium, cached between
 runs), and a package `build` check. Every job builds the React shell (`web/`,
@@ -186,13 +186,13 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 38 | toolbar | Format (uppercase + newlines) | B:test_format_button_uppercases_and_newlines | ✅ |
 | 39 | toolbar | EXPLAIN: single-column plan modal + Esc closes | B:test_explain_opens_plan_modal_and_escape_closes | ✅ |
 | 40 | toolbar | EXPLAIN guards: no-conn toast / redis toast / multi-col grid / disabled while running | F:test_explain_without_connection_toasts, F:test_redis_key_tree… (multi-col + disabled unasserted) | 🟡 |
-| 41 | toolbar | CSV export: `quarry-<db>.csv`, UTF-8 BOM, quoting/escaping | F:test_csv_export_content_bom_and_escaping | ✅ |
-| 42 | toolbar | JSON export: `quarry-<db>.json`, row content | F:test_json_export_content | ✅ |
+| 41 | toolbar | CSV export: `quarry-<db>.csv`, UTF-8 BOM, quoting/escaping | F:test_csv_export_content_bom_and_escaping, F:test_lossless_numeric_sort_and_export, F:test_empty_columns_and_duplicate_names_export | ✅ |
+| 42 | toolbar | JSON export: `quarry-<db>.json`, row content | F:test_json_export_content, F:test_lossless_numeric_sort_and_export | ✅ |
 | 43 | toolbar | history modal: list + recall into editor; Esc closes | B:test_history_lists_runs…, F:test_history_modal_escape_closes | ✅ |
 | 44 | toolbar | history search / ago timestamps / empty toast / 100 cap | F:test_history_search_filters, F:test_history_empty_toast (ago + cap unasserted) | 🟡 |
 | 45 | grid | render: sticky rownum, typed headers, zebra rows | B:test_click_table_renders_grid_with_types_and_status | ✅ |
 | 46 | grid | cell type coloring (num/uuid/ts/bool/json/null) | F:test_cell_type_coloring, F:test_cell_json_opens_tree_modal | ✅ |
-| 47 | grid | sort asc/desc, numeric-aware; 3rd click restores original order; arrow | B:test_sort_column_toggles_arrow_and_reorders, F:test_sort_numeric_strings_and_third_click_restores | ✅ |
+| 47 | grid | sort asc/desc, exact for bigint/decimal strings; 3rd click restores original order; arrow | B:test_sort_column_toggles_arrow_and_reorders, F:test_sort_numeric_strings_and_third_click_restores, F:test_lossless_numeric_sort_and_export | ✅ |
 | 48 | grid | sort state resets on a new result | F:test_new_result_resets_sort_state | ✅ |
 | 49 | grid | column width drag | F:test_column_width_drag | ✅ |
 | 50 | grid | cell select; bounded preview for large values; dblclick long→chunked modal / short→copy; explicit copy always uses the full raw value (honest toast) | B:test_cell_doubleclick_no_error, F:test_cell_copy_via_keyboard_and_dblclick, F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview; cellValue.test.ts | ✅ |
@@ -200,7 +200,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 52 | grid | row-detail modal (rownum click), with the same bounded large-cell previews as the grid | B:test_rownum_click_opens_row_detail_modal, F:test_large_cell_is_bounded_in_dom_and_kept_session_only | ✅ |
 | 53 | grid | keyboard nav: arrows move selection, Enter opens, Cmd+C copies | F:test_grid_keyboard_nav_and_enter_opens_modal, F:test_cell_copy_via_keyboard_and_dblclick | ✅ |
 | 54 | grid | status bar: rows / elapsed / download size / avg speed (≈ + tooltip when estimated) / truncated / target | B:test_click_table…, F:test_truncated_badge_shows, F:test_status_bar_shows_download_size_and_speed, F:test_load_more_accumulates_download_size_and_speed | ✅ |
-| 55 | grid | 0-row empty state | F:test_zero_rows_empty_state | ✅ |
+| 55 | grid | 0-row empty state retains available column headers | F:test_zero_rows_empty_state, F:test_empty_columns_and_duplicate_names_export | ✅ |
 | 56 | grid | error pane (`.err`); network failures show a readable message | B:test_write_is_blocked…, F:test_network_error_shows_readable_message | ✅ |
 | 57 | grid | bounded result persisted to localStorage and restored after reload; results over 512 KiB remain in-session only with a visible status notice | F:test_editor_and_result_restored_after_reload, F:test_large_cell_is_bounded_in_dom_and_kept_session_only; tabsStore.test.ts | ✅ |
 | 58 | grid | Escape closes the topmost modal | B:test_explain…, F:test_cell_json…, F:test_history_modal_escape_closes | ✅ |
@@ -253,6 +253,17 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
 | 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; dev/local run immediately, prod only shows the established no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_and_runs_starter_tabs, connectionStarter.test.ts | ✅ |
+
+### Release contract regression coverage
+
+`test_release_contracts.py` verifies actual write/readback behavior (Postgres and
+MySQL), read-only function/EXPLAIN protection, Redis prod confirmation and error/
+null/text responses, outer limit pagination, duplicate names, precision and the
+MCP startup argument order. Redis scan-mode coverage includes real CLI output,
+cursor pagination and whitespace/newline keys; Cypher coverage distinguishes
+property/map/label identifiers from mutation clauses. Set `QUARRY_TEST_MYSQL_URL` and
+`QUARRY_TEST_REDIS_URL` for isolated real services; CI supplies MySQL 8.4 and Redis 7.
+The release workflow reuses CI against its exact tag before publishing to PyPI.
 
 ### Design gaps (capability-audit output — missing on purpose until scheduled)
 

@@ -4,7 +4,6 @@
 
 [![CI](https://github.com/Wangggym/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/Wangggym/quarry/actions/workflows/ci.yml)
 [![Coverage ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](TESTING.md)
-[![Tests](https://img.shields.io/badge/tests-723-brightgreen)](TESTING.md)
 [![PyPI](https://img.shields.io/pypi/v/quarry-db)](https://pypi.org/project/quarry-db/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/quarry-db/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -20,19 +19,19 @@ Every database tool you know — DBeaver, TablePlus, pgAdmin — assumes a *huma
 - **Deterministic error contracts** (stable exit codes), not stack traces to scrape
 - **Configuration as files**, not clicks — so it can be versioned, diffed, and shared with agents
 
-Quarry inverts the traditional design: it is a **query kernel with an agent-safe contract first**, and the human faces (CLI, GUI) are thin shells grown from the same kernel. Whether a query comes from a person in the browser, a script in CI, or Claude running a skill, it passes through the exact same safety rails and returns the exact same structured result.
+Quarry inverts the traditional design: it is a **query kernel with an agent-safe contract first**, and the human faces (CLI, GUI) are thin shells grown from the same kernel. Whether a query comes from a person in the browser, a script in CI, or Claude running a skill, it uses shared query policies. CLI formats render rows; the GUI, MCP and Python API expose a structured QueryResult. See the [interface and support contract](COMPATIBILITY.md) for the exact boundaries.
 
 ## Philosophy
 
 1. **One core, many faces.** Connection management, query execution, schema introspection, and safety rails live in an importable kernel (`quarry.core`). The CLI (`qy`), the GUI, the MCP server, and agent skills are thin shells. Fix a bug once, every face gets it.
 
-2. **Read-only by default; escalation is explicit and graduated.** Writes and DDL are blocked (exit code `8`) unless you pass `--write`. Production connections require an *additional* confirmation on top of `--write`. Every query gets an automatic `LIMIT 500` unless you opt out. Because the rails are in the kernel, an agent cannot bypass them by picking a different entry point.
+2. **Read-only by default; escalation is explicit and graduated.** Writes and DDL are blocked (exit code `8`) unless you pass `--write`. Production connections require an *additional* confirmation on top of `--write`. Read queries without an outer LIMIT default to a 500-row cap; `--max-rows 0` explicitly disables it. PostgreSQL/MySQL query execution also uses database read-only transactions unless writes are authorized.
 
-3. **A contract machines can trust.** Every query returns `{columns, rows, rowCount, truncated, elapsedMs, engine, sql}`. Exit codes are stable API: `0` ok, `2` connection error, `3` SQL error, `8` safety block. An agent can branch on outcomes without parsing prose.
+3. **A contract machines can trust.** GUI/MCP/Python queries return `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`. CLI JSON remains an array of rows; diagnostics and truncation notices go to stderr. Exit codes are stable API: `0` ok, `2` connection error, `3` SQL error, `8` safety block. An agent can branch on outcomes without parsing prose.
 
 4. **Workspace as code.** A workspace is just a directory: `connections.toml` + `queries/**/*.sql` (named queries with `-- @meta` headers). It lives in *your* repo, versioned by git, shared between teammates and agents alike. The kernel itself carries zero business logic and zero secrets.
 
-5. **Nearly zero dependencies.** Pure stdlib. PostgreSQL goes through your system `psql`, Redis through `redis-cli`, SSH tunnels through system `ssh`. MySQL is one optional `pymysql`. No Electron, no daemon, no cloud.
+5. **Nearly zero dependencies.** Pure stdlib. PostgreSQL goes through your system `psql`, Redis through `redis-cli`, SSH tunnels through system `ssh`. MySQL is one optional `pymysql`. No Electron or cloud service; the optional `qy up` keeper runs in the background.
 
 ## Install
 
@@ -72,6 +71,8 @@ my-workspace/
 
 Resolution order: `--workspace PATH` → `~/.config/quarry/config.toml` → current directory.
 
+See [COMPATIBILITY.md](COMPATIBILITY.md) for lossless number/string representations, write support by entry point, stable interfaces and tested environment boundaries.
+
 ## CLI reference
 
 | Command | Purpose |
@@ -109,7 +110,7 @@ Published in the [MCP Registry](https://registry.modelcontextprotocol.io/) as `m
 ## Safety rails (the AI-native moat)
 
 - **Read-only by default**: writes/DDL blocked with exit code `8`; `--write` to allow
-- **Automatic row cap**: `run_query()` injects `LIMIT 500`; raise with `--max-rows N`
+- **Automatic row cap**: read queries without an outer LIMIT default to 500 rows; raise with `--max-rows N`, disable with `--max-rows 0` (utility/locking queries are not rewritten; Redis caps after receipt)
 - **Graduated prod protection**: all envs default read-only → dev needs `--write` → prod needs `--write` *plus* an interactive confirmation (`--yes` for automation)
 - **Stable exit-code contract**: `0` ok / `2` connection / `3` SQL / `8` safety block
 
@@ -133,7 +134,7 @@ url     = "postgresql://…prod…/shop"
 timeout = 600   # this connection alone gets 10 minutes
 ```
 
-On PostgreSQL, `qy` also sets a server-side `statement_timeout` (~90% of the execute timeout) before running the query; on MySQL/MariaDB it sets the equivalent session variable (`MAX_EXECUTION_TIME` / `max_statement_time`, whichever the server supports) best-effort. Either way, the database itself cancels a runaway query and reports the real reason — instead of the client giving up and leaving the query running server-side. A timeout error always tells you how to raise it (`--timeout`, `QUARRY_TIMEOUT`, or the connection's `timeout` setting). `--timeout` and the `timeout` field must be a positive number of seconds.
+On PostgreSQL, `qy` also sets a server-side `statement_timeout` (~90% of the execute timeout) before running the query; on MySQL/MariaDB it sets the equivalent session variable (`MAX_EXECUTION_TIME` / `max_statement_time`, whichever the server supports) best-effort. PostgreSQL enforces its statement timeout server-side. MySQL support is best-effort and its MAX_EXECUTION_TIME applies to SELECTs; a client timeout is not proof that a write was cancelled. A timeout error always tells you how to raise it (`--timeout`, `QUARRY_TIMEOUT`, or the connection's `timeout` setting). `--timeout` and the `timeout` field must be a positive number of seconds.
 
 ## As a library (what the GUI and agents use)
 
@@ -307,19 +308,19 @@ createdb quarry_test && psql quarry_test -f tests/seed.sql   # or: make seed
 make test        # layered run with a per-layer PASS/FAIL summary
 ```
 
-**723 tests in four layers**, each auto-classified so you can run any slice:
+Tests are classified into four layers; use `python -m pytest --collect-only -q`
+for the current count and CI reports for current coverage.
 
-| Layer | Count | Covers | Needs |
-|-------|------:|--------|-------|
-| `unit` | 568 | pure logic + mocked engines (safety rails, SQL skeleton, params, formatters, cache) | nothing |
-| `integration` | 110 | in-process against a real DB, incl. the GUI HTTP API and CLI/MCP dispatch | Postgres |
-| `e2e` | 45 | the real `qy` CLI and `qy mcp` stdio server as subprocesses | Postgres |
-| `browser` | 20 | the **real GUI frontend** driven in headless Chromium (Playwright) | Postgres + Playwright |
+| Layer | Covers | Needs |
+|-------|--------|-------|
+| `unit` | pure logic and mocked engine behavior | test dependencies |
+| `integration` | real database and in-process CLI/GUI/MCP dispatch | relevant database; Docker for local lifecycle/sync |
+| `e2e` | real CLI/MCP subprocesses | PostgreSQL |
+| `browser` | real built GUI driven by Chromium (also in e2e) | PostgreSQL + Playwright; Redis for key browsing |
 
-DB/engine-backed tests skip automatically when the engine is unreachable, so the
-suite stays green on a bare machine; CI provides the engines and runs everything.
-
-**Coverage is gated at ≥95%** (unit + integration) and currently sits at **99.6%**.
+Missing dependencies can skip tests; a green run with skips is not a full release
+validation. CI provides PostgreSQL 16, MySQL 8.4 and Redis 7. The unit/integration
+coverage gate is **≥95%**; frontend behavior is verified separately.
 
 ### Seeing test status at a glance
 

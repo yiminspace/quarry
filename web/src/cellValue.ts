@@ -3,6 +3,33 @@ export const MODAL_TEXT_CHUNK_CHARS = 20_000;
 
 export type CellPreview = { text: string | null; truncated: boolean };
 
+function decimalParts(value: unknown): { sign: number; digits: string; power: number } | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i.exec(String(value).trim());
+  if (!match || !(match[2] || match[3])) return null;
+  const exponent = Number(match[4] || 0);
+  if (!Number.isSafeInteger(exponent)) return null;
+  const raw = match[2] + (match[3] || "");
+  const digits = raw.replace(/^0+/, "");
+  if (!digits) return { sign: 0, digits: "0", power: 0 };
+  return { sign: match[1] === "-" ? -1 : 1, digits,
+    power: match[2].length - (raw.length - digits.length) + exponent };
+}
+
+/** Compare lossless decimal/bigint strings without converting to Number. */
+export function compareCellValues(a: unknown, b: unknown): number {
+  const x = decimalParts(a), y = decimalParts(b);
+  if (x && y) {
+    if (x.sign !== y.sign) return x.sign - y.sign;
+    if (x.sign === 0) return 0;
+    if (x.power !== y.power) return (x.power > y.power ? 1 : -1) * x.sign;
+    const width = Math.max(x.digits.length, y.digits.length);
+    const left = x.digits.padEnd(width, "0"), right = y.digits.padEnd(width, "0");
+    return (left === right ? 0 : left > right ? 1 : -1) * x.sign;
+  }
+  return String(a).localeCompare(String(b));
+}
+
 /** Full-fidelity conversion used only by explicit actions (copy/export/open).
  * Grid rendering must use cellPreview() so one multi-megabyte value cannot be
  * copied into the DOM several times. */

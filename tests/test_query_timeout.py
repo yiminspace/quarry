@@ -267,6 +267,8 @@ def test_run_query_postgres_default_timeouts(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel_capture(captured))
 
     def fake_capture(url, sql, *, psql_vars=None, timeout=60, connect_timeout=None):
+        if "\\gdesc" in sql:
+            return (0, "", "")
         captured["timeout"] = timeout
         captured["connect_timeout"] = connect_timeout
         captured["sql"] = sql
@@ -286,6 +288,8 @@ def test_run_query_postgres_cli_timeout_overrides_conn_setting(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel_capture(captured))
 
     def fake_capture(url, sql, *, psql_vars=None, timeout=60, connect_timeout=None):
+        if "\\gdesc" in sql:
+            return (0, "", "")
         captured["timeout"] = timeout
         captured["sql"] = sql
         return (0, "[]", "")
@@ -302,6 +306,8 @@ def test_run_query_mcp_default_timeout_is_120s(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel_capture(captured))
 
     def fake_capture(url, sql, *, psql_vars=None, timeout=60, connect_timeout=None):
+        if "\\gdesc" in sql:
+            return (0, "", "")
         captured["timeout"] = timeout
         return (0, "[]", "")
 
@@ -316,6 +322,8 @@ def test_execute_sql_postgres_default_timeouts(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel_capture(captured))
 
     def fake_capture(url, sql, *, psql_vars=None, timeout=60, connect_timeout=None):
+        if "\\gdesc" in sql:
+            return (0, "", "")
         captured["timeout"] = timeout
         captured["sql"] = sql
         return (0, "[]", "")
