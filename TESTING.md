@@ -166,7 +166,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 18 | sidebar | redis key tree: `:` hierarchy, fold, count badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 19 | sidebar | redis type + TTL badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 20 | sidebar | redis key filter; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
-| 21 | sidebar | query list titled `queries`, grouped by logical database (env siblings share a group); param badge, desc tooltip; paramless runs on click; long names ellipsize | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, sidebarLayout.test.ts | ✅ |
+| 21 | sidebar | query list titled `queries`, grouped by logical database (env siblings share a group; an exact connection key beats another item's logical `db`); param badge, desc tooltip; paramless runs on click; long names ellipsize | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, sidebarLayout.test.ts | ✅ |
 | 22 | sidebar | saved-query param modal (required/default, Enter submits, click-out closes) | B:test_saved_query_param_modal…, F:test_param_modal_enter_submits_and_clickout_closes | ✅ |
 | 23 | sidebar | sidebar width drag + persistence | F:test_sidebar_width_drag_persists | ✅ |
 | 24 | editor | SQL highlight overlay + scroll sync | F:test_sql_highlight_overlay (scroll sync unasserted) | 🟡 |

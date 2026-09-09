@@ -70,4 +70,22 @@ describe("groupQueriesByDb", () => {
     );
     expect(sections.map((s) => s.db)).toEqual(["gone_db"]);
   });
+
+  it("lets an exact connection key beat another item's logical db, in either order", () => {
+    const shop = item("shop", "postgres", ["shop_dev", "shop_prod"]);
+    const colliding = item("shop_dev", "redis", ["analytics"]);
+    const queries = [
+      query("legacy-shop-dev", "shop_dev"),
+      query("analytics-q", "analytics"),
+    ];
+    for (const items of [
+      [shop, colliding],
+      [colliding, shop],
+    ]) {
+      const sections = groupQueriesByDb(queries, items);
+      const byDb = Object.fromEntries(sections.map((s) => [s.db, s.queries.map((q) => q.name)]));
+      expect(byDb.shop).toEqual(["legacy-shop-dev"]);
+      expect(byDb.shop_dev).toEqual(["analytics-q"]);
+    }
+  });
 });

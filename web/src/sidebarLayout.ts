@@ -25,12 +25,20 @@ export function itemsInEngineOrder(items: ConnItem[]): ConnItem[] {
 export type QuerySection = { db: string; queries: SavedQuery[] };
 
 /** Group saved queries by sidebar logical db. `@db` may be a connection key
- * (west2_matrix_runtime) or the logical name; env siblings share one bucket. */
+ * (west2_matrix_runtime) or the logical name; env siblings share one bucket.
+ * Exact connection keys win over another item's logical `db`, matching
+ * `resolve_connection()` (direct key, no --env → that connection). */
 export function groupQueriesByDb(queries: SavedQuery[], items: ConnItem[]): QuerySection[] {
   const keyToDb = new Map<string, string>();
+  const exactKeys = new Set<string>();
   for (const item of items) {
-    keyToDb.set(item.db, item.db);
-    for (const env of item.envs) keyToDb.set(env.key, item.db);
+    for (const env of item.envs) {
+      exactKeys.add(env.key);
+      keyToDb.set(env.key, item.db);
+    }
+  }
+  for (const item of items) {
+    if (!exactKeys.has(item.db)) keyToDb.set(item.db, item.db);
   }
   const buckets = new Map<string, SavedQuery[]>();
   for (const q of queries) {
