@@ -2,19 +2,19 @@
 
 > **为 AI 时代而生的数据库工作台** —— 一核多脸(CLI / GUI / MCP / agent skill)。
 
-[![CI](https://github.com/Wangggym/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/Wangggym/quarry/actions/workflows/ci.yml)
+[![CI](https://github.com/yiminspace/quarry/actions/workflows/ci.yml/badge.svg)](https://github.com/yiminspace/quarry/actions/workflows/ci.yml)
 [![覆盖率 ≥95%](https://img.shields.io/badge/coverage-%E2%89%A595%25-brightgreen)](TESTING.md)
 [![PyPI](https://img.shields.io/pypi/v/quarry-db)](https://pypi.org/project/quarry-db/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[English →](README.md) · [官网 →](https://quarry.yiminlab.site)
+[English →](README.md) · [官网 →](https://yiminspace.github.io/quarry/)
 
 ![Quarry demo](site/assets/demo.svg)
 
 你熟悉的所有数据库工具 —— DBeaver、TablePlus、pgAdmin —— 都默认键盘前坐着一个*人*。但如今越来越多的查询是 **AI agent** 在跑,而 agent 需要的保障完全不同:
 
 - **机器能解析的结构化结果**,而不是给人看的界面
-- **安全栏内置在内核里**,任何客户端都绕不过、忘不掉
+- **共享查询安全策略**,各入口明确写入授权方式
 - **确定性的错误契约**(稳定退出码),而不是靠爬 stack trace
 - **配置即文件**,而不是点点点 —— 能进 git、能 diff、能共享给 agent
 
@@ -24,13 +24,13 @@ Quarry 把传统设计倒了过来:先做一个**带 agent 安全契约的查询
 
 1. **一核多脸。** 连接管理、查询执行、schema 内省、安全栏都在可 import 的内核(`quarry.core`)里。CLI(`qy`)、GUI、MCP server、agent skill 都是薄壳。修一次 bug,所有脸同时受益。
 
-2. **默认只读;放行是显式且分级的。** 写/DDL 默认拦截(退出码 `8`),`--write` 显式放行;prod 连接在 `--write` 之上还需额外确认;没有外层 LIMIT 的读查询默认限制 500 行,`--max-rows 0` 可显式取消;工具/锁定查询不改写,Redis 在取回后截断。PostgreSQL/MySQL 默认查询还使用数据库只读事务。
+2. **默认只读;放行是显式且分级的。** CLI 写入需 `--write`,prod 还需确认或 `--yes`;MCP 需服务端和调用同时授权,prod 额外要求 `confirm_prod`。GUI 查询只读;Python 调用方须先取得授权再传 `allow_write=True`。没有外层 LIMIT 的读查询默认限制 500 行,`--max-rows 0` 可显式取消;工具/锁定查询不改写,Redis 在取回后截断。PostgreSQL/MySQL 默认查询还使用数据库只读事务。
 
-3. **机器可信赖的契约。** GUI/MCP/Python 返回 `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`;CLI JSON 保持行数组,诊断和截断提示走 stderr。退出码是稳定 API:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截。agent 可以直接对结果分支,不用解析文字。
+3. **机器可信赖的契约。** GUI/MCP/Python 返回 `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`;CLI JSON 保持行数组,诊断和截断提示走 stderr。退出码是稳定 API:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截。CLI 参数语法错误也使用 `2`;其他命令有各自的错误码(如 `ping` 失败返回 `1`)。GUI/MCP/Python 使用结构化错误。
 
-4. **Workspace 即代码。** 一个 workspace 就是一个目录:`connections.toml` + `queries/**/*.sql`(带 `-- @meta` 头的命名查询)。它放在*你的*仓库里,git 管理,团队成员和 agent 共用。内核本身零业务、零密钥。
+4. **Workspace 即代码。** 一个 workspace 就是一个目录:`connections.toml` + `queries/**/*.sql`(带 `-- @meta` 头的命名查询)。查询文件与不含凭据的配置模板可放进*你的*仓库共享;实际连接凭据留在本机。
 
-5. **近乎零依赖。** 纯 stdlib。PostgreSQL 走系统 `psql`,Redis 走 `redis-cli`,SSH 隧道走系统 `ssh`;MySQL 只需可选的 `pymysql`。无需 Electron 或云服务;可选的 `qy up` keeper 在后台运行。
+5. **近乎零依赖。** 基础包与 GUI 使用 Python 3.11+ 标准库。PostgreSQL 使用系统 `psql`,Redis 需要 `redis-cli` 6+,SSH 使用系统 `ssh`;MySQL 使用可选的 `quarry-db[mysql]` 依赖。无需 Electron 或云服务;可选的 `qy up` keeper 在后台运行。
 
 ## 安装
 
@@ -99,10 +99,10 @@ claude mcp add quarry -- qy mcp --workspace ~/my-workspace
 
 ## 安全栏(AI 原生护城河)
 
-- **默认只读**:写/DDL 被拦(退出码 `8`),`--write` 显式放行
+- **CLI 默认只读**:写/DDL 被拦(退出码 `8`),`--write` 显式放行
 - **自动行数上限**:没有外层 LIMIT 的读查询默认 500 行,`--max-rows N` 提高,`--max-rows 0` 取消
-- **分级 prod 保护**:全环境默认只读 → dev 加 `--write` → prod 在 `--write` 之上还需交互确认(自动化用 `--yes`)
-- **稳定退出码契约**:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截
+- **CLI prod 保护**:全环境默认只读 → dev 加 `--write` → prod 在 `--write` 之上还需交互确认(自动化用 `--yes`)
+- **查询退出码**:`0` 成功(可无返回行)、`1` 用法错误、`2` 连接或 CLI 参数语法错误、`3` 执行错误、`8` 安全拦截;其他命令有各自约定
 
 ## 超时与结果契约
 
@@ -180,12 +180,18 @@ qy exec cache --sql "HGETALL user:42"
 
 ```toml
 [shop_dev]
-url = "postgresql://…dev…/shop";  group = "shop"; db = "shop"; env = "dev"
+url = "postgresql://user:password@dev.example.com:5432/shop"
+group = "shop"
+db = "shop"
+env = "dev"
 [shop_prod]
-url = "postgresql://…prod…/shop"; group = "shop"; db = "shop"; env = "prod"
+url = "postgresql://user:password@prod.example.com:5432/shop"
+group = "shop"
+db = "shop"
+env = "prod"
 ```
 
-- 同 `db` 的连接折叠成 env-set,一份查询跑多环境:`qy exec shop --env prod`
+- 同 `db` 的连接折叠成 env-set,一份查询跑多环境:`qy run recent_orders --env prod`
 - 未指定 env 默认 `dev`(最安全)
 - GUI 提供环境切换器(prod 变红)
 
@@ -209,18 +215,23 @@ qy gui            # 侧栏两组并列
 `qy gui` —— 本地零构建 web GUI(Slate & Copper 主题,亮/暗切换):
 
 - 分组侧栏树 + 环境切换器(prod 变红)+ 连接健康状态点
-- **多标签编辑器** —— 每个标签记住自己的 SQL + 连接,重启不丢
+- **多标签编辑器** —— 浏览器存储可用时保留 SQL 与连接草稿;结果快照有大小限制,大结果仅保留在当前会话
 - SQL 高亮 + 本地补全(关键字/表/列)
 - **EXPLAIN 按钮** —— 一键看执行计划
 - 类型着色数据网格:排序、列宽拖拽、**键盘导航**(方向键 + Enter)、单元格详情带**可折叠 JSON 树**
 - CSV/JSON 导出、**可搜索的查询历史**(带连接名 + 时间)
-- Redis key TYPE-aware 浏览
+- Redis key TYPE-aware 浏览与可折叠命名空间树
+
+## 隐私与支持边界
+
+Quarry 不向 Quarry 服务上传连接凭据、查询或结果;查询会发送到你配置的目标数据库。GUI 默认绑定 localhost 并检查本地来源。已安装的 GUI 包定期向 PyPI 检查更新,可用 `QUARRY_UPDATE_CHECK=0` 关闭;editable/dev 安装自动跳过。
+
+Neptune/openCypher 属于**实验性支持**,不纳入稳定数据库支持承诺。端点和本地空服务测试不验证真实 AWS/IAM 行为。已验证环境、持久化限制和最终 1.0 验收清单见[COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ## 路线图
 
 - 全引擎结果契约列类型
 - SQLite / DuckDB 引擎(零配置本地体验)
-- Redis key 命名空间折叠树
 - 跨环境 schema/数据 diff
 - 写操作审计日志
 - 单二进制分发

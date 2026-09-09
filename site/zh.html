@@ -8,12 +8,12 @@
 <meta property="og:title" content="Quarry — 为 AI 时代而生的数据库工作台">
 <meta property="og:description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://quarry.yiminlab.site/zh.html">
-<meta property="og:image" content="https://quarry.yiminlab.site/assets/social-card.png">
+<meta property="og:url" content="https://yiminspace.github.io/quarry/zh.html">
+<meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://quarry.yiminlab.site/assets/social-card.png">
-<link rel="alternate" hreflang="en" href="https://quarry.yiminlab.site/">
-<link rel="alternate" hreflang="zh" href="https://quarry.yiminlab.site/zh.html">
+<meta name="twitter:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
+<link rel="alternate" hreflang="en" href="https://yiminspace.github.io/quarry/">
+<link rel="alternate" hreflang="zh" href="https://yiminspace.github.io/quarry/zh.html">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c1f24'/%3E%3Ctext x='16' y='23' font-family='Georgia,serif' font-size='20' font-weight='bold' fill='%23c47a3d' text-anchor='middle'%3EQ%3C/text%3E%3C/svg%3E">
 <style>
   :root {
@@ -209,7 +209,7 @@
       <a href="#workspace">Workspace</a>
       <a href="#roadmap">路线图</a>
       <a href="index.html">EN</a>
-      <a class="gh" href="https://github.com/Wangggym/quarry">GitHub ↗</a>
+      <a class="gh" href="https://github.com/yiminspace/quarry">GitHub ↗</a>
     </div>
   </div>
 </nav>
@@ -225,7 +225,7 @@
           <span class="dollar">$</span><span id="pipcmd">pipx install quarry-db</span>
           <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
         </div>
-        <a class="btn btn-copper" href="https://github.com/Wangggym/quarry">去 GitHub 点个 Star</a>
+        <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">去 GitHub 点个 Star</a>
       </div>
     </div>
     <div class="showcase">
@@ -254,11 +254,11 @@
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 安全栏长在内核里</h3>
-        <p>默认只读、自动行数上限、prod 分级确认。栏在内核,任何客户端 —— 无论人还是 agent —— 都找不到能绕过它的入口。</p>
+        <p>查询入口共享默认只读和行数限制。写入需显式授权:CLI/MCP 对 prod 额外确认,Python 由调用方取得授权;GUI 查询保持只读。</p>
       </div>
       <div class="card">
         <h3><span class="ico">±</span> 确定性的错误契约</h3>
-        <p>退出码就是 API:<code>0</code> 成功、<code>2</code> 连接错、<code>3</code> SQL 错、<code>8</code> 安全拦截。agent 对结果直接分支,不用猜 stack trace。</p>
+        <p>CLI 查询退出码区分成功、连接/执行失败和安全拦截;参数及其他命令的错误含义另有约定。GUI/MCP/Python 提供结构化错误,详见下方接口契约。</p>
       </div>
     </div>
     <p class="manifesto">我们没有往数据库 GUI 上钉一个聊天机器人。<br><span class="dim">你的 agent 本来就是 —— Quarry 给它一个通往数据的安全插座。</span></p>
@@ -269,7 +269,7 @@
   <div class="wrap">
     <div class="eyebrow">给人的那张脸</div>
     <h2>也是一个真正好用的工作台</h2>
-    <p class="lede"><code>qy gui</code> 在同一个内核上起一个本地零构建 web 工作台:分组连接树 + 环境切换器(prod 变红)、多标签 SQL 编辑器(补全)、一键 EXPLAIN、类型着色网格(键盘导航 + 可折叠 JSON 查看器)、可搜索历史 —— 亮暗双主题、中英双语,重启不丢状态。</p>
+    <p class="lede"><code>qy gui</code> 在同一个内核上起一个本地零构建 web 工作台:分组连接树 + 环境切换器(prod 变红)、多标签 SQL 编辑器(补全)、一键 EXPLAIN、类型着色网格(键盘导航 + 可折叠 JSON 查看器)、可搜索历史 —— 亮暗双主题、中英双语,浏览器存储可用时保留草稿和有大小限制的结果快照;大结果仅保留在当前会话。Redis key 已支持可折叠命名空间树。</p>
     <div style="display:flex;justify-content:flex-end;margin-top:34px">
       <button id="shotTheme" onclick="const i=document.getElementById('guiShot');const d=i.src.includes('gui-dark');i.src=d?'assets/gui-light.png?v=020':'assets/gui-dark.png?v=020';this.textContent=d?'◐ 暗色主题':'◑ 亮色主题'"
         style="background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 14px;font-size:13px;cursor:pointer">◑ 亮色主题</button>
@@ -282,7 +282,7 @@
   <div class="wrap">
     <div class="eyebrow">架构</div>
     <h2>一核多脸</h2>
-    <p class="lede">连接管理、查询执行、schema 内省、安全栏都在一个可 import 的内核里,其余全是薄壳。修一次 bug,所有脸同时受益;加一道栏,没有任何脸能忘掉它。</p>
+    <p class="lede">连接管理、查询执行、schema 内省、安全栏都在一个可 import 的内核里,其余全是薄壳。共享修复惠及各查询入口;授权方式和错误呈现由各入口明确约定。</p>
     <div class="faces">
       <div class="kernel">
         <div class="mono">quarry.core</div>
@@ -303,11 +303,11 @@
   <div class="wrap">
     <div class="eyebrow">安全栏</div>
     <h2>默认只读。放行是显式且分级的。</h2>
-    <p class="lede">写/DDL 一律拦截,除非显式 <code>--write</code>;prod 连接在此之上还需再确认一次。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
+    <p class="lede">CLI 写入需 <code>--write</code>,prod 还需确认或 <code>--yes</code>;MCP 需服务端和调用同时授权,prod 额外要求 <code>confirm_prod</code>。Python 由调用方通过 <code>allow_write=True</code> 授权;GUI 查询只读。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
     <div class="exits">
-      <div class="exit e0"><div class="code">0</div><div class="name">成功 — 返回行</div></div>
-      <div class="exit e2"><div class="code">2</div><div class="name">连接错误</div></div>
-      <div class="exit e3"><div class="code">3</div><div class="name">SQL 错误</div></div>
+      <div class="exit e0"><div class="code">0</div><div class="name">成功 — 可无返回行</div></div>
+      <div class="exit e2"><div class="code">2</div><div class="name">连接 / CLI 参数语法错误</div></div>
+      <div class="exit e3"><div class="code">3</div><div class="name">查询执行错误</div></div>
       <div class="exit e8"><div class="code">8</div><div class="name">安全拦截</div></div>
     </div>
   </div>
@@ -317,20 +317,22 @@
   <div class="wrap">
     <div class="eyebrow">Workspace 即代码</div>
     <h2>你的连接和查询是文件,不是点点点</h2>
-    <p class="lede">一个 workspace 就是一个目录:<code>connections.toml</code> 加上带元信息头的 <code>.sql</code> 命名查询。它放在<em>你的</em>仓库里,git 管理,团队成员和 agent 共用。内核本身零密钥、零业务逻辑 —— 而且 Quarry 能把多个 workspace 聚合到同一个视图。</p>
+    <p class="lede">一个 workspace 就是一个目录:<code>connections.toml</code> 加上带元信息头的 <code>.sql</code> 命名查询。查询文件和不含凭据的配置模板可放进<em>你的</em>仓库共享;真实连接凭据留在本机。Quarry 能把多个 workspace 聚合到同一个视图。</p>
     <div class="codes">
       <div class="code-pane">
         <div class="head">connections.toml</div>
         <pre><span class="cp">[shop_dev]</span>
-<span class="k">url</span>    = <span class="s">"postgresql://…dev…/shop"</span>
-<span class="k">db</span>     = <span class="s">"shop"</span>; <span class="k">env</span> = <span class="s">"dev"</span>
+<span class="k">url</span>    = <span class="s">"postgresql://user:password@dev.example.com:5432/shop"</span>
+<span class="k">db</span>     = <span class="s">"shop"</span>
+<span class="k">env</span>    = <span class="s">"dev"</span>
 
 <span class="cp">[shop_prod]</span>
-<span class="k">url</span>    = <span class="s">"postgresql://…prod…/shop"</span>
-<span class="k">db</span>     = <span class="s">"shop"</span>; <span class="k">env</span> = <span class="s">"prod"</span>
+<span class="k">url</span>    = <span class="s">"postgresql://user:password@prod.example.com:5432/shop"</span>
+<span class="k">db</span>     = <span class="s">"shop"</span>
+<span class="k">env</span>    = <span class="s">"prod"</span>
 
 <span class="cp">[internal_db]</span>
-<span class="k">url</span>      = <span class="s">"postgresql://…@127.0.0.1/appdb"</span>
+<span class="k">url</span>      = <span class="s">"postgresql://user:password@127.0.0.1:5432/appdb"</span>
 <span class="k">ssh_host</span> = <span class="s">"bastion.example.com"</span>  <span class="c"># auto tunnel</span></pre>
       </div>
       <div class="code-pane">
@@ -353,23 +355,25 @@
   <div class="wrap">
     <div class="eyebrow">引擎与体积</div>
     <h2>近乎零依赖</h2>
-    <p class="lede">纯 Python stdlib。引擎直接调用你机器上久经考验的客户端 —— 无需 Electron、云服务或遥测;可选 keeper 在后台运行。pipx 装上就能跑。</p>
+    <p class="lede">基础包与 GUI 使用 Python 3.11+ 标准库。PostgreSQL、Redis、SSH 使用系统客户端;MySQL 使用可选 Python 驱动。可选 keeper 在后台运行,无需 Electron 或 Quarry 托管服务。</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · 系统 psql</span>
       <span class="engine"><b>MySQL</b> · 可选 pymysql</span>
-      <span class="engine"><b>Redis</b> · 系统 redis-cli</span>
+      <span class="engine"><b>Redis</b> · redis-cli 6+</span>
+      <span class="engine"><b>Neptune</b> · 实验性 openCypher</span>
       <span class="engine"><b>SSH 隧道</b> · 系统 ssh</span>
       <span class="engine soon"><b>SQLite</b> · 规划中</span>
       <span class="engine soon"><b>DuckDB</b> · 规划中</span>
     </div>
+    <p class="lede" style="margin-top:26px">Neptune 属于实验性支持:已提供 openCypher 端点接入,真实 AWS/IAM 行为尚未完成发布验收。本地空端点不执行或存储图数据。已验证环境、持久化限制和错误码详见<a href="https://github.com/yiminspace/quarry/blob/main/COMPATIBILITY.md">支持与接口契约</a>。</p>
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> 真类库,可 import</h3>
         <p><code>from quarry import run_query</code> —— CLI、GUI、MCP server 用的同一个内核,三行代码进你自己的工具,共享查询策略并返回 QueryResult;CLI JSON 输出行数组。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▣</span> 零遥测,零云端</h3>
-        <p>你的连接、查询和结果永远不离开你的机器。GUI 只绑定 localhost 且拒绝非本地来源。它没有任何"回传"的地方。</p>
+        <h3><span class="ico">▣</span> 本地应用,连接你的数据库</h3>
+        <p>Quarry 不向 Quarry 服务上传连接凭据、查询或结果;查询发送到你配置的目标数据库。GUI 默认绑定 localhost 并检查本地来源。PyPI 更新检查可用 <code>QUARRY_UPDATE_CHECK=0</code> 关闭。</p>
       </div>
     </div>
   </div>
@@ -385,14 +389,13 @@
       <div class="rm"><b>跨环境 diff</b> 对比环境间的 schema 与数据</div>
       <div class="rm"><b>写操作审计日志</b> 谁在哪跑了什么、什么时候</div>
       <div class="rm"><b>单二进制分发</b> pip/pipx 之外的安装方式</div>
-      <div class="rm"><b>Redis 命名空间树</b> GUI 里折叠 key 家族</div>
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">
         <span class="dollar">$</span><span>pipx install quarry-db</span>
         <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
       </div>
-      <a class="btn btn-copper" href="https://github.com/Wangggym/quarry">在 GitHub 看源码</a>
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">在 GitHub 看源码</a>
     </div>
   </div>
 </section>
@@ -400,7 +403,7 @@
 <footer>
   <div class="wrap">
     <span>Quarry · MIT 协议</span>
-    <span><a href="https://github.com/Wangggym/quarry">GitHub</a> · <a href="index.html">English</a> · <a href="https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md">更新日志</a></span>
+    <span><a href="https://github.com/yiminspace/quarry">GitHub</a> · <a href="index.html">English</a> · <a href="https://github.com/yiminspace/quarry/blob/main/CHANGELOG.md">更新日志</a></span>
   </div>
 </footer>
 

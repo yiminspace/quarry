@@ -6,6 +6,13 @@ All notable changes to Quarry are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Align the English/Chinese landing pages and READMEs with entry-specific write
+  authorization, error codes, browser persistence limits and network behavior.
+  Correct TOML examples, list Redis namespace browsing as available, label
+  Neptune/openCypher experimental, and document the final 1.0 acceptance checks.
+
 ### Release contract corrections
 
 - **Read-only queries cannot execute mutations through EXPLAIN ANALYZE or
