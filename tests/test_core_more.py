@@ -595,6 +595,20 @@ def test_load_connections_missing_url_errors(tmp_path):
 
 
 @pytest.mark.unit
+def test_load_connections_rejects_non_boolean_production(tmp_path):
+    (tmp_path / "connections.toml").write_text(
+        '[bad]\nurl = "postgresql://localhost/db"\nproduction = "true"\n',
+        encoding="utf-8",
+    )
+    try:
+        _configure(tmp_path)
+        with pytest.raises(core.QuarryError, match="production must be a boolean"):
+            core.load_connections()
+    finally:
+        workspace.configure_workspace(None)
+
+
+@pytest.mark.unit
 def test_group_connections_env_set_grouping(tmp_path):
     (tmp_path / "connections.toml").write_text(
         '[shop_dev]\nurl = "postgres://h/d1"\ngroup = "shop"\ndb = "shop"\nenv = "dev"\n'

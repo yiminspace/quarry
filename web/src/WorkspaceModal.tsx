@@ -3,6 +3,7 @@ import { addWorkspace, fetchWorkspaces, removeWorkspace, type WorkspacesResponse
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
 import { useConnStore } from "./store/connStore";
+import { useTabsStore } from "./store/tabsStore";
 import { toast } from "./store/toastStore";
 
 type Props = { onClose: () => void };
@@ -43,6 +44,14 @@ export default function WorkspaceModal({ onClose }: Props) {
     try {
       const next = await removeWorkspace(dir);
       setData(next);
+      const tabs = useTabsStore.getState();
+      const active = tabs.tabs.find((tab) => tab.id === tabs.activeId);
+      if (active?.workspace === dir) {
+        tabs.updateActiveTab({ db: null, env: null });
+        const conn = useConnStore.getState();
+        conn.setCurrent(null);
+        conn.setCurrentTable(null);
+      }
       toast(t("ws_removed"), true);
       // The removed workspace's connections must disappear immediately —
       // including unbinding the active connection if it belonged to it.

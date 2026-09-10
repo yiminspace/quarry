@@ -168,6 +168,7 @@ class Connection:
     source: str | None = None   # workspace home this connection was loaded from
     # Per-connection query execution timeout override (seconds), see resolve_timeout().
     timeout: int | None = None
+    production: bool = False
 
     @property
     def logical_db(self) -> str:
@@ -221,6 +222,8 @@ def load_connections() -> dict[str, Connection]:
                 continue
             if not isinstance(val, dict) or "url" not in val:
                 err(f"connection [{key}] is missing required 'url'", exit_code=EXIT_USAGE)
+            if type(val.get("production", False)) is not bool:
+                err(f"connection [{key}]: production must be a boolean", exit_code=EXIT_USAGE)
             ssh_port = val.get("ssh_port")
             timeout = val.get("timeout")
             if timeout is not None and int(timeout) <= 0:
@@ -240,6 +243,7 @@ def load_connections() -> dict[str, Connection]:
             group=val.get("group"),
             db=val.get("db"),
             source=str(w.home),
+            production=val.get("production", False),
             timeout=int(timeout) if timeout is not None else None,
         )
     return out
@@ -338,7 +342,7 @@ def group_connections() -> list[dict[str, Any]]:
                 "engine": connection_engine(members[0]),
                 "envs": [
                     {"env": m.env, "key": m.key, "engine": connection_engine(m),
-                     "region": m.region, "ssh": bool(m.ssh_host)}
+                     "region": m.region, "ssh": bool(m.ssh_host), "production": m.production}
                     for m in ordered
                 ],
             })

@@ -412,7 +412,7 @@ def test_check_write_policy_write_without_server_flag_blocks(restore_write_flag)
 @pytest.mark.unit
 def test_check_write_policy_prod_needs_confirm(restore_write_flag):
     mcp._ALLOW_WRITE_FLAG = True
-    conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+    conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
     with pytest.raises(core.QuarryError) as ei:
         mcp._check_write_policy(conn, write=True, confirm_prod=False)
     assert ei.value.exit_code == core.EXIT_SAFETY_BLOCKED
@@ -422,7 +422,7 @@ def test_check_write_policy_prod_needs_confirm(restore_write_flag):
 @pytest.mark.unit
 def test_check_write_policy_prod_with_confirm_allows(restore_write_flag):
     mcp._ALLOW_WRITE_FLAG = True
-    conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+    conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
     assert mcp._check_write_policy(conn, write=True, confirm_prod=True) is True
 
 
@@ -454,7 +454,7 @@ def test_exec_sql_prod_env_blocked_without_confirm(wsdir, restore_write_flag):
     process-wide here and torn down after, so it doesn't disturb other tests.
     """
     (wsdir / "connections.toml").write_text(
-        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
         encoding="utf-8",
     )
     workspace.configure_workspace(str(wsdir))
@@ -476,7 +476,7 @@ def test_exec_sql_prod_env_with_confirm_allowed(wsdir, restore_write_flag):
     """Prod env + write + confirm_prod passes the policy; we run a SELECT so
     nothing is actually written."""
     (wsdir / "connections.toml").write_text(
-        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
         encoding="utf-8",
     )
     workspace.configure_workspace(str(wsdir))

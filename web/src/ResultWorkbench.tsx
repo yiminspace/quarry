@@ -16,7 +16,7 @@ import {
 } from "./api";
 import { cellOpensInspector, cellPreview, cellText, compareCellValues } from "./cellValue";
 import { copy } from "./clip";
-import { connectionStarterPlan } from "./connectionStarter";
+import { NEPTUNE_STARTER_SQL } from "./connectionStarter";
 import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
@@ -24,10 +24,13 @@ import { anyModalOpen } from "./modalStack";
 import { decodeFocus, decodeQueryLink, encodeFocusSearch, encodeQueryLink, focusTitle, type QueryLinkPayload } from "./queryLink";
 import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
+import { groupKey } from "./sidebarLayout";
 import SqlEditor from "./SqlEditor";
 import { useConnStore } from "./store/connStore";
 import {
   isResultSnapshotPersistable,
+  mostRecent,
+  workspaceFor,
   parseMainTable,
   useTabsStore,
   type Tab,
@@ -136,12 +139,16 @@ export default function ResultWorkbench() {
   const setTabResult = useTabsStore((s) => s.setTabResult);
 
   const activeTab = useMemo(
-    () => tabs.find((tb) => tb.id === activeTabId) ?? tabs[0],
+    () => tabs.find((tb) => tb.id === activeTabId),
     [tabs, activeTabId],
   );
-  const sql = activeTab.sql;
+  const sql = activeTab?.sql ?? "";
   const setSql = useCallback(
-    (v: string): void => updateActiveTab({ sql: v }),
+    (v: string): void => {
+      const state = useTabsStore.getState();
+      if (!state.activeId) state.addTab();
+      updateActiveTab({ sql: v });
+    },
     [updateActiveTab],
   );
   const sqlRef = useRef(sql);
@@ -183,6 +190,7 @@ export default function ResultWorkbench() {
   // stale /api/tables responses after the user moved on.
   const panelKeyRef = useRef<string | null>(null);
   const tablesSeqRef = useRef(0);
+  const previewNavigationRef = useRef<string | null>(null);
 
   const findItem = useCallback(
     (db: string): ConnItem | undefined =>
@@ -257,53 +265,40 @@ export default function ResultWorkbench() {
         state.setCurrentTable(null);
         setFilter("");
       }
-      const multi = item.envs.length > 1;
-      const realEnv = multi
-        ? (env ?? defaultEnvFor(item))
-        : (env ?? item.envs[0]?.env ?? null);
-      if (!opts?.force) {
-        const tabsState = useTabsStore.getState();
-        const starter = connectionStarterPlan(
-          tabsState.tabs,
-          tabsState.activeId,
-          db,
-          realEnv,
-          item.engine,
-        );
-        const hasResult =
-          starter.action === "reuse" && !!tabsState.results[starter.tabId]?.result;
-        if (starter.action === "reuse") tabsState.switchTab(starter.tabId);
-        else if (starter.action === "new") tabsState.addTab({ db, env: realEnv });
-        if (starter.action !== "none") {
-          useTabsStore.getState().updateActiveTab({ db, env: realEnv, sql: starter.sql });
-          if (!hasResult) {
-            if ((realEnv || "").toLowerCase() === "prod") toast(t("prod_no_autorun"), false);
-            else void run({ db, env: realEnv }, starter.sql);
-          }
+      previewNavigationRef.current = null;
+      const tabsState = useTabsStore.getState();
+      const source = tabsState.tabs.find((tab) => tab.id === tabsState.activeId);
+      const sourceTable = cur?.db === db && state.currentTable &&
+        source?.sql.trim() === previewSql(state.currentTable, cur.engine) ? state.currentTable : null;
+      const recent = mostRecent(tabsState.tabs.filter((tab) =>
+        tab.db === db && tab.workspace === workspaceFor(db) &&
+        item.envs.some((e) => e.env === tab.env)));
+      const realEnv = env ?? recent?.env ?? defaultEnvFor(item);
+      const existed = tabsState.tabs.some((tab) => tab.db === db && tab.env === realEnv && tab.workspace === workspaceFor(db));
+      if (!opts?.force) tabsState.selectGroup(db, realEnv);
+      else tabsState.updateActiveTab({ db, env: realEnv });
+      const nextState = useTabsStore.getState();
+      const next = nextState.tabs.find((tab) => tab.id === nextState.activeId);
+      if (!opts?.force && item.engine === "neptune" && next && !next.sql.trim()) {
+        nextState.updateActiveTab({ sql: NEPTUNE_STARTER_SQL });
+      }
+      if (!opts?.force && next) {
+        // Carry only an exact table preview into a newly visited environment.
+        // Closed groups and existing editors keep their own state.
+        if (!existed && !next.sql.trim() && sourceTable) {
+          nextState.updateActiveTab({ sql: previewSql(sourceTable, item.engine) });
         }
+        previewNavigationRef.current = next.id;
       }
-      state.setCurrent({
-        db,
-        env: realEnv,
-        engine: item.engine,
-        isRedis: item.engine === "redis",
-      });
+      const production = item.envs.find((entry) => entry.env === realEnv)?.production;
+      state.setCurrent({ db, env: realEnv, engine: item.engine, isRedis: item.engine === "redis", production });
+      state.setCurrentTable(null);
+      setFilter("");
       setPanelOpen(true);
-      if (opts?.force || item.engine !== "neptune") updateActiveTab({ db, env: realEnv });
       loadTables(db, realEnv, false);
-      if (
-        opts?.viaPill &&
-        sqlRef.current.trim() &&
-        item.engine !== "redis" &&
-        item.engine !== "neptune"
-      ) {
-        // env switch re-runs the current SQL — but never auto-run on prod
-        if ((realEnv || "").toLowerCase() === "prod") toast(t("prod_no_autorun"), false);
-        else void run({ db, env: realEnv });
-      }
+      if (!opts?.force && production === true) toast(t("prod_no_autorun"), false);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [findItem, loadTables, updateActiveTab],
+    [findItem, loadTables],
   );
 
   /** No / vanished connection: unbind the tab — never silently rebind. */
@@ -325,6 +320,7 @@ export default function ResultWorkbench() {
         if (cancelled) return;
         const conn = useConnStore.getState();
         conn.setConnMeta(data.workspace, data.workspaces, data.groups);
+        useTabsStore.getState().claimWorkspaces();
         // paint health dots instantly from the backend cache (no probing)
         for (const g of data.groups) {
           for (const item of g.items) {
@@ -382,11 +378,11 @@ export default function ResultWorkbench() {
     const pending = pendingSelectRef.current;
     pendingSelectRef.current = null;
     if (pending && findItem(pending.db)) {
-      selectDb(pending.db, pending.env, { force: true });
+      selectDb(pending.db, pending.env);
       return;
     }
     const tab = useTabsStore.getState().tabs.find((tb) => tb.id === useTabsStore.getState().activeId);
-    if (tab?.db && findItem(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
+    if (tab?.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
     else if (tab?.db) unbindActiveTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, loadSeq]);
@@ -489,8 +485,13 @@ export default function ResultWorkbench() {
         const item = findItem(focus.db);
         if (item) {
           const tabsState = useTabsStore.getState();
+          if (!focus.table && !tabsState.activeId) {
+            selectDb(focus.db, focus.env);
+            setSessionReady(true);
+            return;
+          }
           const plan = focusRestorePlan(
-            tabsState.tabs,
+            tabsState.tabs.filter((tab) => tab.workspace === workspaceFor(focus.db)),
             tabsState.activeId,
             focus.db,
             focus.env,
@@ -519,6 +520,7 @@ export default function ResultWorkbench() {
     const tabsState = useTabsStore.getState();
     const existing = tabsState.tabs.find(
       (tb) =>
+        tb.workspace === workspaceFor(payload.db) &&
         tb.db === payload.db &&
         (tb.env ?? null) === (payload.env ?? null) &&
         tb.sql === payload.sql,
@@ -581,14 +583,33 @@ export default function ResultWorkbench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
-  // The current-table highlight only holds while the editor still shows the
-  // generated preview; editing it away clears the highlight.
+  // Only exact generated previews represent a selected table. Derive this
+  // after every tab / SQL / table-list change, including cached and late lists.
   useEffect(() => {
-    if (!currentTable || !current) return;
-    if (sql.trim() !== previewSql(currentTable, current.engine)) {
-      useConnStore.getState().setCurrentTable(null);
+    const table = current && activeTab?.db === current.db && activeTab?.env === current.env
+      ? panel.tables?.find((name) => sql.trim() === previewSql(name, current.engine)) ?? null
+      : null;
+    if (table !== currentTable) useConnStore.getState().setCurrentTable(table);
+  }, [sql, activeTab?.db, activeTab?.env, currentTable, current, panel.tables]);
+
+  // Consume navigation once, after the destination table list has arrived.
+  // Missing production metadata (e.g. an older server) never authorizes auto-run.
+  useEffect(() => {
+    const tabId = previewNavigationRef.current;
+    if (!tabId) return;
+    if (activeTabId !== tabId || current?.production !== false) {
+      previewNavigationRef.current = null;
+      return;
     }
-  }, [sql, currentTable, current]);
+    if (panel.loading) return;
+    previewNavigationRef.current = null;
+    const snapshot = useTabsStore.getState().results[tabId];
+    if (!pendingByTab[tabId] && !panel.error && !snapshot?.result && panel.tables?.some((name) => sql.trim() === previewSql(name, current.engine))) {
+      void run({ db: current.db, env: current.env }, sql);
+    }
+    // run reads the current stores; only navigation and destination readiness trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTabId, current, panel, sql]);
 
   useEffect(() => {
     if (!sessionReady) return;
@@ -613,7 +634,7 @@ export default function ResultWorkbench() {
       return;
     }
     const tabsState = useTabsStore.getState();
-    const plan = tableClickPlan(tabsState.tabs, tabsState.activeId, cur.db, cur.env, table, cur.engine);
+    const plan = tableClickPlan(tabsState.tabs.filter((tab) => tab.workspace === workspaceFor(cur.db)), tabsState.activeId, cur.db, cur.env, table, cur.engine);
     if (plan.action === "reuse") {
       const tab = tabsState.tabs.find((tb) => tb.id === plan.tabId);
       if (tab && tab.id !== tabsState.activeId) {
@@ -661,7 +682,15 @@ export default function ResultWorkbench() {
     if (!q) return;
     const cur = useConnStore.getState().current;
     const nv = q.sql || `-- ${name}`;
-    keepDraft(sqlRef.current, nv, cur?.db ?? null, cur?.env ?? null);
+    const item = groups.flatMap((group) => group.items).find((item) =>
+      item.envs.some((env) => env.key === q.db)) ?? findItem(q.db);
+    if (item && (cur?.db !== item.db || workspaceFor(item.db) !== activeTab?.workspace)) {
+      selectDb(item.db, null);
+    }
+    let state = useTabsStore.getState();
+    if (!state.activeId) { state.addTab(); state = useTabsStore.getState(); }
+    const target = state.tabs.find((tab) => tab.id === state.activeId)!;
+    keepDraft(target.sql, nv, target.db, target.env);
     setSql(nv);
     if (!q.params.length) {
       void runSavedQuery(name, {});
@@ -690,7 +719,7 @@ export default function ResultWorkbench() {
       const { db: resDb, env: resEnv, ...clean } = data;
       const db = resDb ?? meta?.db ?? tab.db;
       const env = resEnv ?? null;
-      updateTab(tabId, { db, env });
+      updateTab(tabId, { db, env, sql: clean.sql });
       setTabResult(tabId, {
         result: clean as QueryResult,
         queryDb: db,
@@ -780,7 +809,7 @@ export default function ResultWorkbench() {
       if (snap?.result && (snap.queryDb !== tab.db || (snap.queryEnv ?? null) !== (tab.env ?? null))) {
         setTabResult(tab.id, null);
       }
-      if (tab.db && findItem(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
+      if (tab.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
       else if (tab.db) unbindActiveTab();
       else {
         const state = useConnStore.getState();
@@ -797,6 +826,14 @@ export default function ResultWorkbench() {
     (tab: Tab): void => {
       useTabsStore.getState().switchTab(tab.id);
       revalidateTab(tab);
+      const group = useConnStore.getState().groups.find((g) => g.items.some((item) => item.db === tab.db));
+      if (group) {
+        const key = groupKey(group.ws, group.group);
+        const ui = useUiStore.getState();
+        if (ui.collapsedGroups.has(key)) ui.toggleCollapsedGroup(key);
+      }
+      setFilter("");
+      setPanelOpen(true);
     },
     [revalidateTab],
   );
@@ -819,14 +856,13 @@ export default function ResultWorkbench() {
 
   // Cmd/Ctrl+Shift+W closes the active tab (real Cmd/Ctrl+W can't be
   // intercepted — it closes the browser tab itself); disabled while renaming
-  // and when it is the only tab left.
+  // while renaming. Closing the last tab shows the empty workbench for that group.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
       if (e.key !== "w" && e.key !== "W") return;
       if (document.querySelector(".vg-tab.renaming")) return;
       const state = useTabsStore.getState();
-      if (state.tabs.length <= 1) return;
       e.preventDefault();
       const dying = state.tabs.find((tb) => tb.id === state.activeId);
       if (dying) handleTabClose(dying);
@@ -1012,13 +1048,13 @@ export default function ResultWorkbench() {
   };
 
   const copyQueryLink = (): void => {
-    if (!activeTab.db) {
+    if (!activeTab?.db) {
       toast(t("pick_conn"), false);
       return;
     }
     const link = encodeQueryLink(window.location.href, {
-      db: activeTab.db,
-      env: activeTab.env ?? null,
+      db: activeTab?.db,
+      env: activeTab?.env ?? null,
       sql: activeTab.sql,
     });
     copy(link);
@@ -1073,7 +1109,7 @@ export default function ResultWorkbench() {
               envs.map((e) => (
                 <span
                   key={e.env ?? ""}
-                  className={`vg-ep ep${e.env === current.env ? " on" : ""}${e.env === "prod" ? " prod" : ""}`}
+                  className={`vg-ep ep${e.env === current.env ? " on" : ""}${e.production ? " prod" : ""}`}
                   data-env={e.env ?? ""}
                   onClick={() => selectDb(current.db, e.env ?? null, { viaPill: true })}
                 >
@@ -1105,6 +1141,7 @@ export default function ResultWorkbench() {
           <span className="vg-sp sp" />
         </div>
         <TabBar onSwitch={handleTabSwitch} onClose={handleTabClose} />
+        {activeTab ? <>
         <SqlEditor
           value={sql}
           onChange={setSql}
@@ -1308,6 +1345,17 @@ export default function ResultWorkbench() {
             </>
           )}
         </div>
+        </> : (
+          <div className="query-empty-state" id="queryEmptyState">
+            <i className="ti ti-file-code" aria-hidden="true" />
+            <h2>{t("no_open_queries")}</h2>
+            <p>{t("no_open_queries_hint")}</p>
+            <div className="query-empty-actions">
+              <button className="vg-btn btn" id="emptyNewTab" onClick={() => useTabsStore.getState().addTab()}>{t("new_tab")}</button>
+              <button className="vg-btn btn" id="histBtn" onClick={openHistory}>{t("hist")}</button>
+            </div>
+          </div>
+        )}
       </section>
 
       {modal?.type === "cell" && <CellModal value={modal.value} onClose={() => setModal(null)} />}

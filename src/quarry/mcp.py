@@ -13,7 +13,7 @@ transport). Logs go to stderr; stdout carries only protocol messages.
 Write policy (graduated, mirrors the CLI):
   - server default            -> every write/DDL is blocked (exit code 8)
   - server started --write    -> a call may pass {"write": true}
-  - target env is prod        -> the call must ALSO pass {"confirm_prod": true}
+  - target connection is production        -> the call must ALSO pass {"confirm_prod": true}
 """
 
 from __future__ import annotations
@@ -86,9 +86,9 @@ def _check_write_policy(conn, write: bool, confirm_prod: bool) -> bool:
             "writes are disabled: this MCP server was started without --write",
             exit_code=EXIT_SAFETY_BLOCKED,
         )
-    if (conn.env or "").lower() == "prod" and not confirm_prod:
+    if conn.production and not confirm_prod:
         raise QuarryError(
-            'target env is prod — retry with {"confirm_prod": true} to confirm',
+            'target connection is production — retry with {"confirm_prod": true} to confirm',
             exit_code=EXIT_SAFETY_BLOCKED,
         )
     return True
@@ -161,7 +161,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": ("Execute SQL (or a redis command) against a database and get a "
                         "structured result {columns, rows, rowCount, truncated, elapsedMs}. "
                         "READ-ONLY by default: writes/DDL fail with code 8 unless you pass "
-                        "write=true AND the server was started with --write; a prod env "
+                        "write=true AND the server was started with --write; a configured production connection "
                         "additionally requires confirm_prod=true. SELECTs without LIMIT get "
                         "an automatic LIMIT (max_rows, default 500)."),
         "inputSchema": _s(

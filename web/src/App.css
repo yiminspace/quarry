@@ -119,3 +119,45 @@
 /* ---- workspace 管理弹窗: 每行的代理开关状态 (issue #101) ---- */
 .wsproxy{color:var(--fg3);font-size:11px;flex:none}
 .wsproxy.on{color:var(--acc)}
+
+/* Connection-scoped query tabs: fixed controls, readable labels, horizontal overflow. */
+.tab-navigation{display:flex;min-width:0;height:44px;background:var(--surf-1);position:relative;flex:none;border-bottom:1px solid var(--line)}
+.tab-navigation .vg-tabs{flex:1;min-width:0;align-items:stretch;gap:0;padding:0;scrollbar-width:none;overflow-y:hidden}
+.tab-navigation .vg-tabs::-webkit-scrollbar{display:none}
+.tab-navigation .vg-tab{box-sizing:border-box;position:relative;flex:0 0 auto;min-width:0;max-width:240px;height:100%;padding:0 14px;gap:10px;line-height:22px;border:0;border-radius:0;color:var(--fg3);background:var(--surf-1)}
+.tab-navigation .vg-tab::before{content:"";position:absolute;right:0;top:13px;bottom:13px;width:1px;background:var(--line)}
+.tab-navigation .vg-tab.on{background:color-mix(in srgb,var(--acc) 12%,var(--surf-2));color:var(--fg);font-weight:600}
+.tab-navigation .vg-tab.on::after{content:"";position:absolute;bottom:0;left:14px;right:14px;height:2px;background:var(--acc)}
+.tab-navigation .vg-tab:not(.on):hover{background:var(--surf-2);color:var(--fg)}
+.tab-navigation .vg-tab.dragover{box-shadow:inset 2px 0 var(--acc)}
+.tab-navigation .vg-x{background:inherit;border:0;font:inherit;cursor:pointer}
+.tab-navigation .vg-tab:focus-visible,.tab-controls button:focus-visible,.tab-menu summary:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.tab-controls{display:flex;flex:none;align-items:center;gap:4px;padding:0 8px;border-left:1px solid var(--line)}
+.tab-scroll-controls{display:flex;gap:0;padding-right:4px;border-right:1px solid var(--line)}
+.tab-scroll-controls button:disabled{opacity:.3;cursor:default}
+.tab-menu summary{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--fg2);padding:5px;list-style:none;font-size:12px}
+.tab-menu summary::-webkit-details-marker{display:none}
+.tab-menu-panel{position:absolute;right:8px;top:100%;z-index:30;width:300px;max-width:calc(100vw - 32px);padding:8px;background:var(--surf-1);border:1px solid var(--line2);border-radius:6px;box-shadow:0 8px 24px var(--bg0)}
+.tab-menu-panel input{box-sizing:border-box;width:100%;padding:8px;color:var(--fg);background:var(--surf-2);border:1px solid var(--line2);border-radius:4px}
+.tab-menu-items{max-height:280px;overflow-y:auto;margin:6px 0}
+.tab-menu-panel button{display:block;width:100%;text-align:left;padding:8px;border:0;border-radius:4px;background:var(--surf-1);color:var(--fg2);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab-menu-panel button:hover,.tab-menu-panel button.on{background:var(--surf-2);color:var(--acc)}
+.tab-menu-panel button:disabled{opacity:.45;cursor:default}
+.tab-menu-actions{border-top:1px solid var(--line);padding-top:6px}
+.tab-menu-empty{padding:10px;color:var(--fg3);font-size:12px}
+
+.query-empty-state{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:32px;text-align:center;color:var(--fg3);background:var(--bg0)}
+.query-empty-state>i{font-size:36px;color:var(--fg3);margin-bottom:8px}
+.query-empty-state h2{font-size:16px;font-weight:500;color:var(--fg2);margin:12px 0 0}
+.query-empty-state p{font-size:13px;margin:10px 0 20px}
+.query-empty-actions{display:flex;gap:8px}
+
+/* Keep the active document prominent; environment and Run are quieter context/actions. */
+#esw .vg-ep{padding:4px 10px;border-color:var(--line);color:var(--fg3);background:var(--surf-1);box-shadow:none}
+#esw .vg-ep.on:not(.prod){background:color-mix(in srgb,var(--acc) 20%,var(--surf-1));border-color:var(--acc);color:var(--fg);font-weight:600;box-shadow:none}
+#esw .vg-ep.prod{color:var(--red-fg)}
+#esw .vg-ep.on.prod{background:var(--red);border-color:var(--red);color:var(--on-fg)}
+.vg[data-mode='light'] #esw .vg-ep.on.prod{color:var(--accent-ink)}
+#runBtn{background:var(--surf-1);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 55%,var(--line));box-shadow:none;font-weight:500}
+#runBtn:hover{background:var(--acc);color:var(--accent-ink);border-color:var(--acc);filter:none}
+#runBtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}

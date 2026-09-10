@@ -6,6 +6,7 @@ export type CurrentConn = {
   env: string | null;
   engine: string;
   isRedis: boolean;
+  production?: boolean;
 } | null;
 
 export type HealthState = { ok: boolean; error?: string };

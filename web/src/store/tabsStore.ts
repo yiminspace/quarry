@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { QueryResult } from "../api";
 import { t } from "../i18n";
+import { useConnStore } from "./connStore";
 
 export type TabId = string;
 
@@ -13,7 +14,30 @@ export type Tab = {
   sql: string;
   db: string | null;
   env: string | null;
+  workspace?: string | null;
+  visited?: number;
 };
+
+/** Workspace is part of a tab's identity, including when a removed workspace
+ * is later replaced by another with the same logical database name. */
+export function workspaceFor(db: string | null): string | null {
+  const state = useConnStore.getState();
+  return state.groups.find((g) => g.items.some((item) => item.db === db))?.ws ?? null;
+}
+
+export function sameTabGroup(a: Tab, b: Tab): boolean {
+  return a.db === b.db && a.env === b.env && (a.workspace ?? null) === (b.workspace ?? null);
+}
+
+export function mostRecent(tabs: Tab[]): Tab | undefined {
+  return tabs.reduce<Tab | undefined>((last, tab) =>
+    !last || (tab.visited ?? 0) >= (last.visited ?? 0) ? tab : last, undefined);
+}
+
+function visit(tabs: Tab[], id: TabId): Tab[] {
+  const next = Math.max(0, ...tabs.map((tab) => tab.visited ?? 0)) + 1;
+  return tabs.map((tab) => tab.id === id ? { ...tab, visited: next } : tab);
+}
 
 /** Per-tab result snapshot, tagged with the connection that PRODUCED the
  * result (`queryDb`/`queryEnv`) — not necessarily the tab's current one. A
@@ -35,6 +59,22 @@ export type TabResultSnapshot = {
 const TABS_KEY = "qy_tabs";
 const ATI_KEY = "qy_ati";
 const TABRES_KEY = "qy_tabres";
+const EMPTY_GROUPS_KEY = "qy_empty_tab_groups";
+
+function tabGroupKey(tab: Pick<Tab, "workspace" | "db" | "env">): string {
+  return JSON.stringify([tab.workspace ?? null, tab.db, tab.env]);
+}
+
+function readEmptyGroups(): string[] {
+  try {
+    const groups = JSON.parse(localStorage.getItem(EMPTY_GROUPS_KEY) || "[]");
+    return Array.isArray(groups) ? groups.filter((key): key is string => typeof key === "string") : [];
+  } catch { return []; }
+}
+
+function persistEmptyGroups(groups: string[]): void {
+  try { localStorage.setItem(EMPTY_GROUPS_KEY, JSON.stringify(groups)); } catch { /* storage unavailable */ }
+}
 // Even older single-state keys, migrated from when qy_tabs was never written.
 const LEGACY_UI_KEY = "qy_ui";
 const LEGACY_RESULT_KEY = "qy_result";
@@ -60,17 +100,17 @@ function newId(): TabId {
   return `t${++TID}`;
 }
 
-type StoredTab = { id?: string; sql?: string; db?: string | null; env?: string | null; title?: string | null };
+type StoredTab = { id?: string; sql?: string; db?: string | null; env?: string | null; title?: string | null; workspace?: string | null; visited?: number };
 type StoredResult = { db?: string | null; env?: string | null; res?: (QueryResult & { _sql?: string }) | null } | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
-  return { id: newId(), title: null, sql: "", db: seed?.db ?? null, env: seed?.env ?? null };
+  return { id: newId(), title: null, sql: "", db: seed?.db ?? null, env: seed?.env ?? null, workspace: workspaceFor(seed?.db ?? null) };
 }
 
 function readStoredTabs(): StoredTab[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(TABS_KEY) || "null");
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed)) return parsed;
   } catch {
     // corrupt value — fall through to the single-state key
   }
@@ -129,18 +169,20 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     sql: tb.sql ?? "",
     db: tb.db ?? null,
     env: tb.env ?? null,
+    workspace: tb.workspace,
+    visited: Number.isFinite(tb.visited) ? tb.visited : 0,
   }));
-  const ati = Math.min(Math.max(Number(localStorage.getItem(ATI_KEY) || 0) || 0, 0), tabs.length - 1);
-  return { tabs, activeId: tabs[ati].id, results: readStoredResults(tabs, ati) };
+  const ati = Math.min(Math.max(Number(localStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
+  return { tabs, activeId: tabs[ati]?.id ?? "", results: readStoredResults(tabs, ati) };
 }
 
 function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
     localStorage.setItem(
       TABS_KEY,
-      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title }))),
+      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited }))),
     );
-    localStorage.setItem(ATI_KEY, String(Math.max(tabs.findIndex((t) => t.id === activeId), 0)));
+    localStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
     // storage full/unavailable — tabs just won't survive a reload
   }
@@ -232,9 +274,13 @@ export function tabTitle(tab: Tab): string {
 
 export type TabsState = {
   tabs: Tab[];
+  /** Empty string means this connection has no open editor. */
   activeId: TabId;
+  emptyGroups: string[];
   /** Keyed by tab id (stable across reorder/close); persisted index-aligned. */
   results: Record<TabId, TabResultSnapshot>;
+  claimWorkspaces: () => void;
+  selectGroup: (db: string, env: string | null) => void;
   addTab: (seed?: { db?: string | null; env?: string | null }) => void;
   switchTab: (id: TabId) => void;
   closeTab: (id: TabId) => void;
@@ -257,36 +303,72 @@ export const useTabsStore = create<TabsState>((set, get) => {
   return {
     tabs: initial.tabs,
     activeId: initial.activeId,
+    emptyGroups: readEmptyGroups(),
     results: initial.results,
+
+    claimWorkspaces: () => {
+      const s = get();
+      const tabs = s.tabs.map((tab) => tab.workspace === undefined
+        ? { ...tab, workspace: workspaceFor(tab.db) } : tab);
+      saveTabs(tabs, s.activeId);
+      set({ tabs });
+    },
+
+    selectGroup: (db, env) => {
+      const s = get();
+      const target = { db, env, workspace: workspaceFor(db) } as Tab;
+      const existing = mostRecent(s.tabs.filter((tab) => sameTabGroup(tab, target)));
+      if (existing) { get().switchTab(existing.id); return; }
+      if (s.emptyGroups.includes(tabGroupKey(target))) {
+        saveTabs(s.tabs, "");
+        set({ activeId: "" });
+        return;
+      }
+      const active = s.tabs.find((tab) => tab.id === s.activeId);
+      // Only the initial unbound, empty editor can acquire a connection.
+      if (active && !active.db && !active.sql.trim() && !s.results[active.id]?.result) {
+        get().updateActiveTab({ db, env });
+      } else get().addTab({ db, env });
+    },
 
     addTab: (seed) => {
       const s = get();
       const active = s.tabs.find((t) => t.id === s.activeId);
-      const tab = blankTab(seed ?? { db: active?.db ?? null, env: active?.env ?? null });
-      const tabs = [...s.tabs, tab];
+      const current = useConnStore.getState().current;
+      const tab = blankTab(seed ?? { db: active?.db ?? current?.db ?? null, env: active?.env ?? current?.env ?? null });
+      const tabs = visit([...s.tabs, tab], tab.id);
+      const emptyGroups = s.emptyGroups.filter((key) => key !== tabGroupKey(tab));
+      persistEmptyGroups(emptyGroups);
       saveTabs(tabs, tab.id);
-      set({ tabs, activeId: tab.id });
+      set({ tabs, activeId: tab.id, emptyGroups });
     },
 
     switchTab: (id) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id) || id === s.activeId) return;
-      saveTabs(s.tabs, id);
-      set({ activeId: id });
+      const tabs = visit(s.tabs, id);
+      saveTabs(tabs, id);
+      set({ tabs, activeId: id });
     },
 
     closeTab: (id) => {
       const s = get();
       const idx = s.tabs.findIndex((t) => t.id === id);
       if (idx === -1) return;
-      const active = s.tabs.find((t) => t.id === s.activeId);
+      const dying = s.tabs[idx];
       let tabs = s.tabs.filter((t) => t.id !== id);
-      if (tabs.length === 0) tabs = [blankTab({ db: active?.db ?? null, env: active?.env ?? null })];
-      const activeId = s.activeId === id ? tabs[Math.min(idx, tabs.length - 1)].id : s.activeId;
+      let activeId = s.activeId;
+      const siblings = tabs.filter((tab) => sameTabGroup(tab, dying));
+      const emptyGroups = siblings.length ? s.emptyGroups : [...new Set([...s.emptyGroups, tabGroupKey(dying)])];
+      if (activeId === id) {
+        activeId = mostRecent(siblings)?.id ?? "";
+        if (activeId) tabs = visit(tabs, activeId);
+      }
+      persistEmptyGroups(emptyGroups);
       const results = { ...s.results };
       delete results[id];
       saveTopology(tabs, activeId, results);
-      set({ tabs, activeId, results });
+      set({ tabs, activeId, results, emptyGroups });
     },
 
     renameTab: (id, title) => {
@@ -301,7 +383,7 @@ export const useTabsStore = create<TabsState>((set, get) => {
       if (fromId === toId) return;
       const from = s.tabs.findIndex((t) => t.id === fromId);
       const to = s.tabs.findIndex((t) => t.id === toId);
-      if (from === -1 || to === -1) return;
+      if (from === -1 || to === -1 || !sameTabGroup(s.tabs[from], s.tabs[to])) return;
       const tabs = [...s.tabs];
       const [moved] = tabs.splice(from, 1);
       tabs.splice(to, 0, moved);
@@ -315,7 +397,8 @@ export const useTabsStore = create<TabsState>((set, get) => {
 
     updateTab: (id, patch) => {
       const s = get();
-      const tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch } : t));
+      let tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch, ...("db" in patch ? { workspace: workspaceFor(patch.db ?? null) } : {}) } : t));
+      if (id === s.activeId && ("db" in patch || "env" in patch)) tabs = visit(tabs, id);
       // SQL input is the hot path: never reserialize unchanged result payloads
       // on every keystroke. A low-frequency connection/env re-point still
       // rewrites the index-aligned qy_tabres shape so its producer tags and

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
-import { groupQueriesByDb, itemsInEngineOrder } from "./sidebarLayout";
+import { groupKey, groupQueriesByDb, itemsInEngineOrder } from "./sidebarLayout";
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 
@@ -31,10 +31,6 @@ export type SidebarProps = {
 
 export function defaultEnvFor(item: ConnItem): string | null {
   return item.envs.find((e) => e.env === "dev")?.env ?? item.envs[0]?.env ?? null;
-}
-
-function groupKey(ws: string | null, group: string | null): string {
-  return `${ws || ""}::${group || t("other")}`;
 }
 
 /* ---- redis key tree (`:`-hierarchy, fold, count/type/ttl badges) ---- */
@@ -198,6 +194,10 @@ function TablePanel({
   "current" | "panel" | "filter" | "onFilterChange" | "onTableClick" | "onInspectKey" | "onRefresh"
 > & { visible: boolean }) {
   const currentTable = useConnStore((s) => s.currentTable);
+  const selectedRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (visible) selectedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [currentTable, panel.tables, visible]);
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const [structTable, setStructTable] = useState<string | null>(null);
   const isRedis = panel.engine === "redis";
@@ -261,6 +261,7 @@ function TablePanel({
                 <div
                   key={tb}
                   className={`vg-tname tname${tb === currentTable ? " on" : ""}`}
+                  ref={tb === currentTable ? selectedRef : undefined}
                   data-t={tb}
                   title={`${tb}\n${t("alt_insert")}`}
                   onClick={(e) => onTableClick(tb, e.altKey)}

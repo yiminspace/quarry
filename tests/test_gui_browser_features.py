@@ -59,7 +59,7 @@ def _console_clean(request):
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_saved", "page_missing_group", "page_neptune")
+                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -82,6 +82,7 @@ group = "acme"
 url = "{TEST_DB_URL}"
 engine = "postgres"
 env = "prod"
+production = true
 db = "shop"
 group = "acme"
 """
@@ -105,6 +106,7 @@ group = "brain"
 url = "https://prod.example.neptune.amazonaws.com:8182"
 engine = "neptune"
 env = "prod"
+production = true
 db = "graph"
 group = "brain"
 """
@@ -136,6 +138,7 @@ ENVSET_LOCAL_TOML = f"""
 url = "{TEST_DB_URL}"
 engine = "postgres"
 env = "prod"
+production = true
 db = "stash"
 group = "acme"
 
@@ -439,10 +442,10 @@ def test_prod_env_switch_does_not_autorun(page_envset):
     assert "prod" in page.locator("#toast").inner_text().lower()
     page.wait_for_timeout(700)
     assert queries == []                                   # no auto-run happened
-    assert page.locator("#grid table").count() == 1        # old result still painted
+    assert page.locator("#grid table").count() == 0        # new prod group is empty
 
 
-def test_nonprod_env_switch_autoruns(page_envset):
+def test_nonprod_env_switch_restores_without_autorun(page_envset):
     page = page_envset
     page.wait_for_selector('.dbrow[data-db="shop"]')
     page.locator('.dbrow[data-db="shop"]').click()
@@ -452,13 +455,13 @@ def test_nonprod_env_switch_autoruns(page_envset):
     page.wait_for_selector("#toast", state="visible")
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
-    page.locator('#esw .ep[data-env="dev"]').click()       # -> dev auto-runs
+    page.locator('#esw .ep[data-env="dev"]').click()       # -> dev restores
     page.wait_for_selector("#grid table tbody tr")
     page.wait_for_timeout(300)
-    assert len(queries) == 1
+    assert queries == []
 
 
-def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
+def test_neptune_connection_opens_starter_without_autorun(page_neptune):
     page = page_neptune
     queries = []
     def query_response(route):
@@ -475,7 +478,7 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
     _set_sql(page, "select 42 as draft")
     page.locator('.dbrow[data-db="graph"]').click()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
-    page.wait_for_function("() => document.querySelector('#status').style.display !== 'none'")
+    assert page.locator("#status").is_hidden()
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
     assert [(tab["db"], tab["env"], tab["sql"]) for tab in tabs] == [
         ("testpg", "test", "select 42 as draft"),
@@ -484,7 +487,7 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
 
     page.locator('#esw .ep[data-env="local"]').click()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
-    page.wait_for_function("() => JSON.parse(localStorage.getItem('qy_tabres'))[2] !== null")
+    assert page.locator("#status").is_hidden()
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
     assert [(tab["db"], tab["env"]) for tab in tabs] == [
         ("testpg", "test"), ("graph", "dev"), ("graph", "local")
@@ -500,10 +503,11 @@ def test_neptune_connection_opens_and_runs_starter_tabs(page_neptune):
     assert "prod" in page.locator("#toast").inner_text().lower()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
     page.wait_for_timeout(200)
-    assert [(query["db"], query["env"], query["sql"]) for query in queries] == [
-        ("graph", "dev", "MATCH (n) RETURN n LIMIT 25"),
-        ("graph", "local", "MATCH (n) RETURN n LIMIT 25"),
-    ]
+    assert queries == []
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.locator("#runBtn").click()
+    page.wait_for_selector("#status", state="visible")
+    assert [(query["db"], query["env"]) for query in queries] == [("graph", "dev")]
 
 
 def test_local_env_sorts_first_and_is_default_without_dev(page_envset_local):
@@ -582,6 +586,7 @@ ssh_user = "ec2-user"
 url = "{TEST_DB_URL}"
 engine = "postgres"
 env = "prod"
+production = true
 db = "shop"
 group = "acme"
 """
@@ -1090,13 +1095,16 @@ def test_saved_query_result_persisted_under_producing_connection(page_saved_mult
     page.wait_for_selector('.dbrow[data-db="shop"]')
     page.locator('.dbrow[data-db="shop"]').click()            # bind the active tab to shop@dev
     page.wait_for_selector("#esw .ep")
+    _set_sql(page, 'select 7 as keep_shop_draft')
     page.wait_for_selector('.qname[data-q="all-cust"]')
-    page.locator('.qname[data-q="all-cust"]').click()         # run the saved query (lives on testpg)
+    page.locator('.qname[data-q="all-cust"]').click()         # run in the testpg group
     page.wait_for_selector("#grid table tbody tr")
     saved = page.evaluate("JSON.parse(localStorage.getItem('qy_tabres'))")
-    assert saved[0]["db"] == "testpg"                         # producing conn, not shop
+    assert saved[1]["db"] == "testpg"                         # producing conn, not shop
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
-    assert tabs[0]["db"] == "testpg"                          # tab re-pointed to producing conn
+    assert tabs[0]["db"] == "shop"
+    assert tabs[0]["sql"] == "select 7 as keep_shop_draft"
+    assert tabs[1]["db"] == "testpg"
     # and it survives a reload under the producing connection
     page.reload(wait_until="networkidle")
     page.wait_for_selector('.dbrow[data-db="testpg"].on')
@@ -1612,10 +1620,8 @@ def test_stale_tab_connection_unbinds_not_rebinds(page):
         "localStorage.setItem('qy_tabs', JSON.stringify(["
         "{sql:'select 1',db:'testpg',env:null},"
         "{sql:'select 9 as ghost',db:'ghostdb',env:null}]));"
-        "localStorage.setItem('qy_ati','0');")
-    page.reload(wait_until="networkidle")
-    page.wait_for_selector('.tab[data-i="1"]')
-    page.locator('.tab[data-i="1"]').click()              # switch to the ghost tab
+        "localStorage.setItem('qy_ati','1');")
+    page.goto(page.url.split("?")[0], wait_until="networkidle")
     page.wait_for_function("document.querySelector('#sql').value === 'select 9 as ghost'")
     txt = page.locator("#qtitle").inner_text()
     assert "No connection" in txt or "未选连接" in txt     # unbound, not rebound
@@ -1671,14 +1677,14 @@ def test_slow_response_routes_to_origin_tab_not_active(page):
 #      be restored under the new connection after a reload.
 # ---------------------------------------------------------------------------
 
-def test_result_not_restored_after_tab_rebound_to_prod(page_envset):
+def test_result_stays_in_dev_group_after_prod_reload(page_envset):
     page = page_envset
     page.wait_for_selector('.dbrow[data-db="shop"]')
     page.locator('.dbrow[data-db="shop"]').click()
     page.wait_for_selector("#esw .ep")
     _run_sql(page, "select 42 as dev_only")               # result produced on shop@dev
     page.wait_for_selector('#grid td[data-v="42"]')
-    page.locator('#esw .ep[data-env="prod"]').click()     # rebind this tab to shop@prod (no autorun)
+    page.locator('#esw .ep[data-env="prod"]').click()     # switch to separate prod group
     page.wait_for_selector("#toast", state="visible")
     # the persisted result is tagged with its PRODUCING connection (dev), not the
     # tab's current prod connection — so it can't masquerade as prod data
@@ -1734,11 +1740,11 @@ def test_legacy_qy_result_env_match_restored(page_envset):
 
 
 # ---------------------------------------------------------------------------
-# 31f. Tabs: a request in flight whose OWN tab is switched to another env of the
-#      same db (no new request) must be dropped, never repainted as the new env.
+# 31f. Switching environments keeps a pending response on the original tab;
+#      it never repaints the destination group and is restored on return.
 # ---------------------------------------------------------------------------
 
-def test_inflight_response_dropped_when_same_tab_switches_env(page_envset):
+def test_inflight_response_returns_to_origin_env_group(page_envset):
     page = page_envset
     page.wait_for_selector('.dbrow[data-db="shop"]')
     page.locator('.dbrow[data-db="shop"]').click()
@@ -1746,13 +1752,16 @@ def test_inflight_response_dropped_when_same_tab_switches_env(page_envset):
     _set_sql(page, "select pg_sleep(1.2), 42 as devval")
     page.locator("#runBtn").click()                       # slow query in flight on shop@dev
     page.wait_for_selector("#grid .spin")
-    page.locator('#esw .ep[data-env="prod"]').click()     # same tab -> prod (no autorun)
+    page.locator('#esw .ep[data-env="prod"]').click()     # separate prod tab (no autorun)
     page.wait_for_selector("#toast", state="visible")
     page.wait_for_timeout(1600)                            # let the dev response land
     # the dev rows must never surface under the now-prod tab
     assert page.locator('#grid td[data-v="42"]').count() == 0
     saved = page.evaluate("JSON.parse(localStorage.getItem('qy_tabres'))")
-    assert saved[0] is None                                # nothing persisted for the tab either
+    assert saved[0]["env"] == "dev"
+    assert saved[0]["res"]["rows"][0]["devval"] == 42
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.wait_for_selector('#grid td[data-v="42"]')
 
 
 # ---------------------------------------------------------------------------
@@ -2203,10 +2212,10 @@ def test_tab_middle_click_closes(page):
     page.wait_for_function("document.querySelectorAll('#tabs .tab[data-i]').length === 2")
     page.locator('.tab[data-i="0"]').click(button="middle")
     page.wait_for_function("document.querySelectorAll('#tabs .tab[data-i]').length === 1")
-    # guard: middle-click on the only remaining tab is a no-op (same rule as the × glyph)
+    # the last remaining tab closes too, leaving the empty workbench
     page.locator('.tab[data-i="0"]').click(button="middle")
-    page.wait_for_timeout(150)
-    assert page.locator(".tab[data-i]").count() == 1
+    page.wait_for_selector("#queryEmptyState")
+    assert page.locator(".tab[data-i]").count() == 0
 
 
 def test_tab_keyboard_shortcut_closes_active_tab(page):
@@ -2215,10 +2224,10 @@ def test_tab_keyboard_shortcut_closes_active_tab(page):
     page.wait_for_function("document.querySelectorAll('#tabs .tab[data-i]').length === 2")
     page.keyboard.press("Control+Shift+W")
     page.wait_for_function("document.querySelectorAll('#tabs .tab[data-i]').length === 1")
-    # guard: closing the last remaining tab via the shortcut is a no-op
+    # closing the last remaining tab via the shortcut leaves the empty workbench
     page.keyboard.press("Control+Shift+W")
-    page.wait_for_timeout(150)
-    assert page.locator(".tab[data-i]").count() == 1
+    page.wait_for_selector("#queryEmptyState")
+    assert page.locator(".tab[data-i]").count() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2626,3 +2635,403 @@ def test_whats_new_background_uses_bg1_token_in_both_themes(_pw_browser, gui_url
         assert box_bg() == "rgb(255, 255, 255)"  # light theme --bg1 (#ffffff)
     finally:
         ctx.close()
+
+
+# Connection-scoped navigation, overflow and shared-state regression contracts.
+def test_connection_tabs_restore_mru_table_and_env(page_envset):
+    page = page_envset
+    _select_testpg(page)
+    page.locator('.tname[data-t="customers"]').click()
+    page.wait_for_selector('#grid table')
+    page.locator('.tname[data-t="orders"]').click()
+    page.wait_for_selector('.tname.on[data-t="orders"]')
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+    page.fill('.tsearch', 'orders')
+    page.locator('.dbrow[data-db="shop"]').click()
+    assert page.locator('#tabs .tab').count() == 1
+    assert page.locator('#sql').input_value() == ''
+    assert page.locator('.tname.on').count() == 0
+    _set_sql(page, 'select 91 as dev_draft')
+    page.locator('#esw .ep[data-env="prod"]').click()
+    assert page.locator('#sql').input_value() == ''
+    _set_sql(page, 'select 92 as prod_draft')
+    page.locator('.dbrow[data-db="testpg"]').click()
+    assert page.locator('#tabs .tab').count() == 2
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+    assert page.locator('.tsearch').input_value() == ''
+    assert page.locator('#sql').input_value() == 'select * from customers'
+    with page.expect_download() as dl:
+        page.locator('#csvBtn').click()
+    assert 'name' in open(dl.value.path(), encoding='utf-8').read()
+    page.reload(wait_until='networkidle')
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+    page.locator('.dbrow[data-db="shop"]').click()
+    assert page.locator('#esw .ep.on').get_attribute('data-env') == 'prod'
+    assert page.locator('#sql').input_value() == 'select 92 as prod_draft'
+    page.locator('#esw .ep[data-env="dev"]').click()
+    assert page.locator('#sql').input_value() == 'select 91 as dev_draft'
+
+
+def test_tab_preview_selection_restores_and_preserves_edited_sql(page):
+    _select_testpg(page)
+    page.locator('.tname[data-t="customers"]').click()
+    page.locator('.tname[data-t="orders"]').click()
+    page.locator('#side [data-grp]').first.click()
+    assert page.locator('#side .gbody').first.is_hidden()
+    page.locator('.tab[data-i="0"]').click()
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+    assert page.locator('#side .gbody').first.is_visible()
+    _set_sql(page, 'select c.id from customers c join orders o on c.id = o.customer_id')
+    assert page.locator('.tname.on').count() == 0
+    page.locator('.tname[data-t="customers"]').click()
+    assert page.locator('#tabs .tab').count() == 3
+    page.locator('.tab[data-i="0"]').click()
+    assert 'join orders' in page.locator('#sql').input_value()
+    assert page.locator('.tname.on').count() == 0
+    page.locator('.tname[data-t="customers"]').click()
+    assert page.locator('#tabs .tab').count() == 3  # reuse, never duplicate the preview
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+
+
+def test_tab_close_uses_mru_and_keeps_last_close_in_same_group(page_envset):
+    page = page_envset
+    _select_testpg(page)
+    _set_sql(page, 'select 11 as other_database')
+    page.locator('.dbrow[data-db="shop"]').click()
+    for value in ['first', 'second', 'third']:
+        if value != 'first':
+            page.locator('#tabAdd').click()
+        _set_sql(page, f'select 1 as {value}')
+    page.locator('.tab[data-i="0"]').click()
+    page.locator('.tab[data-i="2"]').click()
+    page.locator('.tab.on .x').click()
+    assert page.locator('#sql').input_value() == 'select 1 as first'
+    page.locator('#tabList').click()
+    page.locator('#closeOtherTabs').click()
+    page.locator('.tab.on .x').click()
+    assert page.locator('#qtitle').inner_text() == 'shop'
+    assert page.locator('#queryEmptyState').is_visible()
+    assert page.locator('#sql').count() == 0
+    assert page.locator('#tabs .tab').count() == 0
+    page.locator('#histBtn').click()
+    for value in ['first', 'second', 'third']:
+        assert page.locator('.modal .hitem', has_text=f'as {value}').count() == 1
+    page.keyboard.press('Escape')
+    page.locator('.dbrow[data-db="testpg"]').click()
+    assert page.locator('#sql').input_value() == 'select 11 as other_database'
+
+
+def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
+    page = page_envset
+    _select_testpg(page)
+    _set_sql(page, 'select 10 as keep_other_group')
+    page.locator('.dbrow[data-db="shop"]').click()
+    for i in range(15):
+        if i:
+            page.locator('#tabAdd').click()
+        _set_sql(page, f'select * from long_table_name_{i:02d}')
+    page.set_viewport_size({'width': 1000, 'height': 800})
+    assert page.locator('#tabs .tab').count() == 15
+    assert page.eval_on_selector('#tabs', 'e => e.scrollWidth > e.clientWidth')
+    assert page.eval_on_selector('#tabs .tab', 'e => e.getBoundingClientRect().width <= 240')
+    assert page.eval_on_selector('#tabs', '''e => {
+        const strip = e.getBoundingClientRect(), tab = e.querySelector('.tab').getBoundingClientRect();
+        return tab.height === strip.height && strip.height === 43 && tab.top === strip.top && e.parentElement.getBoundingClientRect().height === 44;
+    }''')
+    assert page.eval_on_selector('#tabAdd', 'e => { const r=e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }')
+    page.eval_on_selector('#tabs', 'e => { e.scrollLeft = e.scrollWidth; e.dispatchEvent(new Event("scroll")); }')
+    page.wait_for_function('document.querySelector("#tabScrollRight").disabled')
+    assert page.locator('#tabScrollLeft').is_enabled()
+    before_scroll = page.eval_on_selector('#tabs', 'e => e.scrollLeft')
+    page.locator('#tabScrollLeft').click()
+    page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft < before', arg=before_scroll)
+    page.wait_for_function('!document.querySelector("#tabScrollRight").disabled')
+    page.locator('#tabScrollRight').click()
+    page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft >= before - 1', arg=before_scroll)
+    page.locator('#tabList').click()
+    page.fill('.tab-menu input', 'name_03')
+    assert page.locator('.tab-menu-items button').count() == 1
+    page.locator('.tab-menu-items button').click()
+    assert page.locator('#sql').input_value().endswith('name_03')
+    assert page.eval_on_selector('#tabs', '''e => {
+        const r=e.getBoundingClientRect(), a=e.querySelector('.on').getBoundingClientRect();
+        return a.left >= r.left - 1 && a.right <= r.right + 1;
+    }''')
+    page.locator('.tab.on').focus()
+    page.keyboard.press('ArrowRight')
+    assert page.locator('#sql').input_value().endswith('name_04')
+    page.keyboard.press('Home')
+    assert page.locator('#sql').input_value().endswith('name_00')
+    page.keyboard.press('End')
+    assert page.locator('#sql').input_value().endswith('name_14')
+    page.locator('#tabList').click()
+    page.fill('.tab-menu input', 'no such tab')
+    assert page.locator('.tab-menu-empty').is_visible()
+    page.keyboard.press('Escape')
+    assert page.locator('.tab-menu').get_attribute('open') is None
+    page.locator('#tabList').click()
+    page.locator('#sql').click()
+    assert page.locator('.tab-menu').get_attribute('open') is None
+    page.locator('#tabList').click()
+    page.fill('.tab-menu input', 'name_03')
+    page.locator('.tab-menu-items button').click()
+    page.locator('#tabList').click()
+    page.locator('#closeRightTabs').click()
+    assert page.locator('#tabs .tab').count() == 4
+    page.locator('#tabList').click()
+    page.locator('#closeOtherTabs').click()
+    assert page.locator('#tabs .tab').count() == 1
+    page.locator('.dbrow[data-db="testpg"]').click()
+    assert page.locator('#sql').input_value() == 'select 10 as keep_other_group'
+
+
+def test_close_all_preserves_more_than_100_tab_drafts(page):
+    tabs = [
+        {
+            'id': f't{i}', 'title': f'draft {i}', 'sql': f'select {i} as draft_{i}',
+            'db': 'testpg', 'env': 'test', 'visited': i,
+        }
+        for i in range(105)
+    ]
+    page.evaluate(
+        "([tabs]) => { localStorage.setItem('qy_tabs', JSON.stringify(tabs)); localStorage.setItem('qy_ati', '104'); }",
+        [tabs],
+    )
+    page.reload(wait_until='networkidle')
+    assert page.locator('#tabs .tab').count() == 105
+
+    page.locator('#tabList').click()
+    page.locator('#closeAllTabs').click()
+    assert page.locator('#queryEmptyState').is_visible()
+    history = page.evaluate("JSON.parse(localStorage.getItem('qy_hist') || '[]')")
+    sql = {entry['sql'] for entry in history}
+    assert 'select 0 as draft_0' in sql
+    assert 'select 104 as draft_104' in sql
+
+
+def test_tabs_do_not_move_between_workspaces_with_same_db(page_envset):
+    page = page_envset
+    page.locator('.dbrow[data-db="shop"]').click()
+    _set_sql(page, 'select 88 as old_workspace_draft')
+    response = page.request.get(page.url.split('/app')[0] + '/api/connections').json()
+    for group in response['groups']:
+        group['ws'] = '/different/workspace'
+    page.route('**/api/connections', lambda route: route.fulfill(json=response))
+    page.goto(page.url.split('?')[0], wait_until='networkidle')
+    assert page.locator('#sql').input_value() == 'select 88 as old_workspace_draft'
+    assert page.locator('#qtitle').inner_text() == 'No connection selected'
+    page.locator('.dbrow[data-db="shop"]').click()
+    assert page.locator('#sql').input_value() == ''
+    saved = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
+    assert saved[0]['sql'] == 'select 88 as old_workspace_draft'
+    assert saved[-1]['workspace'] == '/different/workspace'
+
+
+@pytest.mark.parametrize('close_method', ['button', 'middle', 'keyboard', 'all'])
+def test_close_last_tab_shows_empty_and_survives_reload(page, close_method):
+    _select_testpg(page)
+    _run_sql(page, 'select 42 as final_tab_result')
+    if close_method == 'button':
+        page.locator('.tab.on .x').click()
+    elif close_method == 'middle':
+        page.locator('.tab.on').click(button='middle')
+    elif close_method == 'keyboard':
+        page.keyboard.press('Control+Shift+W')
+    else:
+        page.locator('#tabList').click()
+        page.locator('#closeAllTabs').click()
+    page.wait_for_selector('#queryEmptyState')
+    assert page.locator('#tabs .tab').count() == 0
+    assert page.locator('#sql, #grid, #status').count() == 0
+    assert page.locator('.tname.on').count() == 0
+    assert page.locator('#qtitle').inner_text() == 'testpg'
+    assert page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))") == []
+    assert page.evaluate("JSON.parse(localStorage.getItem('qy_tabres'))") == []
+    queries = []
+    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.url))
+    page.reload(wait_until='networkidle')
+    page.wait_for_selector('#queryEmptyState')
+    assert queries == []
+    assert page.locator('#tabs .tab').count() == 0
+    assert page.locator('#qtitle').inner_text() == 'testpg'
+    page.locator('#histBtn').click()
+    page.locator('.modal .hitem', has_text='final_tab_result').click()
+    page.wait_for_selector('#sql')
+    assert page.locator('#sql').input_value() == 'select 42 as final_tab_result'
+    assert queries == []  # recalling a draft does not run it
+    page.locator('.tab.on .x').click()
+    page.locator('#emptyNewTab').click()
+    assert page.locator('#tabs .tab').count() == 1
+    assert page.locator('#sql').input_value() == ''
+
+
+def test_close_all_tabs_is_scoped_and_empty_group_stays_empty(page_envset):
+    page = page_envset
+    _select_testpg(page)
+    _set_sql(page, 'select 7 as other_connection')
+    page.locator('.dbrow[data-db="shop"]').click()
+    _set_sql(page, 'select 8 as dev_draft')
+    page.locator('#tabAdd').click()
+    _set_sql(page, 'select 9 as dev_draft_two')
+    page.locator('#esw .ep[data-env="prod"]').click()
+    _set_sql(page, 'select 10 as prod_draft')
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.locator('#tabList').click()
+    page.locator('#closeAllTabs').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.locator('#esw .ep[data-env="prod"]').click()
+    assert page.locator('#sql').input_value() == 'select 10 as prod_draft'
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.reload(wait_until='networkidle')
+    page.wait_for_selector('#queryEmptyState')
+    assert page.locator('#esw .ep.on').get_attribute('data-env') == 'dev'
+    page.locator('.dbrow[data-db="testpg"]').click()
+    assert page.locator('#sql').input_value() == 'select 7 as other_connection'
+    page.locator('.dbrow[data-db="shop"]').click()
+    # The last tab used on this db was prod, since dev is empty; explicitly revisit dev.
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.locator('.tname[data-t="customers"]').click()
+    page.wait_for_selector('#sql')
+    page.wait_for_selector('.tname.on[data-t="customers"]')
+    assert page.locator('#tabs .tab').count() == 1
+    assert page.locator('#sql').input_value() == 'select * from customers'
+    page.locator('#tabList').click()
+    page.locator('#closeAllTabs').click()
+    page.locator('#tabAdd').click()
+    assert page.locator('#sql').input_value() == ''
+    assert page.locator('#esw .ep.on').get_attribute('data-env') == 'dev'
+
+
+def test_closed_query_response_cannot_resurrect_tab(page):
+    _select_testpg(page)
+    _set_sql(page, "select pg_sleep(0.7), 17 as late_result")
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid .spin')
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.wait_for_timeout(1000)
+    assert page.locator('#tabs .tab').count() == 0
+    assert page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))") == []
+    page.locator('#emptyNewTab').click()
+    assert page.locator('#grid table').count() == 0
+
+
+def test_saved_query_opens_from_empty_group(page_noparam):
+    page = page_noparam
+    _select_testpg(page)
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.locator('.qname[data-q="all-cust"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert page.locator('#tabs .tab').count() == 1
+    assert page.locator('#qtitle').inner_text() == 'testpg'
+
+
+def test_alt_table_opens_editor_from_empty_without_running(page):
+    _select_testpg(page)
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    requests = []
+    page.on('request', lambda r: '/api/query' in r.url and requests.append(r.url))
+    page.locator('.tname[data-t="customers"]').click(modifiers=['Alt'])
+    page.wait_for_selector('#sql')
+    assert page.locator('#sql').input_value() == 'select * from customers'
+    assert requests == []
+    assert page.locator('#grid table').count() == 0
+
+
+def test_redis_key_opens_editor_from_empty_group(page_redis):
+    page = page_redis
+    page.locator('.dbrow[data-db="testredis"]').click()
+    page.wait_for_selector('.tname[data-key="qygui:sess:1"]')
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    page.locator('.tname[data-key="qygui:sess:1"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert page.locator('#tabs .tab').count() == 1
+    assert page.locator('#sql').input_value() == '# qygui:sess:1'
+
+
+@pytest.fixture()
+def page_explicit_production(_pw_browser, tmp_path):
+    config = ENVSET_TOML.replace('production = true', 'production = false') + f'''
+[shop_jp]
+url = "{TEST_DB_URL}"
+engine = "postgres"
+env = "jp"
+production = true
+db = "shop"
+group = "acme"
+'''
+    with _running_gui(tmp_path, extra_conn=config) as url:
+        ctx, page = _mk_page(_pw_browser, url)
+        try:
+            yield page
+        finally:
+            ctx.close()
+
+
+def test_env_preview_autorun_uses_explicit_production(page_explicit_production):
+    page = page_explicit_production
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.locator('#tbl-panel .tname[data-t="customers"]').click(modifiers=['Alt'])
+    queries = []
+    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.post_data_json))
+    page.locator('#esw .ep[data-env="jp"]').click()
+    page.locator('#prodBadge').wait_for(state='visible')
+    assert page.locator('#sql').input_value() == 'select * from customers'
+    page.wait_for_timeout(250)
+    assert queries == []
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.locator('#prodBadge').wait_for(state='hidden')
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(queries) == 1 and queries[0]['env'] == 'prod'
+    page.locator('#esw .ep[data-env="jp"]').click()
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_timeout(250)
+    assert len(queries) == 1  # cached result, no duplicate query
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(queries) == 2 and queries[-1]['env'] == 'dev'
+
+
+def test_env_manual_sql_never_autoruns(page_explicit_production):
+    page = page_explicit_production
+    page.locator('.dbrow[data-db="shop"]').click()
+    _set_sql(page, 'SELECT 42 AS handwritten')
+    queries = []
+    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.url))
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.locator('#esw .ep[data-env="dev"]').click()
+    assert page.locator('#sql').input_value() == 'SELECT 42 AS handwritten'
+    page.wait_for_timeout(250)
+    assert queries == []
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_workbench_visual_hierarchy(page_envset, mode):
+    page = page_envset
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.evaluate('(mode) => document.documentElement.dataset.mode = mode', mode)
+    def matches(selector, prop, value, pseudo=None):
+        return page.evaluate("""([selector, prop, value, pseudo]) => {
+            const expected = document.createElement('span');
+            expected.style[prop] = value;
+            document.body.append(expected);
+            const color = getComputedStyle(expected)[prop]; expected.remove();
+            return getComputedStyle(document.querySelector(selector), pseudo)[prop] === color;
+        }""", [selector, prop, value, pseudo])
+    assert matches('#tabs .on', 'backgroundColor', 'color-mix(in srgb,var(--acc) 12%,var(--surf-2))')
+    assert page.eval_on_selector('#tabs .on', 'e => getComputedStyle(e).fontWeight') == '600'
+    assert matches('#esw .on', 'backgroundColor', 'color-mix(in srgb,var(--acc) 20%,var(--surf-1))')
+    assert matches('#esw .on', 'borderTopColor', 'var(--acc)')
+    assert page.eval_on_selector('#esw .on', 'e => getComputedStyle(e).fontWeight') == '600'
+    assert matches('#esw .on', 'color', 'var(--fg)')
+    assert matches('#runBtn', 'backgroundColor', 'var(--surf-1)')
+    assert matches('#runBtn', 'color', 'var(--acc)')
+    page.locator('#runBtn').hover()
+    assert matches('#runBtn', 'backgroundColor', 'var(--acc)')
+    assert matches('#runBtn', 'color', 'var(--accent-ink)')

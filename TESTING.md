@@ -148,7 +148,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 |---|------|---------|------------|---|
 | 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_and_readonly_badge (single-ws only) | 🟡 |
 | 2 | header | read-only badge | B:test_load_shows_brand_and_readonly_badge | ✅ |
-| 3 | header | prod badge visibility | F:test_env_pills_default_dev_and_prod_badge | ✅ |
+| 3 | header | production badge follows explicit configuration, independent of env name | F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production | ✅ |
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
@@ -156,9 +156,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 8 | sidebar | group collapse/expand + persistence | F:test_group_collapse_persists_after_reload | ✅ |
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
-| 11 | header | env switcher lists every env of the selected connection; prod styling + ≥4.5:1 contrast is pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
-| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_autoruns | ✅ |
-| 13 | sidebar | env-switch auto-rerun — **never on prod** (toast instead) | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_autoruns | ✅ |
+| 11 | header | env switcher lists every env of the selected connection; explicit production styling + ≥4.5:1 contrast is pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
+| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_never_autoruns | ✅ |
+| 13 | sidebar | env switch restores cached results; unexecuted table previews auto-run once only on explicitly non-production connections; new env inherits table preview, drafts stay manual | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_never_autoruns | ✅ |
 | 14 | sidebar | row click selects + opens table panel; re-click toggles panel | F:test_reclick_connection_toggles_panel | ✅ |
 | 15 | sidebar | table filter box (inline search + refresh); filter survives the SWR repaint | F:test_table_filter_box (repaint-survival unasserted), test_gui_visual:test_table_filter_uses_surface_tokens | 🟡 |
 | 16 | sidebar | table panel connection-error state / `no tables` empty state | F:test_dead_connection_click_shows_error_panel (error only) | 🟡 |
@@ -215,16 +215,16 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 67 | tabs | per-tab result isolation: grid / status / export always reflect the active tab | F:test_tab_switch_isolates_results | ✅ |
 | 68 | tabs | closing a tab pushes its SQL to History (active + inactive close) | F:test_close_tab_preserves_sql_in_history | ✅ |
 | 69 | tabs | tab with a vanished connection unbinds (never silently rebinds) | F:test_stale_tab_connection_unbinds_not_rebinds | ✅ |
-| 70 | sidebar | current-table highlight; cleared when custom SQL runs | F:test_table_click_highlights_current_table | ✅ |
+| 70 | sidebar | current-table highlight follows exact table previews on tab/connection changes and reload; edited/custom SQL clears it | F:test_table_click_highlights_current_table, F:test_tab_preview_selection_restores_and_preserves_edited_sql | ✅ |
 | 71 | sidebar | manual list refresh button (tables + redis keys); filter survives refresh | F:test_table_list_manual_refresh (redis button + filter-survival unasserted) | 🟡 |
 | 72 | sidebar | table list cap notice at 5000 | backend: test_api_tables_capped_flag_at_5000 (UI note unasserted) | 🟡 |
 | 73 | sidebar | Alt+click inserts generated SQL without running | F:test_alt_click_inserts_without_running | ✅ |
 | 74 | tabs | per-tab result persistence: every bounded tab result survives a reload (`qy_tabres`), each restored under its own connection; unchanged results are not reserialized on SQL input/tab switches | F:test_per_tab_results_persist_across_reload; tabsStore.test.ts | ✅ |
 | 75 | tabs | an in-flight request that lands after a tab switch is stored on its origin tab, never the now-active one | F:test_slow_response_routes_to_origin_tab_not_active | ✅ |
-| 76 | tabs | a result is tagged with its producing connection; re-pointing a tab to another db/env never restores the old grid on reload — incl. the legacy `qy_result` upgrade path (env, not just db, must match) | F:test_result_not_restored_after_tab_rebound_to_prod, F:test_legacy_qy_result_env_mismatch_not_restored, F:test_legacy_qy_result_env_match_restored | ✅ |
-| 77 | tabs | an in-flight request whose own tab is switched to another env of the same db is dropped, never repainted/persisted as the new env | F:test_inflight_response_dropped_when_same_tab_switches_env | ✅ |
+| 76 | tabs | a result is tagged with its producing connection; switching to another env never restores the old group's grid on reload — incl. the legacy `qy_result` upgrade path (env, not just db, must match) | F:test_result_stays_in_dev_group_after_prod_reload, F:test_legacy_qy_result_env_mismatch_not_restored, F:test_legacy_qy_result_env_match_restored | ✅ |
+| 77 | tabs | switching environment during an in-flight request routes the response to its original group and restores it on return, never repainting the new environment | F:test_inflight_response_returns_to_origin_env_group | ✅ |
 | 78 | toolbar | EXPLAIN single-column modal is suppressed if its tab was switched / re-pointed while the plan was in flight | implemented (`#expBtn` handler audits TABREQ/tab/connection); browser test tracked in #18 | 🟡 |
-| 79 | tabs | a saved query runs on its OWN connection; launched from a tab bound to a different connection, its result is tagged/persisted under the producing connection (and the tab re-pointed to it), never the tab's previous one — for a concrete `@db`; consistency when `@db` is a logical env-set is tracked in #18 | F:test_saved_query_result_persisted_under_producing_connection | ✅ |
+| 79 | tabs | a saved query runs on its OWN connection; launched from another connection, it opens/selects the producing group and preserves the original group's draft; its result is tagged/persisted under the producing connection — for a concrete `@db`; consistency when `@db` is a logical env-set is tracked in #18 | F:test_saved_query_result_persisted_under_producing_connection | ✅ |
 | 80 | header | connection-info button (`#ciBtn`): visible only when a connection is selected; opens the resolved-config modal | F:test_conn_info_modal_shows_resolved_config_and_health | ✅ |
 | 81 | header | connection-info modal (`/api/conninfo`): resolved key/engine/env/host/port/database/source file; URL password always masked; live reachability probe with the raw error on failure | F:test_conn_info_modal_shows_resolved_config_and_health (ok path; error text asserted at API level in test_gui_api.py) | ✅ |
 | 82 | header | conn-info url row: eye toggles masked↔revealed (`?reveal=1`); copy puts the real URL on the clipboard | F:test_conn_info_url_eye_toggles_and_copy_copies_real_url | ✅ |
@@ -235,8 +235,8 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 87 | header | workspace manager (`#wsBtn`): list config.toml-registered workspaces (flags missing dir / no connections.toml), add a new one, remove one (confirm-gated); takes effect immediately without dropping an explicit `--workspace` session; removing the workspace behind the currently active connection unbinds it right away (no tab switch needed) | F:test_workspace_manager_add_and_remove, F:test_workspace_manager_remove_unbinds_active_connection_immediately, A:test_api_workspace_add_and_remove_round_trip, A:test_api_workspace_add_and_remove_keep_explicit_workspace_session, A:test_workspaces_endpoints_through_http | ✅ |
 | 88 | tabs | double-click a tab renames it (Enter/blur commits, Escape reverts); an empty name reverts to the automatic db@env / SQL title; the custom title persists across reloads | F:test_tab_rename_persists_and_empty_reverts | ✅ |
 | 89 | tabs | drag-and-drop reorders tabs; the active tab (and its per-tab result/SQL) follows its id, not its old index | F:test_tab_drag_reorder_moves_active_tab | ✅ |
-| 90 | tabs | middle-click closes a tab (same as the × glyph); disabled when it is the only tab left | F:test_tab_middle_click_closes | ✅ |
-| 91 | tabs | Cmd/Ctrl+Shift+W closes the active tab (Cmd+W-style; real Ctrl/Cmd+W can't be intercepted from a page); disabled when it is the only tab left | F:test_tab_keyboard_shortcut_closes_active_tab | ✅ |
+| 90 | tabs | middle-click closes a tab (same as the × glyph); the last tab closes to the empty workbench | F:test_tab_middle_click_closes | ✅ |
+| 91 | tabs | Cmd/Ctrl+Shift+W closes the active tab (Cmd+W-style; real Ctrl/Cmd+W can't be intercepted from a page); the last tab closes to the empty workbench | F:test_tab_keyboard_shortcut_closes_active_tab | ✅ |
 | 92 | header | env-set ordering: `local` always sorts first regardless of connection-registration order (header switcher); with no `local` env, registration order is unchanged; default-selected env is `dev` if present, else `local`, else the first registered env | F:test_local_env_sorts_first_and_is_default_without_dev, A:test_local_env_always_sorts_first, A:test_group_structure (registration order preserved without local) | ✅ |
 | 93 | sidebar | clicking a table generates+runs `select * from <table>` (no baked-in LIMIT); the toolbar max-rows cap (default 500) plus "load more" bound the result | B:test_click_table_renders_grid_with_types_and_status | ✅ |
 | 94 | toolbar/tabs | query deep links: copy current `db/env/sql` as a shareable URL; opening it reuses an identical tab or creates one, restores SQL/connection, auto-runs, and guards invalid link targets with an explicit toast (no silent auto-run failure) | F:test_copy_query_link_copies_db_env_sql, F:test_query_deeplink_opens_existing_tab_and_autoruns, F:test_query_deeplink_invalid_env_shows_notice_and_skips_autorun | ✅ |
@@ -252,8 +252,53 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
-| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; dev/local run immediately, prod only shows the established no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_and_runs_starter_tabs, connectionStarter.test.ts | ✅ |
+| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; all environments wait for explicit Run; configured production shows the no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
+
+| 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; filter clears, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
+| 110 | tabs | no automatic tab-count cap; single-row horizontal scroll with minimum width, active-tab reveal, fixed add/list controls; searchable list, no-match state, outside/Escape dismissal, Arrow/Home/End navigation | F:test_tab_overflow_search_keyboard_and_scoped_bulk_close; test_gui_visual:test_tab_menu_uses_surface_tokens_and_fixed_controls | ✅ |
+| 111 | tabs | active close selects same-group MRU; last close leaves a zero-tab empty workbench; close all/others/right stays in group and saves every closed draft in History | F:test_tab_close_uses_mru_and_keeps_last_close_in_same_group, F:test_tab_overflow_search_keyboard_and_scoped_bulk_close, F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_closed_query_response_cannot_resurrect_tab | ✅ |
+
+| 112 | tabs | zero-tab workbench hides editor/results, keeps connection and sidebar, offers New tab and History; new/recall/table/saved/key entry points create an editor on demand | F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_saved_query_opens_from_empty_group, F:test_alt_table_opens_editor_from_empty_without_running, F:test_redis_key_opens_editor_from_empty_group; test_gui_visual:test_empty_workbench_uses_tokens | ✅ |
+
+### Tab navigation audit (2026-09-10)
+
+- **Existence:** tab add/switch/rename/reorder/close remain rows 34–35,
+  67–69 and the existing rename/drag rows. New list search, no-match,
+  dismissal, keyboard navigation and bulk close map to 110–111. Connection
+  selection, environment pills and table clicks map to 12–14, 70, 105,
+  107, 109. No new API endpoint: `qy_tabs` gains optional
+  `workspace` and `visited` fields; legacy entries acquire their workspace
+  on connection load. `qy_ati=-1` represents no active editor; `qy_tabs=[]`
+  remains empty on reload. `qy_empty_tab_groups` remembers deliberately closed
+  workspace/db/env groups (written only by add/close and read by group selection),
+  so env switching and URL restoration cannot reopen them. Index-aligned
+  `qy_tabres` stays compatible.
+- **Capability:** sidebar needs selected-object reveal, tabs need readable
+  overflow and fast lookup, editor needs draft preservation, result/toolbar
+  need active-tab exports. Empty workbench needs New tab, table-click and
+  History recovery without automatic execution; covered by 111–112.
+  Covered by 28, 67, 70, 109–112. Table metadata hints,
+  pinned tabs and explicit transfer of a query to another connection remain
+  listed below as deliberate gaps.
+- **Shared state / all write sites:** `tabsStore` owns `readInitial`,
+  `claimWorkspaces`, `selectGroup`, `addTab`, `switchTab`, `closeTab`,
+  `reorderTab`, `renameTab`, `updateTab` (including `updateActiveTab`),
+  and `setTabResult`. Readers are TabBar, workbench editor/results, URL/title,
+  request guards and persistence. Workbench connection writers are
+  `selectDb`, initial/tree reload, focus/query-link restoration,
+  `unbindActiveTab`, saved-query response and tab switch/close revalidation.
+  `uiStore.collapsedGroups` is also written by tab navigation to reveal the selected table (preview-selection interaction test).
+  SQL writers are editor/history navigation, table/Alt+table, key inspect,
+  saved-query load/response, Format, History recall and focus/query links.
+  Table-selection writers are connection/unbind/link transitions, table
+  click, saved/EXPLAIN transitions and the exact-preview derivation effect;
+  readers are sidebar highlight/reveal and URL/title. The empty-active-tab sentinel
+  is written only by close/group selection/restoration; workbench and TabBar
+  no longer fall back to another group's first tab. `setSql`, table click and
+  saved-query loading create a tab when needed. Tests 109–112 interact
+  with SQL, filters, result export, persistence and History; existing race,
+  deep-link, saved-query and draft tests cover the other entry points.
 
 ### Release contract regression coverage
 
@@ -271,10 +316,12 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | Region | Missing capability | Decision |
 |--------|--------------------|----------|
 | sidebar | row-count / size hints next to tables | backlog (low) |
+| tabs | pin a tab; explicitly copy a query into another connection | backlog; switching connections never transfers SQL implicitly |
+| tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
 
 Safety/performance-relevant UX invariants that must never regress (rows 13,
 27–28, 37, 47, 102):
-draft SQL is never silently lost; switching to prod never auto-runs; stale
+draft SQL is never silently lost; switching to a configured production connection never auto-runs; stale
 responses never overwrite newer results; sort is numeric-aware and restorable;
 large raw values stay copyable/exportable but never materialize in full in the
 grid DOM or synchronous result persistence.
@@ -290,3 +337,70 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   `qy`/`mcp` for CLI/MCP subprocess e2e, and `page` for browser e2e.
 - Never mutate the shared `customers`/`orders` seed tables; create scratch tables
   with a per-file prefix and drop them in the test.
+
+### Production/navigation audit (2026-09-10)
+
+- Existence: existing env/database selection bindings consume `/api/connections`
+  `production`; Header badge and env pill use the same flag (rows 12–13).
+  No new persistence keys or endpoints. Conn info exposes the metadata for API clients.
+- Capability: header classification, sidebar table focus, scoped tabs, editor draft
+  retention, manual Run and cached grid/export remain covered by their matrix rows.
+  Production configuration is file/CLI managed; an in-GUI settings editor is deferred.
+- Shared state: `selectDb` is the sole non-null current-connection writer; unbind,
+  vanished/query-link and tab revalidation paths can clear it. Production metadata is
+  refreshed with the connection tree. Navigation seeds only newly created blank tabs,
+  never existing drafts or deliberately closed groups. Only one navigation intent is
+  consumed after the target table list arrives; pending and cached queries are skipped.
+  Query results still flow through startReq/applyTabResult/endReq guards.
+- Production policy writers: Connection default, TOML loader, CLI add/upsert and set.
+  Readers: grouped connections API, conn-info API, GUI selector/header, CLI confirmation,
+  MCP write policy. Tests cover jp=true, prod=false, malformed flags and flag updates.
+
+### Tab spacing audit (2026-09-10)
+
+- Existence: existing tab strip scrolling, keyboard navigation and fixed controls
+  retain their bindings; no new state, persistence keys or API consumers.
+- Capability: tabs use natural widths capped at 240px in a 44px flat strip. Native
+  scrollbars are hidden; overflow-only arrow controls scroll without changing selection. The existing overflow
+  browser test now asserts that geometry as well as scrolling and menu controls.
+- Shared state: CSS-only layout change; active-tab visibility still uses the
+  existing resize and selection effects. Overflow navigation and both theme token
+  checks cover the affected tab region.
+
+### Flat tab strip audit (2026-09-10)
+
+- Existence: `tabScrollLeft` and `tabScrollRight` scroll the existing strip, with
+  translated accessible labels and disabled boundary states. Covered by
+  `test_tab_overflow_search_keyboard_and_scoped_bulk_close`.
+- Capability: tabs retain mouse/trackpad scrolling, keyboard selection, rename,
+  close and searchable overflow menu. Arrow controls appear only when needed.
+  `test_tab_menu_uses_surface_tokens_and_fixed_controls` pins the active underline
+  in both themes and absence of arrows when tabs fit.
+- Shared state: overflow state is measured on resize, scroll and tab changes;
+  arrow clicks alter scroll position only, never activeId or SQL/results. Existing
+  active-tab reveal still runs on selection and resize. No API or storage changes.
+
+### Workbench emphasis audit (2026-09-10)
+
+- Existence: styling only for active tabs, existing environment pills and Run;
+  no interaction, persistence or endpoint changes.
+- Capability: active document uses a warm filled selection and stronger title;
+  environment selection uses a 20% accent tint, accent border and semibold label; production
+  retains red warnings. Run retains accent text/outline, hover fill and keyboard focus.
+- Shared state: existing `.on` state and production flag remain authoritative.
+  `test_workbench_visual_hierarchy` covers colors and selection in both modes;
+  production contrast and tab navigation tests retain the interaction coverage.
+- Workspace removal is the other writer that can invalidate the active tab's
+  connection. It immediately clears that tab binding plus `connStore.current`
+  and `currentTable`; the subsequent connection-tree reload remains the source
+  of truth for every other tab. The existing workspace-removal browser test
+  covers this write site.
+
+- Environment-selection refinement: existing `.on:not(.prod)` binding uses a
+  stronger tinted fill, accent border and 600-weight text, pinned in both modes
+  by `test_workbench_visual_hierarchy`. Production styling and all state writes,
+  interaction bindings, persistence and API consumers are unchanged.
+- Bulk-close draft retention now keeps 1000 history entries so a group with
+  more than 100 nonempty tabs does not discard its earliest drafts. The
+  browser suite closes 105 populated tabs and verifies both ends of the group
+  remain recoverable in `qy_hist`.
