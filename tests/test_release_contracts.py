@@ -98,7 +98,7 @@ def test_cli_default_cap_and_explicit_unlimited(qy):
 @pytest.mark.parametrize('sql', ['MATCH (n) SET n.x=1 RETURN n', 'MATCH (n) DETACH DELETE n', 'CALL db.mutate()'])
 def test_cypher_writes_rejected_before_transport(sql, monkeypatch):
     monkeypatch.setattr(core, 'run_neptune_cypher', lambda *a, **k: pytest.fail('write reached transport'))
-    conn = core.Connection(key='graph', url='http://localhost:8182', engine='neptune', env='prod')
+    conn = core.Connection(key='graph', url='http://localhost:8182', engine='neptune', env='prod', production=True)
     with pytest.raises(core.QuarryError) as exc:
         core.run_query(conn, sql)
     assert exc.value.exit_code == 8
@@ -195,7 +195,7 @@ def test_mcp_workspace_after_subcommand_preserves_global():
 def test_redis_nil_empty_errors_and_prod_confirmation(tmp_path):
     url = os.environ.get('QUARRY_TEST_REDIS_URL', 'redis://127.0.0.1:6379/15')
     key = 'qy-release-' + uuid.uuid4().hex
-    conn = core.Connection(key='cache', url=url, engine='redis', env='prod')
+    conn = core.Connection(key='cache', url=url, engine='redis', env='prod', production=True)
     try:
         assert core.run_query(conn, f'GET {key}').rows == [{'value': None}]
         for value in ['', 'first\nsecond\n']:
@@ -204,7 +204,7 @@ def test_redis_nil_empty_errors_and_prod_confirmation(tmp_path):
         with pytest.raises(core.QuarryError) as exc:
             core.run_query(conn, f'LRANGE {key} 0 -1')
         assert exc.value.exit_code == 3
-        (tmp_path / 'connections.toml').write_text(f'[cache]\nurl="{url}"\nengine="redis"\nenv="prod"\n')
+        (tmp_path / 'connections.toml').write_text(f'[cache]\nurl="{url}"\nengine="redis"\nenv="prod"\nproduction=true\n')
         proc = subprocess.run([sys.executable, '-m', 'quarry.cli', '--workspace', str(tmp_path),
                                'exec', 'cache', '--sql', f'SET {key} overwritten', '--write'],
                               input='', capture_output=True, text=True,

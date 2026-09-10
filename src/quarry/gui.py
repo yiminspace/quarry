@@ -547,7 +547,7 @@ def api_conninfo(db: str, env: str | None, reveal: bool = False) -> dict:
             file = w.connections_file
             break
     out = {
-        "key": conn.key, "db": conn.logical_db, "env": conn.env,
+        "key": conn.key, "db": conn.logical_db, "env": conn.env, "production": conn.production,
         "engine": core.connection_engine(conn),
         "url": conn.url if reveal else _mask_url(conn.url),
         "host": p.hostname, "port": p.port,

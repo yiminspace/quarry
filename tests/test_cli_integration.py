@@ -231,7 +231,7 @@ class TestPureHelpers:
 
     def test_confirm_prod_write_opt_in_requires_confirmation_even_for_select(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=False)
         import io
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
@@ -240,20 +240,20 @@ class TestPureHelpers:
 
     def test_confirm_prod_write_yes_flag_skips_prompt(self):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=True)
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
     def test_confirm_prod_write_prompt_yes(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="PROD")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="jp", production=True)
         args = argparse.Namespace(write=True, yes=False)
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("y\n"))
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
     def test_confirm_prod_write_prompt_no(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=False)
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is False
@@ -291,7 +291,7 @@ class TestConnectionsMgmt:
         # two members sharing db=shop with distinct envs -> the env-labelled line
         (wsdir / "connections.toml").write_text(
             '[shop_dev]\nurl = "postgresql://localhost/x"\ndb="shop"\nenv="dev"\n'
-            '[shop_prod]\nurl = "postgresql://localhost/y"\ndb="shop"\nenv="prod"\n',
+            '[shop_prod]\nurl = "postgresql://localhost/y"\ndb="shop"\nenv="prod"\nproduction=true\n',
             encoding="utf-8")
         assert run_cli(wsdir, "connections", "list") == EXIT_OK
         out = capsys.readouterr().out
@@ -1394,7 +1394,7 @@ class TestProdWriteGuard:
         # a write against a prod-tagged connection prompts; answering 'n' aborts
         # (EXIT_USAGE) and the write never reaches the DB.
         (wsdir / "connections.toml").write_text(
-            f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+            f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
             encoding="utf-8")
         pg_exec("DROP TABLE IF EXISTS cli_tmp_prod; CREATE TABLE cli_tmp_prod(id int); "
                 "INSERT INTO cli_tmp_prod VALUES (1);")

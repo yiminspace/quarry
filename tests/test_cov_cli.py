@@ -606,7 +606,7 @@ class TestExecuteProdAbort:
         # err('aborted', EXIT_USAGE) — which raises QuarryError (err with an
         # exit_code raises, it does not return) — and execute_sql is never reached.
         import argparse
-        conn = core.Connection(key="prodpg", url="postgresql://localhost/x", env="prod")
+        conn = core.Connection(key="prodpg", url="postgresql://localhost/x", env="prod", production=True)
 
         called = {"execute": False}
         monkeypatch.setattr(

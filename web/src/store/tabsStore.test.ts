@@ -138,3 +138,42 @@ describe("bounded result persistence", () => {
     }
   });
 });
+
+describe("connection tab recency", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({
+      tabs: [
+        tab({ id: "a", db: "shop", env: "dev", visited: 5 }),
+        tab({ id: "b", db: "shop", env: "dev", visited: 2 }),
+        tab({ id: "c", db: "shop", env: "prod", visited: 3 }),
+      ],
+      activeId: "c",
+      results: {},
+    });
+  });
+  it("selects by use history, independent of visual ordering", () => {
+    const s = useTabsStore.getState();
+    s.selectGroup("shop", "dev");
+    expect(useTabsStore.getState().activeId).toBe("a");
+    s.reorderTab("a", "b");
+    s.selectGroup("shop", "prod");
+    s.selectGroup("shop", "dev");
+    expect(useTabsStore.getState().activeId).toBe("a");
+  });
+  it("a background response cannot change the last-used environment", () => {
+    useTabsStore.getState().updateTab("a", { db: "shop", env: "dev" });
+    expect(useTabsStore.getState().tabs.find((tab) => tab.id === "a")?.visited).toBe(5);
+    expect(useTabsStore.getState().activeId).toBe("c");
+  });
+  it("closing a group's last tab leaves it empty instead of crossing groups", () => {
+    useTabsStore.getState().closeTab("c");
+    const s = useTabsStore.getState();
+    expect(s.activeId).toBe("");
+    expect(s.tabs.some((tab) => tab.env === "prod")).toBe(false);
+    s.selectGroup("shop", "prod");
+    expect(useTabsStore.getState().activeId).toBe("");
+    expect(JSON.parse(localStorage.getItem("qy_empty_tab_groups")!)).toContain('[null,"shop","prod"]');
+    expect(s.tabs.filter((tab) => tab.env === "dev")).toHaveLength(2);
+  });
+});

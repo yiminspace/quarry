@@ -52,9 +52,9 @@ def test_default_theme_is_dark_with_legacy_palette(page):
     assert _style(page, "body", "backgroundColor") == DARK["bg0"]
     assert _style(page, "body", "color") == DARK["fg"]
     assert _style(page, "header", "backgroundColor") == DARK["bg1"]
-    # primary Run button carries the copper accent + its ink color
-    assert _style(page, "#runBtn", "backgroundColor") == DARK["accent"]
-    assert _style(page, "#runBtn", "color") == DARK["accent_ink"]
+    # Run stays quieter than the active document until hover.
+    assert _style(page, "#runBtn", "backgroundColor") == DARK["bg1"]
+    assert _style(page, "#runBtn", "color") == DARK["accent"]
     # read-only badge: ok-green on ok-bg
     assert _style(page, "#roBadge", "color") == DARK["ok"]
     assert _style(page, "#roBadge", "backgroundColor") == DARK["ok_bg"]
@@ -66,8 +66,8 @@ def test_light_theme_matches_legacy_palette(page):
     assert _style(page, "body", "backgroundColor") == LIGHT["bg0"]
     assert _style(page, "body", "color") == LIGHT["fg"]
     assert _style(page, "header", "backgroundColor") == LIGHT["bg1"]
-    assert _style(page, "#runBtn", "backgroundColor") == LIGHT["accent"]
-    assert _style(page, "#runBtn", "color") == LIGHT["accent_ink"]
+    assert _style(page, "#runBtn", "backgroundColor") == LIGHT["bg1"]
+    assert _style(page, "#runBtn", "color") == LIGHT["accent"]
 
 
 def _run_select_1(page):
@@ -304,3 +304,54 @@ def test_table_filter_uses_surface_tokens(page):
     assert _style(page, "#tbl-panel .tsearch", "backgroundColor") in ("rgba(0, 0, 0, 0)", "transparent")
     assert page.locator(".vg-tfilter .ti-search").count() == 1
     assert page.locator("#tbl-panel .treload").is_visible()
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_tab_menu_uses_surface_tokens_and_fixed_controls(page, mode):
+    page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
+    page.locator('#tabList').click()
+    for selector, prop, token in [
+        ('.tab-menu-panel', 'backgroundColor', '--surf-1'),
+        ('.tab-menu-panel input', 'backgroundColor', '--surf-2'),
+        ('.tab-menu-panel input', 'color', '--fg'),
+        ('.tab-controls', 'borderLeftColor', '--line'),
+    ]:
+        assert page.evaluate('''([selector, prop, token]) => {
+            const expected=document.createElement('span');
+            expected.style.color=`var(${token})`; document.body.append(expected);
+            const color=getComputedStyle(expected).color; expected.remove();
+            return getComputedStyle(document.querySelector(selector))[prop] === color;
+        }''', [selector, prop, token])
+    assert page.evaluate("""() => {
+        const expected = document.createElement('div');
+        expected.style.color = 'var(--acc)'; document.body.append(expected);
+        const color = getComputedStyle(expected).color; expected.remove();
+        const tab = document.querySelector('#tabs .on');
+        return getComputedStyle(tab, '::after').backgroundColor === color &&
+          getComputedStyle(tab).borderRadius === '0px' &&
+          getComputedStyle(document.querySelector('#tabs')).scrollbarWidth === 'none';
+    }""")
+    assert page.locator('#tabScrollLeft').count() == 0
+    assert page.locator('#tabAdd').bounding_box()['width'] >= 24
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_empty_workbench_uses_tokens(page, tmp_path, mode):
+    page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
+    _select_testpg(page)
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    assert page.evaluate('''() => {
+        const empty=getComputedStyle(document.querySelector('#queryEmptyState'));
+        const probe=document.createElement('span');
+        probe.style.color='var(--fg3)'; document.body.append(probe);
+        const fg=getComputedStyle(probe).color;
+        probe.style.color='var(--bg0)'; const bg=getComputedStyle(probe).color;
+        probe.remove();
+        return empty.color === fg && empty.backgroundColor === bg;
+    }''')
+    box = page.locator('#queryEmptyState').bounding_box()
+    action = page.locator('#emptyNewTab').bounding_box()
+    assert box['x'] <= action['x'] and action['x'] + action['width'] <= box['x'] + box['width']
+    assert page.locator('#sql, #grid').count() == 0
+    page.screenshot(path=str(tmp_path / f'empty-{mode}.png'))

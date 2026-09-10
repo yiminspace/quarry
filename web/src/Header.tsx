@@ -24,7 +24,7 @@ export default function Header() {
   const [wsOpen, setWsOpen] = useState(false);
   const [updOpen, setUpdOpen] = useState(false);
 
-  const isProd = (current?.env ?? "").toLowerCase() === "prod";
+  const isProd = current?.production === true;
   const multiWs = workspaces.length > 1;
   const kaState = (() => {
     if (!keepAlive?.keeper?.running) return "down";

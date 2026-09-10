@@ -1,4 +1,9 @@
 import type { ConnItem, SavedQuery } from "./api";
+import { t } from "./i18n";
+
+export function groupKey(ws: string | null, group: string | null): string {
+  return `${ws || ""}::${group || t("other")}`;
+}
 
 export const ENGINE_ORDER = ["postgres", "mysql", "redis", "neptune"] as const;
 

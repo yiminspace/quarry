@@ -350,3 +350,17 @@ Quarry is developed and tested on macOS and Linux. Windows is currently untested
 ## License
 
 [MIT](LICENSE)
+
+### Explicit production connections
+
+Environment names are labels, not a safety policy. Set `production = true` in
+that connection's `connections.toml` section, for example `env = "jp"` with
+`production = true`. An omitted flag defaults to false, even for `env = "prod"`.
+When upgrading, explicitly mark existing production connections before use.
+
+Use `qy connections set CONNECTION_KEY --production --no-test` to mark one,
+or `--no-production` to clear the flag (add `--workspace PATH` before
+`connections` for a particular workspace). Other updates preserve the flag.
+Production navigation prepares previews without executing them; Run remains an
+explicit action. CLI writes require confirmation (or `--yes`), and MCP writes
+require `confirm_prod: true`, in addition to their normal write opt-ins.

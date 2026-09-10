@@ -49,7 +49,8 @@ still *exhaustively enumerable* — and we keep it enumerated:
      every remaining editor overwrite (Alt+click table / key inspect /
      saved query / history recall / tab close) goes through `keepDraft()`/
      `pushHist()` in `useSqlHistory`; Cmd/Ctrl+↓ restores the stash;
-   - switching the env pill to **prod never auto-runs** the current SQL;
+   - switching to a connection configured with **`production = true` never auto-runs**
+     the current SQL; environment names (including `prod` and `jp`) are labels only;
    - overlapping query responses are **latest-wins** (the per-tab
      `startReq`/`isCurrentReq`/`endReq` request-tracking guard) — a stale
      response must never repaint the grid;

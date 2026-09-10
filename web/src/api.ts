@@ -5,6 +5,7 @@ export type ConnEnv = {
   region: string | null;
   ssh: boolean;
   proxied: boolean;
+  production?: boolean;
 };
 
 export type VersionInfo = { name: string; version: string };

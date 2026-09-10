@@ -9,12 +9,36 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- Query tabs are grouped by workspace, database and environment, with recent-tab
+  restoration, synchronized table selection, horizontal scrolling, a searchable
+  tab list, keyboard navigation and scoped bulk closing that preserves drafts.
+
 - Status bar metrics (rows, elapsed, size, speed, truncation, Load more, and
   the result target) now have hover explanations, matching the existing
   large-result session notice. The max-rows control also spells out that the
   number is per fetch.
 
 ### Changed
+
+- Rebalanced workbench emphasis: the active query tab has a warm filled selection
+  and stronger title, ordinary environments use a tinted selection with an accent border, and Run uses
+  an accent outline with hover fill. Production warnings retain their red styling.
+
+- Query tabs use a compact flat strip with an accent underline for the active
+  tab, natural label widths and overflow-only scroll arrows instead of a visible scrollbar.
+
+- Closing the last query tab now shows an empty workbench instead of opening a
+  replacement tab. Empty groups survive reloads and environment changes; the
+  tab menu can close all tabs in the current connection, preserving SQL in History.
+
+- Switching connections or environments restores cached results; an unexecuted
+  table preview runs once on a non-production connection. New environments can
+  inherit the selected table preview; handwritten SQL and closed groups stay intact.
+  New Neptune tabs include a starter query ready for Run.
+- Production classification is now explicitly configured with `production = true`
+  (or `qy connections add/set --production`), independent of environment names.
+  Existing production connections must be marked explicitly; GUI navigation and
+  CLI/MCP write confirmation all use this flag.
 
 - Sidebar no longer shows environment pills. Switch env from the query header
   `runs on` control; a live proxy mark stays on that header env.

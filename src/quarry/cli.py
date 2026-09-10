@@ -147,6 +147,8 @@ def _connections_upsert(key, *, url, region, env, notes, engine, args, require_n
     if getattr(args, "timeout", None) is not None:
         fields["timeout"] = args.timeout
     _apply_connection_identity(key, fields, args, data)
+    if getattr(args, "production", None) is not None:
+        fields["production"] = args.production
     _apply_ssh_args(fields, args)
     core.check_connection_write(key, fields, data, force=getattr(args, "force", False))
     data[key] = fields
@@ -183,6 +185,8 @@ def cmd_connections_set(args: argparse.Namespace) -> int:
     if args.timeout is not None:
         fields["timeout"] = args.timeout
     _apply_connection_identity(args.key, fields, args, data)
+    if getattr(args, "production", None) is not None:
+        fields["production"] = args.production
     _apply_ssh_args(fields, args)
     core.check_connection_write(args.key, fields, data, force=getattr(args, "force", False))
     data[args.key] = fields
@@ -494,7 +498,7 @@ def cmd_describe_table(args: argparse.Namespace) -> int:
 
 def _confirm_prod_write(conn, sql, args) -> bool:
     """prod safety: a write against a prod connection needs explicit confirmation."""
-    if (conn.env or "").lower() != "prod":
+    if not conn.production:
         return True
     # An apparently read-only SELECT can call a writing function once the
     # database read-only transaction is lifted. Confirm every prod write opt-in.
@@ -1243,6 +1247,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca.add_argument("--url", required=True)
     p_ca.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
     p_ca.add_argument("--region", default=None)
+    p_ca.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
+                       help="Explicit production classification (independent of env name)")
     p_ca.add_argument("--env", default=None)
     p_ca.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
     p_ca.add_argument("--group", default=None, help="Sidebar project folder")
@@ -1262,6 +1268,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cs.add_argument("--url", default=None)
     p_cs.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
     p_cs.add_argument("--region", default=None)
+    p_cs.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
+                       help="Explicit production classification (independent of env name)")
     p_cs.add_argument("--env", default=None)
     p_cs.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
     p_cs.add_argument("--group", default=None, help="Sidebar project folder")
