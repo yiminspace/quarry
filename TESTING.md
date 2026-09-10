@@ -88,7 +88,7 @@ GUI, pins the React app unchanged. Packaging and React-only features live in
 | R7 | visual | design tokens resolve to the legacy "Slate & Copper" hex values in BOTH themes (body/header/Run-button/badge via getComputedStyle); dark is the default | test_gui_visual:test_default_theme_is_dark_with_legacy_palette, test_light_theme_matches_legacy_palette | ✅ |
 | R8 | visual | 14px sans app chrome + mono editor; icons render through the self-hosted tabler-icons webfont (no CDN — closes #14) | test_gui_visual:test_typography_matches_legacy, test_icons_use_selfhosted_tabler_font | ✅ |
 | R9 | visual | header's lang/theme/palette buttons share one uniform `.vg-iconbtn` box (equal height/min-width/border-radius, radius tracks `--r-btn` across the style axis — voyage 0.7.0); `.ciact .iconbtn`'s smaller CI-modal icons stay 22×22px, not stretched by voyage's fixed min-width | test_gui_visual:test_header_icon_controls_share_uniform_box, test_header_iconbtn_radius_follows_style_axis, test_ciact_iconbtn_fixed_size_not_stretched_by_min_width | ✅ |
-| R10 | visual | header uses Voyage 0.15's dedicated `.vg-topbar`: DOM order is fixed 语言→明暗→调色板; lang switching causes no horizontal reflow; all three controls share the full box spec; the topbar has transparent/zero chrome, contains no query `.vg-toolbar`, and omitting `account` renders no account placeholder; `ResultWorkbench`'s `.vg-toolbar.toolbar` independently retains its padding/surface/border chrome | test_gui_visual:test_header_toolbar_dom_order_is_lang_mode_palette, test_lang_switch_fixed_width_no_reflow, test_header_toolbar_buttons_share_full_box_spec, test_header_topbar_has_no_query_toolbar_chrome_or_account_placeholder, test_query_toolbar_keeps_its_own_chrome | ✅ |
+| R10 | visual | header uses Voyage 0.15's dedicated `.vg-topbar`: DOM order is fixed 语言→明暗→调色板; lang switching causes no horizontal reflow; all three controls share the full box spec; the topbar has transparent/zero chrome, contains no query `.vg-toolbar`, and omitting `account` renders no account placeholder; `ResultWorkbench`'s `.vg-toolbar.toolbar` independently retains its padding/surface/border chrome | test_gui_visual:test_header_toolbar_dom_order_is_lang_mode_palette, test_lang_switch_fixed_width_no_reflow, test_header_toolbar_buttons_share_full_box_spec, test_header_topbar_has_no_query_toolbar_chrome_or_account_placeholder, test_query_toolbar_keeps_its_own_chrome, test_workbench_compact_spacing | ✅ |
 | R11 | visual | Voyage 0.15's Signal theme card is selectable; it resolves to `signal × current mode × classic × quiet`, renders true black/white body and header surfaces in dark/light modes, persists across reload without console errors, and does not disturb the pinned Slate baselines | test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence, test_default_theme_is_dark_with_legacy_palette, test_light_theme_matches_legacy_palette | ✅ |
 
 ## GUI feature matrix
@@ -157,8 +157,8 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
 | 11 | header | env switcher lists every env of the selected connection; explicit production styling + ≥4.5:1 contrast is pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
-| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_never_autoruns | ✅ |
-| 13 | sidebar | env switch restores cached results; unexecuted table previews auto-run once only on explicitly non-production connections; new env inherits table preview, drafts stay manual | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_never_autoruns | ✅ |
+| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
+| 13 | sidebar | explicit env switch restores destination SQL or copies source SQL into an empty editor, then executes only if no saved result exists; returning restores SQL and result without a request; production retains SQL without executing; closed groups remain closed | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
 | 14 | sidebar | row click selects + opens table panel; re-click toggles panel | F:test_reclick_connection_toggles_panel | ✅ |
 | 15 | sidebar | table filter box (inline search + refresh); filter survives the SWR repaint | F:test_table_filter_box (repaint-survival unasserted), test_gui_visual:test_table_filter_uses_surface_tokens | 🟡 |
 | 16 | sidebar | table panel connection-error state / `no tables` empty state | F:test_dead_connection_click_shows_error_panel (error only) | 🟡 |
@@ -252,7 +252,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
-| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; all environments wait for explicit Run; configured production shows the no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
+| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit non-production environment switches execute SQL; configured production shows the no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
 | 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; filter clears, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
@@ -315,8 +315,9 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 
 | Region | Missing capability | Decision |
 |--------|--------------------|----------|
+| header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
 | sidebar | row-count / size hints next to tables | backlog (low) |
-| tabs | pin a tab; explicitly copy a query into another connection | backlog; switching connections never transfers SQL implicitly |
+| tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
 
 Safety/performance-relevant UX invariants that must never regress (rows 13,
@@ -404,3 +405,22 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   more than 100 nonempty tabs does not discard its earliest drafts. The
   browser suite closes 105 populated tabs and verifies both ends of the group
   remain recoverable in `qy_hist`.
+
+### Workbench spacing and environment execution audit (2026-09-10)
+
+- Existence: existing env pill binding and navigation effect map to rows 12–13;
+  no new API or storage key. Compact context, 36px tabs and 30px toolbar controls
+  are covered by `test_gui_visual:test_workbench_compact_spacing` (both themes),
+  alongside row 110 overflow and F:test_workbench_visual_hierarchy color coverage.
+- Capability: shared 14px inset and smaller secondary controls keep SQL readable;
+  toolbar and environment controls wrap on narrow windows. Environment switching
+  now carries handwritten SQL to empty editors and restores previously executed queries without re-running.
+  Existing destination drafts win; deliberately closed groups stay closed.
+- Shared state / write sites: `selectDb` alone seeds destination SQL for env clicks;
+  `selectGroup`, `addTab`, `updateActiveTab` retain separate group identities.
+  The navigation intent is consumed once and requires production=false; query writes
+  still use startReq/applyTabResult/endReq. SQL editing, history recall, saved query,
+  table/key entry, focus restoration, tab switch/close and workspace revalidation
+  keep their existing paths. Browser tests cover source/destination draft retention,
+  prod=false, jp=true, cached restoration, closed groups and in-flight response isolation.
+  Cached results always suppress navigation auto-run, even for edited SQL; explicit Run updates the result. Export reads the restored snapshot. The SQL/result/navigation write sites listed above remain unchanged; browser coverage verifies round trips, edited draft plus old result, export and explicit refresh.

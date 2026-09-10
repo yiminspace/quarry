@@ -172,7 +172,7 @@ def test_query_toolbar_keeps_its_own_chrome(page):
     # The query action row remains the card-toolbar shape after VoyageToolbar
     # moved the header arrangement onto its dedicated `.vg-topbar` class.
     selector = ".vg-toolbar.toolbar"
-    assert _style(page, selector, "padding") == "9px 14px"
+    assert _style(page, selector, "padding") == "8px 14px"
     assert _style(page, selector, "backgroundColor") == DARK["bg1"]
     assert _style(page, selector, "borderBottomWidth") == "1px"
 
@@ -355,3 +355,15 @@ def test_empty_workbench_uses_tokens(page, tmp_path, mode):
     assert box['x'] <= action['x'] and action['x'] + action['width'] <= box['x'] + box['width']
     assert page.locator('#sql, #grid').count() == 0
     page.screenshot(path=str(tmp_path / f'empty-{mode}.png'))
+
+
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_workbench_compact_spacing(page, mode):
+    page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
+    assert _style(page, '.qhead', 'padding') == '8px 14px'
+    assert _style(page, '.tab-navigation', 'height') == '36px'
+    for selector in ['#runBtn', '#fmtBtn', '#expBtn', '#csvBtn', '#jsonBtn', '#histBtn', '#linkBtn']:
+        assert _style(page, selector, 'height') == '30px'
+        assert _style(page, selector, 'fontSize') == '12px'
+    assert _style(page, '#sql', 'paddingLeft') == '14px'
+    assert _style(page, '.toolbar', 'paddingLeft') == '14px'
