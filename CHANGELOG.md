@@ -20,6 +20,12 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
+- Unified workbench spacing with compact environment controls, a 36px tab strip
+  and consistent 30px query actions. Switching environments restores or carries
+  SQL and executes it on non-production connections when no saved result exists.
+  Returning restores the previous SQL and result without re-running; production keeps SQL ready
+  for manual Run, while existing destination drafts remain intact.
+
 - Rebalanced workbench emphasis: the active query tab has a warm filled selection
   and stronger title, ordinary environments use a tinted selection with an accent border, and Run uses
   an accent outline with hover fill. Production warnings retain their red styling.

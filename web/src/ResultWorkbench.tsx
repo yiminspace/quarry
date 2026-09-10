@@ -190,7 +190,7 @@ export default function ResultWorkbench() {
   // stale /api/tables responses after the user moved on.
   const panelKeyRef = useRef<string | null>(null);
   const tablesSeqRef = useRef(0);
-  const previewNavigationRef = useRef<string | null>(null);
+  const previewNavigationRef = useRef<{ tabId: string; environmentSwitch: boolean } | null>(null);
 
   const findItem = useCallback(
     (db: string): ConnItem | undefined =>
@@ -268,6 +268,7 @@ export default function ResultWorkbench() {
       previewNavigationRef.current = null;
       const tabsState = useTabsStore.getState();
       const source = tabsState.tabs.find((tab) => tab.id === tabsState.activeId);
+      const environmentSwitch = !!opts?.viaPill && cur?.db === db && cur.env !== env;
       const sourceTable = cur?.db === db && state.currentTable &&
         source?.sql.trim() === previewSql(state.currentTable, cur.engine) ? state.currentTable : null;
       const recent = mostRecent(tabsState.tabs.filter((tab) =>
@@ -279,16 +280,17 @@ export default function ResultWorkbench() {
       else tabsState.updateActiveTab({ db, env: realEnv });
       const nextState = useTabsStore.getState();
       const next = nextState.tabs.find((tab) => tab.id === nextState.activeId);
-      if (!opts?.force && item.engine === "neptune" && next && !next.sql.trim()) {
-        nextState.updateActiveTab({ sql: NEPTUNE_STARTER_SQL });
-      }
       if (!opts?.force && next) {
-        // Carry only an exact table preview into a newly visited environment.
-        // Closed groups and existing editors keep their own state.
-        if (!existed && !next.sql.trim() && sourceTable) {
+        // Empty destination editors inherit SQL on an explicit environment switch.
+        // Existing drafts and deliberately closed groups retain their own state.
+        if (!next.sql.trim() && environmentSwitch && source?.sql.trim()) {
+          nextState.updateActiveTab({ sql: source.sql });
+        } else if (!existed && !next.sql.trim() && sourceTable) {
           nextState.updateActiveTab({ sql: previewSql(sourceTable, item.engine) });
+        } else if (item.engine === "neptune" && !next.sql.trim()) {
+          nextState.updateActiveTab({ sql: NEPTUNE_STARTER_SQL });
         }
-        previewNavigationRef.current = next.id;
+        previewNavigationRef.current = { tabId: next.id, environmentSwitch };
       }
       const production = item.envs.find((entry) => entry.env === realEnv)?.production;
       state.setCurrent({ db, env: realEnv, engine: item.engine, isRedis: item.engine === "redis", production });
@@ -595,8 +597,9 @@ export default function ResultWorkbench() {
   // Consume navigation once, after the destination table list has arrived.
   // Missing production metadata (e.g. an older server) never authorizes auto-run.
   useEffect(() => {
-    const tabId = previewNavigationRef.current;
-    if (!tabId) return;
+    const navigation = previewNavigationRef.current;
+    if (!navigation) return;
+    const { tabId, environmentSwitch } = navigation;
     if (activeTabId !== tabId || current?.production !== false) {
       previewNavigationRef.current = null;
       return;
@@ -604,7 +607,13 @@ export default function ResultWorkbench() {
     if (panel.loading) return;
     previewNavigationRef.current = null;
     const snapshot = useTabsStore.getState().results[tabId];
-    if (!pendingByTab[tabId] && !panel.error && !snapshot?.result && panel.tables?.some((name) => sql.trim() === previewSql(name, current.engine))) {
+    // Returning to a tab restores its result, including when SQL has since been
+    // edited. Only explicit Run should replace that saved result with the draft.
+    const unexecutedPreview = !panel.error && panel.tables?.some(
+      (name) => sql.trim() === previewSql(name, current.engine),
+    );
+    if (!snapshot?.result && !pendingByTab[tabId] && sql.trim() && !current.isRedis &&
+        (environmentSwitch || unexecutedPreview)) {
       void run({ db: current.db, env: current.env }, sql);
     }
     // run reads the current stores; only navigation and destination readiness trigger this.

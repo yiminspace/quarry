@@ -459,6 +459,8 @@ def test_nonprod_env_switch_restores_without_autorun(page_envset):
     page.wait_for_selector("#grid table tbody tr")
     page.wait_for_timeout(300)
     assert queries == []
+    assert page.locator("#sql").input_value() == "select 1 as a"
+    assert page.locator('#grid td[data-v="1"]').count() == 1
 
 
 def test_neptune_connection_opens_starter_without_autorun(page_neptune):
@@ -487,7 +489,7 @@ def test_neptune_connection_opens_starter_without_autorun(page_neptune):
 
     page.locator('#esw .ep[data-env="local"]').click()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
-    assert page.locator("#status").is_hidden()
+    page.wait_for_selector("#status", state="visible")
     tabs = page.evaluate("JSON.parse(localStorage.getItem('qy_tabs'))")
     assert [(tab["db"], tab["env"]) for tab in tabs] == [
         ("testpg", "test"), ("graph", "dev"), ("graph", "local")
@@ -503,11 +505,10 @@ def test_neptune_connection_opens_starter_without_autorun(page_neptune):
     assert "prod" in page.locator("#toast").inner_text().lower()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
     page.wait_for_timeout(200)
-    assert queries == []
+    assert [(q["db"], q["env"]) for q in queries] == [("graph", "local"), ("graph", "dev")]
     page.locator('#esw .ep[data-env="dev"]').click()
-    page.locator("#runBtn").click()
     page.wait_for_selector("#status", state="visible")
-    assert [(query["db"], query["env"]) for query in queries] == [("graph", "dev")]
+    assert [(query["db"], query["env"]) for query in queries] == [("graph", "local"), ("graph", "dev")]
 
 
 def test_local_env_sorts_first_and_is_default_without_dev(page_envset_local):
@@ -2654,7 +2655,7 @@ def test_connection_tabs_restore_mru_table_and_env(page_envset):
     assert page.locator('.tname.on').count() == 0
     _set_sql(page, 'select 91 as dev_draft')
     page.locator('#esw .ep[data-env="prod"]').click()
-    assert page.locator('#sql').input_value() == ''
+    assert page.locator('#sql').input_value() == 'select 91 as dev_draft'
     _set_sql(page, 'select 92 as prod_draft')
     page.locator('.dbrow[data-db="testpg"]').click()
     assert page.locator('#tabs .tab').count() == 2
@@ -2737,7 +2738,7 @@ def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
     assert page.eval_on_selector('#tabs .tab', 'e => e.getBoundingClientRect().width <= 240')
     assert page.eval_on_selector('#tabs', '''e => {
         const strip = e.getBoundingClientRect(), tab = e.querySelector('.tab').getBoundingClientRect();
-        return tab.height === strip.height && strip.height === 43 && tab.top === strip.top && e.parentElement.getBoundingClientRect().height === 44;
+        return tab.height === strip.height && strip.height === 35 && tab.top === strip.top && e.parentElement.getBoundingClientRect().height === 36;
     }''')
     assert page.eval_on_selector('#tabAdd', 'e => { const r=e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }')
     page.eval_on_selector('#tabs', 'e => { e.scrollLeft = e.scrollWidth; e.dispatchEvent(new Event("scroll")); }')
@@ -2992,23 +2993,47 @@ def test_env_preview_autorun_uses_explicit_production(page_explicit_production):
     page.locator('#esw .ep[data-env="jp"]').click()
     page.locator('#esw .ep[data-env="prod"]').click()
     page.wait_for_timeout(250)
-    assert len(queries) == 1  # cached result, no duplicate query
+    assert len(queries) == 1  # returning restores the saved result
     page.locator('#esw .ep[data-env="dev"]').click()
     page.wait_for_selector('#grid table tbody tr')
     assert len(queries) == 2 and queries[-1]['env'] == 'dev'
 
 
-def test_env_manual_sql_never_autoruns(page_explicit_production):
+def test_env_manual_sql_carries_and_autoruns_except_production(page_explicit_production):
     page = page_explicit_production
     page.locator('.dbrow[data-db="shop"]').click()
     _set_sql(page, 'SELECT 42 AS handwritten')
     queries = []
-    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.url))
-    page.locator('#esw .ep[data-env="prod"]').click()
-    page.locator('#esw .ep[data-env="dev"]').click()
+    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.post_data_json))
+    page.locator('#esw .ep[data-env="jp"]').click()
     assert page.locator('#sql').input_value() == 'SELECT 42 AS handwritten'
     page.wait_for_timeout(250)
     assert queries == []
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert queries[-1]['sql'] == 'SELECT 42 AS handwritten'
+    assert queries[-1]['env'] == 'prod'
+    _set_sql(page, 'SELECT 7 AS destination_draft')
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('handwritten')")
+    assert page.locator('#sql').input_value() == 'SELECT 42 AS handwritten'
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('handwritten')")
+    assert page.locator('#sql').input_value() == 'SELECT 7 AS destination_draft'
+    page.wait_for_timeout(300)
+    assert len(queries) == 2  # draft and last executed result are both preserved
+    with page.expect_download() as download:
+        page.locator('#csvBtn').click()
+    assert 'handwritten' in open(download.value.path(), encoding='utf-8').read()
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('destination_draft')")
+    assert len(queries) == 3  # only explicit Run replaces the saved result
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_timeout(300)
+    assert page.locator('#sql').input_value() == 'SELECT 7 AS destination_draft'
+    assert 'destination_draft' in page.locator('#grid').inner_text()
+    assert len(queries) == 3
 
 
 @pytest.mark.parametrize('mode', ['dark', 'light'])

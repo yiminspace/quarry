@@ -121,11 +121,11 @@
 .wsproxy.on{color:var(--acc)}
 
 /* Connection-scoped query tabs: fixed controls, readable labels, horizontal overflow. */
-.tab-navigation{display:flex;min-width:0;height:44px;background:var(--surf-1);position:relative;flex:none;border-bottom:1px solid var(--line)}
+.tab-navigation{display:flex;min-width:0;height:36px;background:var(--surf-1);position:relative;flex:none;border-bottom:1px solid var(--line)}
 .tab-navigation .vg-tabs{flex:1;min-width:0;align-items:stretch;gap:0;padding:0;scrollbar-width:none;overflow-y:hidden}
 .tab-navigation .vg-tabs::-webkit-scrollbar{display:none}
-.tab-navigation .vg-tab{box-sizing:border-box;position:relative;flex:0 0 auto;min-width:0;max-width:240px;height:100%;padding:0 14px;gap:10px;line-height:22px;border:0;border-radius:0;color:var(--fg3);background:var(--surf-1)}
-.tab-navigation .vg-tab::before{content:"";position:absolute;right:0;top:13px;bottom:13px;width:1px;background:var(--line)}
+.tab-navigation .vg-tab{box-sizing:border-box;position:relative;flex:0 0 auto;min-width:0;max-width:240px;height:100%;padding:0 14px;gap:8px;font-size:12px;line-height:20px;border:0;border-radius:0;color:var(--fg3);background:var(--surf-1)}
+.tab-navigation .vg-tab::before{content:"";position:absolute;right:0;top:10px;bottom:10px;width:1px;background:var(--line)}
 .tab-navigation .vg-tab.on{background:color-mix(in srgb,var(--acc) 12%,var(--surf-2));color:var(--fg);font-weight:600}
 .tab-navigation .vg-tab.on::after{content:"";position:absolute;bottom:0;left:14px;right:14px;height:2px;background:var(--acc)}
 .tab-navigation .vg-tab:not(.on):hover{background:var(--surf-2);color:var(--fg)}
@@ -161,3 +161,13 @@
 #runBtn{background:var(--surf-1);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 55%,var(--line));box-shadow:none;font-weight:500}
 #runBtn:hover{background:var(--acc);color:var(--accent-ink);border-color:var(--acc);filter:none}
 #runBtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+
+/* Shared workbench rhythm: one inset, compact context and equal action heights. */
+.vg-qhead.qhead{min-height:46px;padding:8px 14px;gap:10px;flex-wrap:wrap}
+.vg-qhead .qtitle{font-size:13px;line-height:20px}
+.vg-qhead .runon{font-size:12px;line-height:20px}
+#esw{gap:6px;flex-wrap:wrap}
+#esw .vg-ep{display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;font-size:12px;line-height:20px;border-radius:6px}
+.vg-toolbar.toolbar{padding:8px 14px;gap:8px;flex-wrap:wrap}
+.vg-toolbar.toolbar .vg-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;font-size:12px;line-height:20px;border-radius:6px}
+.vg-toolbar.toolbar .vg-btn .ti{font-size:15px}
