@@ -349,6 +349,16 @@ class TestConnectionsMgmt:
         c = core.load_connections()["a1"]
         assert c.region == "eu-west-1" and c.env == "dev"
 
+    def test_connections_add_and_set_explicit_production(self, wsdir):
+        run_cli(wsdir, "connections", "add", "jp1", "--url",
+                "postgresql://localhost/x", "--env", "jp", "--production",
+                "--no-test", "--force")
+        assert core.load_connections()["jp1"].production is True
+
+        run_cli(wsdir, "connections", "set", "jp1", "--no-production",
+                "--no-test", "--force")
+        assert core.load_connections()["jp1"].production is False
+
     def test_connections_add_accepts_explicit_db_and_group(self, wsdir):
         run_cli(wsdir, "connections", "add", "shop_dev", "--url",
                 "postgresql://dev.example.com/shop", "--env", "dev",
