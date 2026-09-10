@@ -2744,7 +2744,7 @@ def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
     before_scroll = page.eval_on_selector('#tabs', 'e => e.scrollLeft')
     page.locator('#tabScrollLeft').click()
     page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft < before', arg=before_scroll)
-    assert page.locator('#tabScrollRight').is_enabled()
+    page.wait_for_function('!document.querySelector("#tabScrollRight").disabled')
     page.locator('#tabScrollRight').click()
     page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft >= before - 1', arg=before_scroll)
     page.locator('#tabList').click()
