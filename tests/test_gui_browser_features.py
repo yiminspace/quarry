@@ -2740,7 +2740,9 @@ def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
         return tab.height === strip.height && strip.height === 43 && tab.top === strip.top && e.parentElement.getBoundingClientRect().height === 44;
     }''')
     assert page.eval_on_selector('#tabAdd', 'e => { const r=e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }')
-    assert page.locator('#tabScrollRight').is_disabled()
+    page.eval_on_selector('#tabs', 'e => { e.scrollLeft = e.scrollWidth; e.dispatchEvent(new Event("scroll")); }')
+    page.wait_for_function('document.querySelector("#tabScrollRight").disabled')
+    assert page.locator('#tabScrollLeft').is_enabled()
     before_scroll = page.eval_on_selector('#tabs', 'e => e.scrollLeft')
     page.locator('#tabScrollLeft').click()
     page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft < before', arg=before_scroll)
