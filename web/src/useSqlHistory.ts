@@ -2,10 +2,11 @@ import { useCallback, useRef, useState } from "react";
 
 export type HistEntry = { sql: string; db: string | null; env: string | null; ts: number };
 
-// The legacy GUI's own history key and entry format ({sql,db,env,ts}, capped
-// at 100) — an existing user's history carries over unchanged.
+// The legacy GUI's own history key and entry format ({sql,db,env,ts}). Keep
+// enough entries for a realistically large unbounded tab group to be closed
+// without dropping its earliest drafts.
 const STORAGE_KEY = "qy_hist";
-const MAX_ENTRIES = 100;
+const MAX_ENTRIES = 1000;
 
 // Pre-{sql,db,env,ts} entries were bare SQL strings; normalize so `.sql` is
 // always a string (a bare-string entry would otherwise crash the History

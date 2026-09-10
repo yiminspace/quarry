@@ -2784,6 +2784,30 @@ def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
     assert page.locator('#sql').input_value() == 'select 10 as keep_other_group'
 
 
+def test_close_all_preserves_more_than_100_tab_drafts(page):
+    tabs = [
+        {
+            'id': f't{i}', 'title': f'draft {i}', 'sql': f'select {i} as draft_{i}',
+            'db': 'testpg', 'env': 'test', 'visited': i,
+        }
+        for i in range(105)
+    ]
+    page.evaluate(
+        "([tabs]) => { localStorage.setItem('qy_tabs', JSON.stringify(tabs)); localStorage.setItem('qy_ati', '104'); }",
+        [tabs],
+    )
+    page.reload(wait_until='networkidle')
+    assert page.locator('#tabs .tab').count() == 105
+
+    page.locator('#tabList').click()
+    page.locator('#closeAllTabs').click()
+    assert page.locator('#queryEmptyState').is_visible()
+    history = page.evaluate("JSON.parse(localStorage.getItem('qy_hist') || '[]')")
+    sql = {entry['sql'] for entry in history}
+    assert 'select 0 as draft_0' in sql
+    assert 'select 104 as draft_104' in sql
+
+
 def test_tabs_do_not_move_between_workspaces_with_same_db(page_envset):
     page = page_envset
     page.locator('.dbrow[data-db="shop"]').click()

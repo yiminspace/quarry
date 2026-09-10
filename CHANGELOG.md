@@ -27,6 +27,9 @@ pre-1.0 history followed the earlier development policy.
 - Query tabs use a compact flat strip with an accent underline for the active
   tab, natural label widths and overflow-only scroll arrows instead of a visible scrollbar.
 
+- SQL History now retains up to 1000 entries so bulk-closing a large tab group
+  preserves drafts beyond the previous 100-entry boundary.
+
 - Closing the last query tab now shows an empty workbench instead of opening a
   replacement tab. Empty groups survive reloads and environment changes; the
   tab menu can close all tabs in the current connection, preserving SQL in History.

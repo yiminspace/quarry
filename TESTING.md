@@ -400,3 +400,7 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   stronger tinted fill, accent border and 600-weight text, pinned in both modes
   by `test_workbench_visual_hierarchy`. Production styling and all state writes,
   interaction bindings, persistence and API consumers are unchanged.
+- Bulk-close draft retention now keeps 1000 history entries so a group with
+  more than 100 nonempty tabs does not discard its earliest drafts. The
+  browser suite closes 105 populated tabs and verifies both ends of the group
+  remain recoverable in `qy_hist`.
