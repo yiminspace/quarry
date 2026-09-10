@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
-from playwright.sync_api import expect
 
 from conftest import _running_gui, requires_browser, stub_cdn, stub_events, REDIS_OK, TEST_DB_URL
 from test_gui_browser import _run_result, _select_testpg, _set_sql
@@ -2741,11 +2740,11 @@ def test_tab_overflow_search_keyboard_and_scoped_bulk_close(page_envset):
         return tab.height === strip.height && strip.height === 43 && tab.top === strip.top && e.parentElement.getBoundingClientRect().height === 44;
     }''')
     assert page.eval_on_selector('#tabAdd', 'e => { const r=e.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }')
-    expect(page.locator('#tabScrollRight')).to_be_disabled()
+    assert page.locator('#tabScrollRight').is_disabled()
     before_scroll = page.eval_on_selector('#tabs', 'e => e.scrollLeft')
     page.locator('#tabScrollLeft').click()
     page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft < before', arg=before_scroll)
-    expect(page.locator('#tabScrollRight')).to_be_enabled()
+    assert page.locator('#tabScrollRight').is_enabled()
     page.locator('#tabScrollRight').click()
     page.wait_for_function('(before) => document.querySelector("#tabs").scrollLeft >= before - 1', arg=before_scroll)
     page.locator('#tabList').click()
@@ -2956,12 +2955,12 @@ def test_env_preview_autorun_uses_explicit_production(page_explicit_production):
     queries = []
     page.on('request', lambda r: '/api/query' in r.url and queries.append(r.post_data_json))
     page.locator('#esw .ep[data-env="jp"]').click()
-    expect(page.locator('#prodBadge')).to_be_visible()
-    expect(page.locator('#sql')).to_have_value('select * from customers')
+    page.locator('#prodBadge').wait_for(state='visible')
+    assert page.locator('#sql').input_value() == 'select * from customers'
     page.wait_for_timeout(250)
     assert queries == []
     page.locator('#esw .ep[data-env="prod"]').click()
-    expect(page.locator('#prodBadge')).to_be_hidden()
+    page.locator('#prodBadge').wait_for(state='hidden')
     page.wait_for_selector('#grid table tbody tr')
     assert len(queries) == 1 and queries[0]['env'] == 'prod'
     page.locator('#esw .ep[data-env="jp"]').click()
@@ -2981,7 +2980,7 @@ def test_env_manual_sql_never_autoruns(page_explicit_production):
     page.on('request', lambda r: '/api/query' in r.url and queries.append(r.url))
     page.locator('#esw .ep[data-env="prod"]').click()
     page.locator('#esw .ep[data-env="dev"]').click()
-    expect(page.locator('#sql')).to_have_value('SELECT 42 AS handwritten')
+    assert page.locator('#sql').input_value() == 'SELECT 42 AS handwritten'
     page.wait_for_timeout(250)
     assert queries == []
 
