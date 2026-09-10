@@ -65,6 +65,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.2.1 (2026-09-10)
+
+### Bug Fixes
+
+- **gui**: 协调工作台间距并保留环境查询状态 ([#131](https://github.com/yiminspace/quarry/pull/131),
+  [`04923a5`](https://github.com/yiminspace/quarry/commit/04923a5ce76f4bce349cd9c378ad636b9d3b9da4))
+
+
 ## v1.2.0 (2026-09-10)
 
 ### Features
