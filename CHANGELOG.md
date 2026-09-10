@@ -59,6 +59,19 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.2.0 (2026-09-10)
+
+### Features
+
+- **gui**: 完善连接作用域查询标签与环境切换 ([#130](https://github.com/yiminspace/quarry/pull/130),
+  [`9fd8180`](https://github.com/yiminspace/quarry/commit/9fd818090291012deb9ff279e6b4e78d0e0c7f64))
+
+### Testing
+
+- **gui**: 避免非浏览器任务依赖 Playwright ([#130](https://github.com/yiminspace/quarry/pull/130),
+  [`9fd8180`](https://github.com/yiminspace/quarry/commit/9fd818090291012deb9ff279e6b4e78d0e0c7f64))
+
+
 ## v1.1.0 (2026-09-09)
 
 ### Bug Fixes
