@@ -69,6 +69,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.2.2 (2026-09-11)
+
+### Bug Fixes
+
+- **gui**: 移除常驻只读标签并补齐图标悬停提示 ([#132](https://github.com/yiminspace/quarry/pull/132),
+  [`f5628fd`](https://github.com/yiminspace/quarry/commit/f5628fde428bd1a7f1acc8b676c5684f8489933a))
+
+
 ## v1.2.1 (2026-09-10)
 
 ### Bug Fixes
