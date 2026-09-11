@@ -89,6 +89,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.3.0 (2026-09-11)
+
+### Features
+
+- 提供双语查询 skill 并完善本地数据库管理 ([#133](https://github.com/yiminspace/quarry/pull/133),
+  [`24c1548`](https://github.com/yiminspace/quarry/commit/24c1548b7ab298caca31c4d42a644563ade272ab))
+
+
 ## v1.2.2 (2026-09-11)
 
 ### Bug Fixes
