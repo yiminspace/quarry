@@ -115,3 +115,109 @@ def test_failure_hint_docker_off_is_distinct(setup, monkeypatch):
     monkeypatch.setattr(local, 'engine_status', lambda spec: {'docker': False, 'running': False})
     conn = core.Connection(key='local', url=local.PG_SPEC.url('shop'), env='local')
     assert 'start Docker' in local.connection_failure_hint(conn)
+
+
+@pytest.mark.parametrize('code', [core.EXIT_SQL_ERROR, core.EXIT_CONNECTION_ERROR])
+def test_query_failure_only_probes_local_for_connection_errors(setup, monkeypatch, capsys, code):
+    from quarry import cli, keepalive
+    conn = core.Connection(key='shop', url=local.PG_SPEC.url('shop'), env='local')
+    monkeypatch.setattr(cli, '_confirm_prod_write', lambda *a: True)
+    monkeypatch.setattr(core, 'proxy_fallback_notice', lambda *a, **kw: None)
+    monkeypatch.setattr(keepalive, 'should_hint_keeper_down', lambda *a: False)
+    def fail(**kwargs):
+        raise core.QuarryError('original database error', exit_code=code)
+    monkeypatch.setattr(core, 'execute_sql', fail)
+    probes = []
+    monkeypatch.setattr(local, 'connection_failure_hint', lambda c: probes.append(c.key) or 'diagnostic')
+    args = cli.build_parser().parse_args(['exec', 'shop', '--sql', 'bad sql'])
+    with pytest.raises(core.QuarryError, match='original database error'):
+        cli._execute(conn, args.sql, {}, args)
+    assert probes == (['shop'] if code == core.EXIT_CONNECTION_ERROR else [])
+    assert ('diagnostic' in capsys.readouterr().err) == (code == core.EXIT_CONNECTION_ERROR)
+
+
+def test_diagnostic_failure_does_not_mask_connection_error(setup, monkeypatch):
+    from quarry import cli, keepalive
+    monkeypatch.setattr(cli, '_confirm_prod_write', lambda *a: True)
+    monkeypatch.setattr(core, 'proxy_fallback_notice', lambda *a, **kw: None)
+    monkeypatch.setattr(keepalive, 'should_hint_keeper_down', lambda *a: False)
+    def fail(**kwargs):
+        raise core.QuarryError('connection refused', exit_code=core.EXIT_CONNECTION_ERROR)
+    def failed_probe(conn):
+        raise OSError('Docker probe failed')
+    monkeypatch.setattr(core, 'execute_sql', fail)
+    monkeypatch.setattr(local, 'connection_failure_hint', failed_probe)
+    args = cli.build_parser().parse_args(['exec', 'shop', '--sql', 'SELECT 1'])
+    with pytest.raises(core.QuarryError, match='connection refused'):
+        cli._execute(core.Connection(key='shop', url=local.PG_SPEC.url('shop'), env='local'), args.sql, {}, args)
+
+
+@pytest.mark.parametrize('value', ['0', '65536', 'true', '"5433"'])
+def test_invalid_configured_port_fails_cleanly(setup, value):
+    workspace._write_table_scalar('local', 'postgres_port', value)
+    with pytest.raises(core.QuarryError, match='invalid local'):
+        local.configured_spec('postgres')
+
+
+@pytest.mark.parametrize('running', [False, True])
+def test_failure_hint_stopped_and_running_container(setup, monkeypatch, running):
+    monkeypatch.setattr(local, 'engine_status', lambda spec: {'docker': True, 'running': running})
+    conn = core.Connection(key='shop', url=local.PG_SPEC.url('shop'), env='local')
+    assert ('credentials' if running else 'local up') in local.connection_failure_hint(conn)
+    conn.url = 'postgresql://localhost:55432/shop'
+    assert 'Check the connection target' in local.connection_failure_hint(conn)
+
+
+@pytest.mark.parametrize('port', [0, 65536])
+def test_invalid_requested_port_never_starts_docker(setup, monkeypatch, port):
+    monkeypatch.setattr(local, 'require_docker', lambda: pytest.fail('invalid port reached Docker'))
+    with pytest.raises(core.QuarryError, match='--port'):
+        local.start_on_port(local.PG_SPEC, port)
+
+
+def test_failed_inspect_or_remove_preserves_config(setup, monkeypatch):
+    monkeypatch.setattr(local, 'container_state', lambda name: 'stopped')
+    monkeypatch.setattr(local, '_run_docker', lambda *a, **kw: (1, '', 'inspect failure'))
+    with pytest.raises(core.QuarryError, match='inspect'):
+        local.start_on_port(local.PG_SPEC, 55434)
+    calls = fake_inspect(monkeypatch)
+    original = local._run_docker
+    def fail_rm(args, **kwargs):
+        return (1, '', 'rm failure') if args[0] == 'rm' else original(args, **kwargs)
+    monkeypatch.setattr(local, '_run_docker', fail_rm)
+    monkeypatch.setattr(local, 'port_in_use', lambda port: False)
+    with pytest.raises(core.QuarryError, match='recreate stopped'):
+        local.start_on_port(local.PG_SPEC, 55434)
+    assert 'local' not in workspace._read_config()
+    assert calls
+
+
+@pytest.mark.parametrize('key', [None, 'shop'])
+def test_cli_passes_explicit_port_for_engine_and_database(setup, monkeypatch, capsys, key):
+    from quarry import cli
+    ws = setup / 'ws'
+    ws.mkdir(exist_ok=True)
+    calls = []
+    def start(spec, port, **kwargs):
+        calls.append(port)
+        return replace(spec, port=port), 'created'
+    monkeypatch.setattr(local, 'start_on_port', start)
+    monkeypatch.setattr(local, 'container_image', lambda name: 'postgres:16')
+    monkeypatch.setattr(local, 'wait_pg_ready', lambda spec: True)
+    monkeypatch.setattr(local, 'ensure_pg_database', lambda *a: None)
+    argv = ['local', 'up', *([key] if key else []), '--engine', 'postgres', '--port', '55434']
+    args = cli.build_parser().parse_args(argv)
+    assert cli.cmd_local_up(args) == 0
+    assert calls == [55434] and '55434' in capsys.readouterr().out
+
+
+def test_cli_ambiguous_port_and_status_conflict(setup, monkeypatch, capsys):
+    from quarry import cli
+    args = cli.build_parser().parse_args(['local', 'up', '--port', '55434'])
+    with pytest.raises(core.QuarryError, match='--engine'):
+        cli.cmd_local_up(args)
+    monkeypatch.setattr(local, 'engine_status', lambda spec: {'engine': 'postgres', 'docker': True,
+        'running': False, 'port': 5433, 'port_conflict': True, 'port_owner': 'other-db'})
+    args = cli.build_parser().parse_args(['local', 'status', '--engine', 'postgres'])
+    assert cli.cmd_local_status(args) == 0
+    assert 'other-db' in capsys.readouterr().out

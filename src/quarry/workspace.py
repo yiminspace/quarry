@@ -53,6 +53,8 @@ def ensure_skill_links(skill_dir: str) -> None:
         raise ValueError(f"skill queries entry must be a real directory: {root}")
     planned: dict[Path, Path] = {}
     for ws in WS_LIST:
+        if not ws.home.is_dir():
+            raise ValueError(f"workspace directory is missing or unavailable: {ws.home}")
         name = ws.home.name
         if not name:
             raise ValueError("cannot link a filesystem-root workspace; use a named directory")

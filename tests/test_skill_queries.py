@@ -10,6 +10,13 @@ import pytest
 from quarry import workspace
 
 
+def configure_existing(paths):
+    from pathlib import Path
+    for path in paths.split(os.pathsep):
+        Path(path).mkdir(parents=True, exist_ok=True)
+    workspace.configure_workspace(paths)
+
+
 def invoke(tmp_path, *args):
     env = dict(os.environ, QUARRY_CONFIG=str(tmp_path / "config.toml"))
     env.pop("QUARRY_QUERIES_DIR", None)
@@ -54,7 +61,7 @@ def test_save_visible_in_skill_and_link_recreated(tmp_path):
 def test_multiple_workspaces_and_conflict_preserves_files(tmp_path):
     skill = make_skill(tmp_path)
     first, second = tmp_path / "one", tmp_path / "two"
-    workspace.configure_workspace(os.pathsep.join(map(str, (first, second))))
+    configure_existing(os.pathsep.join(map(str, (first, second))))
     workspace.ensure_skill_links(str(skill))
     assert (skill / "queries/one").resolve() == first / "queries"
     assert (skill / "queries/two").resolve() == second / "queries"
@@ -69,7 +76,7 @@ def test_multiple_workspaces_and_conflict_preserves_files(tmp_path):
 
 def test_duplicate_workspace_names_do_not_choose_silently(tmp_path):
     skill = make_skill(tmp_path)
-    workspace.configure_workspace(os.pathsep.join(map(str, (tmp_path / "a/db", tmp_path / "b/db"))))
+    configure_existing(os.pathsep.join(map(str, (tmp_path / "a/db", tmp_path / "b/db"))))
     with pytest.raises(ValueError, match="duplicate workspace name"):
         workspace.ensure_skill_links(str(skill))
     assert not (skill / "queries").exists()
@@ -77,7 +84,7 @@ def test_duplicate_workspace_names_do_not_choose_silently(tmp_path):
 
 def test_foreign_symlink_is_not_replaced(tmp_path):
     skill = make_skill(tmp_path)
-    workspace.configure_workspace(str(tmp_path / "acme"))
+    configure_existing(str(tmp_path / "acme"))
     (skill / "queries").mkdir()
     link = skill / "queries/acme"
     link.symlink_to(tmp_path / "old-location")
@@ -109,7 +116,7 @@ def test_skill_inside_query_directory_cannot_create_recursive_link(tmp_path):
     queries = ws / "queries"
     queries.mkdir(parents=True)
     skill = make_skill(queries)
-    workspace.configure_workspace(str(ws))
+    configure_existing(str(ws))
     with pytest.raises(ValueError, match="recursive"):
         workspace.ensure_skill_links(str(skill))
     assert not (skill / "queries").exists()
@@ -120,7 +127,7 @@ def test_symlinked_skill_queries_root_is_not_followed(tmp_path):
     foreign = tmp_path / "foreign"
     foreign.mkdir()
     (skill / "queries").symlink_to(foreign, target_is_directory=True)
-    workspace.configure_workspace(str(tmp_path / "acme"))
+    configure_existing(str(tmp_path / "acme"))
     with pytest.raises(ValueError, match="real directory"):
         workspace.ensure_skill_links(str(skill))
     assert list(foreign.iterdir()) == []
@@ -132,7 +139,7 @@ def test_concurrent_link_creation_is_idempotent(tmp_path, monkeypatch):
     from threading import Barrier
 
     skill = make_skill(tmp_path)
-    workspace.configure_workspace(str(tmp_path / 'acme'))
+    configure_existing(str(tmp_path / 'acme'))
     barrier = Barrier(2)
     original = Path.symlink_to
 
@@ -146,3 +153,41 @@ def test_concurrent_link_creation_is_idempotent(tmp_path, monkeypatch):
         for call in calls:
             call.result(timeout=10)
     assert (skill / 'queries/acme').resolve() == tmp_path / 'acme/queries'
+
+
+def test_missing_workspace_is_not_recreated_for_read_only_list(tmp_path, capsys, monkeypatch):
+    from quarry import cli
+    skill = make_skill(tmp_path)
+    missing = tmp_path / 'unmounted/workspace'
+    monkeypatch.setattr(sys, 'argv', ['qy', '--workspace', str(missing), '--skill-dir', str(skill), 'list'])
+    assert cli.main() != 0
+    assert 'missing or unavailable' in capsys.readouterr().err
+    assert not missing.parent.exists()
+    assert not (skill / 'queries').exists()
+
+
+def test_link_refuses_query_file_and_filesystem_root(tmp_path):
+    skill = make_skill(tmp_path)
+    ws = tmp_path / 'acme'
+    configure_existing(str(ws))
+    (ws / 'queries').write_text('keep')
+    with pytest.raises(ValueError, match='not a directory'):
+        workspace.ensure_skill_links(str(skill))
+    assert (ws / 'queries').read_text() == 'keep'
+    from pathlib import Path
+    workspace.configure_workspace(Path(tmp_path.anchor).as_posix())
+    with pytest.raises(ValueError, match='filesystem-root'):
+        workspace.ensure_skill_links(str(skill))
+
+
+def test_conflicting_entry_created_during_linking_is_preserved(tmp_path, monkeypatch):
+    from pathlib import Path
+    skill = make_skill(tmp_path)
+    configure_existing(str(tmp_path / 'acme'))
+    def competing_file(self, target, target_is_directory=False):
+        self.write_text('another writer')
+        raise FileExistsError()
+    monkeypatch.setattr(Path, 'symlink_to', competing_file)
+    with pytest.raises(ValueError, match='conflicts'):
+        workspace.ensure_skill_links(str(skill))
+    assert (skill / 'queries/acme').read_text() == 'another writer'

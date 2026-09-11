@@ -12,7 +12,9 @@ pre-1.0 history followed the earlier development policy.
 - Redis INFO output is accepted as text when redis-cli bypasses JSON formatting;
   malformed output from other commands remains an error.
 - Concurrent CLI calls can create the same skill query link without failing.
-- Local connection failures distinguish Docker availability and occupied ports.
+- Local connection failures distinguish Docker availability and occupied ports;
+  SQL errors do not trigger unrelated Docker or credential diagnostics.
+- Skill query linking rejects missing workspaces without recreating their directories.
 
 ### Added
 

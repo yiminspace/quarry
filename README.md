@@ -270,7 +270,8 @@ qy --skill-dir /path/to/installed/quarry --workspace ~/db/acme save customer-cou
 `--skill-dir` creates `<skill>/queries/<workspace-name>` as a symlink to that
 query directory before running the command. Credentials remain outside the
 link. Pass the option on each call to recreate missing links after updates;
-the CLI does not remember or guess skill installation paths. Existing files
+the CLI does not remember or guess skill installation paths. Missing workspace
+directories are reported rather than recreated. Existing files
 and links to other locations are never replaced. Duplicate workspace directory
 names require selecting one with `--workspace`. Linking errors stop the command
 with a usage error; query data is not removed. Keep generated `queries/` entries

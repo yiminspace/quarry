@@ -539,7 +539,7 @@ def _execute(conn, sql, psql_vars, args) -> int:
             stats=stats,
         )
     except QuarryError as exc:
-        if exc.exit_code in (EXIT_CONNECTION_ERROR, EXIT_SQL_ERROR):
+        if exc.exit_code == EXIT_CONNECTION_ERROR:
             try:
                 hint = local.connection_failure_hint(conn)
             except (QuarryError, OSError, ValueError):
