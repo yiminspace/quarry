@@ -1,5 +1,5 @@
 import { VoyageToolbar } from "@yiminlab/voyage/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchHealth, keepAliveDown, keepAliveUp } from "./api";
 import { t, LANG, toggleLang } from "./i18n";
 import { useConnStore } from "./store/connStore";
@@ -8,10 +8,27 @@ import UpdatePanel from "./UpdatePanel";
 import WhatsNewPanel from "./WhatsNewPanel";
 import WorkspaceModal from "./WorkspaceModal";
 
-/** The header bar: brand, workspace label, workspace manager, prod/read-only
- * badges, health-check-all, language and theme toggles — the legacy GUI's
+/** The header bar: brand, workspace label, workspace manager, production
+ * warnings, health-check-all, language and theme toggles — the legacy GUI's
  * `<header>` chrome, same DOM and icons. */
 export default function Header() {
+  const headerRef = useRef<HTMLElement>(null);
+  // Voyage 0.15 exposes accessible labels but no title props. Mirror those
+  // labels into native hover hints, including mode changes and locale reloads.
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+    const syncTitles = () => {
+      header.querySelectorAll<HTMLElement>(".vg-lang-switch, .vg-switcher-mode, .vg-switcher-trigger").forEach((button) => {
+        button.title = button.getAttribute("aria-label") || "";
+      });
+    };
+    syncTitles();
+    const observer = new MutationObserver(syncTitles);
+    observer.observe(header, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-label"] });
+    return () => observer.disconnect();
+  }, []);
+
   const workspace = useConnStore((s) => s.workspace);
   const workspaces = useConnStore((s) => s.workspaces);
   const groups = useConnStore((s) => s.groups);
@@ -58,7 +75,7 @@ export default function Header() {
   };
 
   return (
-    <header className="vg-header">
+    <header className="vg-header" ref={headerRef}>
       <div className="vg-logo logo">Q</div>
       <span className="vg-brand brand">Quarry</span>
       <span className="vg-ws ws" id="ws" title={workspaces.join("\n")}>
@@ -85,14 +102,12 @@ export default function Header() {
       <span
         className="vg-badge badge err prod"
         id="prodBadge"
+        title={t("production_tip")}
         style={{ display: isProd ? undefined : "none" }}
       >
         <i className="ti ti-alert-triangle" /> prod
       </span>
-      <span className="vg-badge badge ok ro" id="roBadge">
-        <i className="ti ti-lock" /> {t("ro_badge")}
-      </span>
-      <span className={`vg-badge badge ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`} id="kaBadge">
+      <span className={`vg-badge badge ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`} id="kaBadge" title={kaLabel}>
         <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
       </span>
       <button

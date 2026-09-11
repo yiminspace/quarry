@@ -146,13 +146,13 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 
 | # | Area | Feature | Covered by | ✓ |
 |---|------|---------|------------|---|
-| 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_and_readonly_badge (single-ws only) | 🟡 |
-| 2 | header | read-only badge | B:test_load_shows_brand_and_readonly_badge | ✅ |
+| 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_without_readonly_badge (single-ws only) | 🟡 |
+| 2 | header | no permanent read-only / auto LIMIT badge; query safety is unchanged | B:test_load_shows_brand_without_readonly_badge, F:test_icon_hover_hints_cover_header_workbench_and_modals | ✅ |
 | 3 | header | production badge follows explicit configuration, independent of env name | F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production | ✅ |
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
-| 7 | sidebar | connection groups; an ungrouped env sibling inherits the logical DB's sole group instead of creating a duplicate under OTHER; workspace origin label prefers the majority workspace when a group spans directories | B:test_load_shows_brand_and_readonly_badge (origin single-ws only), F:test_missing_group_env_sibling_stays_in_one_sidebar_env_set, A:test_ungrouped_env_member_inherits_its_only_sibling_group, A:test_group_workspace_origin_prefers_majority_source | 🟡 |
+| 7 | sidebar | connection groups; an ungrouped env sibling inherits the logical DB's sole group instead of creating a duplicate under OTHER; workspace origin label prefers the majority workspace when a group spans directories | B:test_load_shows_brand_without_readonly_badge (origin single-ws only), F:test_missing_group_env_sibling_stays_in_one_sidebar_env_set, A:test_ungrouped_env_member_inherits_its_only_sibling_group, A:test_group_workspace_origin_prefers_majority_source | 🟡 |
 | 8 | sidebar | group collapse/expand + persistence | F:test_group_collapse_persists_after_reload | ✅ |
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
@@ -211,7 +211,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 63 | sidebar | redis key list cap notice ("showing first N keys") | F:test_redis_capped_key_list_shows_notice | ✅ |
 | 64 | sidebar | generated table SQL quotes mixed-case/reserved identifiers | F:test_mixed_case_table_click_is_quoted | ✅ |
 | 65 | toolbar | max-rows selector: caps results, persisted across reloads | F:test_max_rows_selector_caps_and_persists | ✅ |
-| 66 | header | icon-only controls carry aria-labels | — (set in the i18n block; no axe pass yet) | 🟡 |
+| 66 | header / controls | native hover hints for header, tabs, toolbar, sidebar folds and modal actions; Voyage hints follow locale and mode | F:test_icon_hover_hints_cover_header_workbench_and_modals (en/zh, mode and reveal state), F:test_cell_json_opens_tree_modal, F:test_redis_key_tree_badges_filter_and_inspect; overflow arrows audited in source only | 🟡 |
 | 67 | tabs | per-tab result isolation: grid / status / export always reflect the active tab | F:test_tab_switch_isolates_results | ✅ |
 | 68 | tabs | closing a tab pushes its SQL to History (active + inactive close) | F:test_close_tab_preserves_sql_in_history | ✅ |
 | 69 | tabs | tab with a vanished connection unbinds (never silently rebinds) | F:test_stale_tab_connection_unbinds_not_rebinds | ✅ |
@@ -424,3 +424,22 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   keep their existing paths. Browser tests cover source/destination draft retention,
   prod=false, jp=true, cached restoration, closed groups and in-flight response isolation.
   Cached results always suppress navigation auto-run, even for edited SQL; explicit Run updates the result. Export reads the restored snapshot. The SQL/result/navigation write sites listed above remain unchanged; browser coverage verifies round trips, edited draft plus old result, export and explicit refresh.
+
+
+### Icon hover audit (2026-09-11)
+
+- Existence: inspected every icon and interaction in Header, Sidebar, TabBar,
+  SqlEditor, ResultWorkbench, Modals, WorkspaceModal, ConnInfoModal, UpdatePanel,
+  WhatsNewPanel and App. Removed header badge row 2; hints extend rows 8, 24,
+  38–44, 66 and the existing tab/connection/workspace/JSON-tree controls.
+  Decorative icons beside labels are not independent actions. No new API,
+  storage key or interaction action was added.
+- Capability: all icon actions have native title hints; the Voyage language,
+  mode and palette controls now mirror their accessible names. Sidebar and
+  JSON-tree disclosure hints describe expand/collapse. Existing Design gaps
+  remain unchanged. Browser tests verify native title text after hover, not
+  OS-rendered tooltip pixels (native tooltips are outside the DOM).
+- Shared-state: no connection, query, result, history or preference write sites
+  changed. A header-scoped observer mirrors Voyage aria-label changes to title;
+  its only DOM write is title, and it disconnects on unmount. Browser coverage
+  checks mode, locale and credential-reveal hint changes. No CSS/color changes.
