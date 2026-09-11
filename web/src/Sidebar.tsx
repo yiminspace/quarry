@@ -88,7 +88,7 @@ function RedisTree({
         const closed = folded.has(childPath);
         return (
           <div key={childPath}>
-            <div className="vg-tname tname vg-knode knode" onClick={() => onToggle(childPath)}>
+            <div className="vg-tname tname vg-knode knode" title={t(closed ? "expand" : "collapse")} onClick={() => onToggle(childPath)}>
               <i className={`ti ${closed ? "ti-chevron-right" : "ti-chevron-down"}`} />
               {name}
               <span className="vg-rbadge rbadge">{countNode(child)}</span>
@@ -341,6 +341,7 @@ export default function Sidebar(props: SidebarProps) {
             <div
               className="vg-grp grp"
               data-grp
+              title={t(isCollapsed ? "expand" : "collapse")}
               data-gkey={gkey}
               onClick={() => toggleCollapsedGroup(gkey)}
             >
@@ -392,6 +393,7 @@ export default function Sidebar(props: SidebarProps) {
           <div
             className="vg-grp grp"
             data-grp
+            title={t(collapsed.has("__saved__") ? "expand" : "collapse")}
             data-gkey="__saved__"
             onClick={() => toggleCollapsedGroup("__saved__")}
           >

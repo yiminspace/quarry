@@ -950,7 +950,11 @@ def test_cell_json_opens_tree_modal(page):
     tree = page.locator(".modal details.jt")
     tree.wait_for()                                        # tree exists but is lazy/collapsed
     assert page.locator(".modal .jk", has_text="a").count() == 0
-    tree.locator("summary").click()
+    summary = tree.locator("summary")
+    summary.hover()
+    assert summary.get_attribute("title") == "Expand group"
+    summary.click()
+    page.wait_for_function("document.querySelector('.modal details.jt > summary')?.title === 'Collapse group'")
     page.wait_for_selector(".modal .jk")                  # children mount only after expansion
     assert page.locator(".modal .jk", has_text="a").count() >= 1
     page.keyboard.press("Escape")
@@ -1182,6 +1186,12 @@ def test_redis_key_tree_badges_filter_and_inspect(page_redis):
     page.wait_for_selector('.dbrow[data-db="testredis"]')
     page.locator('.dbrow[data-db="testredis"]').click()
     page.wait_for_selector('#tbl-panel .tname[data-key="qygui:sess:1"]', timeout=15000)
+    folder = page.locator("#tbl-panel .knode").first
+    folder.hover()
+    assert folder.get_attribute("title") == "Collapse group"
+    folder.click()
+    assert folder.get_attribute("title") == "Expand group"
+    folder.click()
     # tree: qygui -> sess -> leaves; TTL badge on sess:1; type badge on jobs
     leaf1 = page.locator('#tbl-panel .tname[data-key="qygui:sess:1"]')
     assert leaf1.locator(".rbadge.ttl").count() == 1
@@ -1514,7 +1524,7 @@ def test_language_toggle_full_chrome(page):
     page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
     assert page.locator("#fmtLbl").inner_text() == "格式化"
     assert page.locator("#histLbl").inner_text() == "历史"
-    assert "只读" in page.locator("#roBadge").inner_text()
+    assert page.locator("#roBadge").count() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -3060,3 +3070,58 @@ def test_workbench_visual_hierarchy(page_envset, mode):
     page.locator('#runBtn').hover()
     assert matches('#runBtn', 'backgroundColor', 'var(--acc)')
     assert matches('#runBtn', 'color', 'var(--accent-ink)')
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_icon_hover_hints_cover_header_workbench_and_modals(page, lang):
+    from playwright.sync_api import expect
+
+    if lang == "zh":
+        page.locator(".vg-lang-switch").click()
+        expect(page.locator("#runLbl")).to_have_text("运行")
+    assert page.locator("#roBadge").count() == 0
+    header_icons = ["#wsBtn", "#kaBtn", "#healthBtn", ".vg-lang-switch",
+                    ".vg-switcher-mode", ".vg-switcher-trigger"]
+    for selector in header_icons:
+        button = page.locator(selector)
+        button.hover()
+        expect(button).to_have_attribute("title", button.get_attribute("aria-label"))
+        assert button.get_attribute("title").strip()
+
+    mode = page.locator(".vg-switcher-mode")
+    before = mode.get_attribute("title")
+    mode.click()
+    expect(mode).not_to_have_attribute("title", before)
+    mode.hover()
+    expect(mode).to_have_attribute("title", mode.get_attribute("aria-label"))
+
+    _select_testpg(page)
+    for selector in ["#ciBtn", "#tabAdd", "#tabList", "#runBtn", "#fmtBtn",
+                     "#csvBtn", "#jsonBtn", "#histBtn", "#linkBtn", ".treload"]:
+        button = page.locator(selector)
+        button.hover()
+        assert (button.get_attribute("title") or "").strip(), selector
+    close = page.locator("#tabs button[aria-label^='Close tab'], #tabs button[aria-label^='关闭']").first
+    close.hover()
+    assert close.get_attribute("title")
+    group = page.locator("[data-grp]").first
+    group.hover()
+    previous = group.get_attribute("title")
+    group.click()
+    expect(group).not_to_have_attribute("title", previous)
+    group.click()
+
+    page.locator("#ciBtn").click()
+    for selector in ["#ciEye", "#ciCopy"]:
+        button = page.locator(selector)
+        button.hover()
+        assert button.get_attribute("title")
+    eye = page.locator("#ciEye")
+    previous = eye.get_attribute("title")
+    eye.click()
+    expect(eye).not_to_have_attribute("title", previous)
+    page.keyboard.press("Escape")
+    page.locator("#wsBtn").click()
+    for button in page.locator(".wsdel").all():
+        button.hover()
+        assert button.get_attribute("title")

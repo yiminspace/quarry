@@ -20,6 +20,10 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
+- Removed the permanent read-only / auto LIMIT header badge. Added hover
+  explanations for language, appearance, sidebar disclosure and query actions;
+  dynamic hints follow the current state and interface language.
+
 - Unified workbench spacing with compact environment controls, a 36px tab strip
   and consistent 30px query actions. Switching environments restores or carries
   SQL and executes it on non-production connections when no saved result exists.

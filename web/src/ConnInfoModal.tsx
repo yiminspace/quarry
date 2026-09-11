@@ -202,7 +202,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
-                    id="ciUp"
+                    id="ciUp" title={upBusy ? t("running") : t("ci_mklocal")}
                     disabled={upBusy}
                     onClick={() => void doLocalUp()}
                   >
@@ -215,7 +215,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
-                    id="ciSync"
+                    id="ciSync" title={syncBusy ? t("ci_syncing") : tv("ci_sync", { env: srcEnv })}
                     disabled={syncBusy}
                     onClick={() => void doSync()}
                   >

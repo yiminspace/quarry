@@ -1163,10 +1163,10 @@ export default function ResultWorkbench() {
           navigateHistory={navigateHistory}
         />
         <div className="vg-toolbar toolbar">
-          <button className="vg-btn btn primary" id="runBtn" onClick={() => void run()}>
+          <button className="vg-btn btn primary" id="runBtn" title={t("run")} onClick={() => void run()}>
             <i className="ti ti-player-play" /> <span id="runLbl">{t("run")}</span>
           </button>
-          <button className="vg-btn btn" id="fmtBtn" onClick={formatSql}>
+          <button className="vg-btn btn" id="fmtBtn" title={t("fmt")} onClick={formatSql}>
             <i className="ti ti-wand" /> <span id="fmtLbl">{t("fmt")}</span>
           </button>
           <button
@@ -1179,10 +1179,10 @@ export default function ResultWorkbench() {
           >
             <i className="ti ti-route" /> EXPLAIN
           </button>
-          <button className="vg-btn btn" id="csvBtn" onClick={exportCsv}>
+          <button className="vg-btn btn" id="csvBtn" title={t("export_csv")} onClick={exportCsv}>
             <i className="ti ti-download" /> CSV
           </button>
-          <button className="vg-btn btn" id="jsonBtn" onClick={exportJson}>
+          <button className="vg-btn btn" id="jsonBtn" title={t("export_json")} onClick={exportJson}>
             <i className="ti ti-braces" /> JSON
           </button>
           <select
@@ -1201,10 +1201,10 @@ export default function ResultWorkbench() {
             ))}
           </select>
           <span className="vg-sp sp" />
-          <button className="vg-btn btn" id="histBtn" onClick={openHistory}>
+          <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>
           </button>
-          <button className="vg-btn btn" id="linkBtn" onClick={copyQueryLink}>
+          <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
             <i className="ti ti-link" /> <span id="linkLbl">{t("copy_query_link")}</span>
           </button>
         </div>
@@ -1361,7 +1361,7 @@ export default function ResultWorkbench() {
             <p>{t("no_open_queries_hint")}</p>
             <div className="query-empty-actions">
               <button className="vg-btn btn" id="emptyNewTab" onClick={() => useTabsStore.getState().addTab()}>{t("new_tab")}</button>
-              <button className="vg-btn btn" id="histBtn" onClick={openHistory}>{t("hist")}</button>
+              <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>{t("hist")}</button>
             </div>
           </div>
         )}

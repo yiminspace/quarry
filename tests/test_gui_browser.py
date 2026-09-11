@@ -61,14 +61,10 @@ def _run_result(page):
 
 @requires_browser
 @pytest.mark.browser
-def test_load_shows_brand_and_readonly_badge(page):
+def test_load_shows_brand_without_readonly_badge(page):
     assert page.title() == "Quarry"
     assert page.locator(".brand").inner_text() == "Quarry"
-    # read-only badge is present and mentions read-only (en) or 只读 (zh)
-    ro = page.locator("#roBadge")
-    ro.wait_for()
-    txt = ro.inner_text()
-    assert ("read-only" in txt) or ("只读" in txt)
+    assert page.locator("#roBadge").count() == 0
     # sidebar renders the testpg connection row
     page.wait_for_selector('.dbrow[data-db="testpg"]')
     assert page.locator('.dbrow[data-db="testpg"]').count() == 1

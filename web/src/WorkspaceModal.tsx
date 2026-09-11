@@ -127,7 +127,7 @@ export default function WorkspaceModal({ onClose }: Props) {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void doAdd()}
                 />
-                <button className="vg-btn btn" id="wsAddBtn" onClick={() => void doAdd()}>
+                <button className="vg-btn btn" id="wsAddBtn" title={t("ws_add")} onClick={() => void doAdd()}>
                   <i className="ti ti-plus" /> {t("ws_add")}
                 </button>
               </div>

@@ -51,7 +51,7 @@ function JsonTree({ value, jsonKey }: { value: unknown; jsonKey?: string | numbe
     if (!value.length) return <div className="vg-jrow jrow">{k}[]</div>;
     return (
       <details className="vg-jt jt" onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary>
+        <summary title={t(open ? "collapse" : "expand")}>
           {k}
           <span className="vg-jm jm">[{value.length}]</span>
         </summary>
@@ -62,7 +62,7 @@ function JsonTree({ value, jsonKey }: { value: unknown; jsonKey?: string | numbe
   if (typeof value === "object") {
     return (
       <details className="vg-jt jt" onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary>
+        <summary title={t(open ? "collapse" : "expand")}>
           {k}
           <span className="vg-jm jm">{"{…}"}</span>
         </summary>
@@ -396,7 +396,7 @@ export function ParamModal({
           </div>
         ))}
         <div style={{ textAlign: "right", marginTop: 12 }}>
-          <button className="vg-btn btn primary" id="pgo" onClick={submit}>
+          <button className="vg-btn btn primary" id="pgo" title={t("run")} onClick={submit}>
             <i className="ti ti-player-play" /> {t("run")}
           </button>
         </div>

@@ -55,9 +55,6 @@ def test_default_theme_is_dark_with_legacy_palette(page):
     # Run stays quieter than the active document until hover.
     assert _style(page, "#runBtn", "backgroundColor") == DARK["bg1"]
     assert _style(page, "#runBtn", "color") == DARK["accent"]
-    # read-only badge: ok-green on ok-bg
-    assert _style(page, "#roBadge", "color") == DARK["ok"]
-    assert _style(page, "#roBadge", "backgroundColor") == DARK["ok_bg"]
 
 
 def test_light_theme_matches_legacy_palette(page):
