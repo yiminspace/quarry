@@ -166,7 +166,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 18 | sidebar | redis key tree: `:` hierarchy, fold, count badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 19 | sidebar | redis type + TTL badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 20 | sidebar | redis key filter; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
-| 21 | sidebar | query list titled `queries`, grouped by logical database (env siblings share a group; an exact connection key beats another item's logical `db`); param badge, desc tooltip; paramless runs on click; long names ellipsize | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, sidebarLayout.test.ts | ✅ |
+| 21 | sidebar | query list titled `queries` inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database (env siblings share a group; an exact connection key beats another item's logical `db`); param badge, desc tooltip; paramless runs on click; long names ellipsize | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, sidebarLayout.test.ts | ✅ |
 | 22 | sidebar | saved-query param modal (required/default, Enter submits, click-out closes) | B:test_saved_query_param_modal…, F:test_param_modal_enter_submits_and_clickout_closes | ✅ |
 | 23 | sidebar | sidebar width drag + persistence | F:test_sidebar_width_drag_persists | ✅ |
 | 24 | editor | SQL highlight overlay + scroll sync | F:test_sql_highlight_overlay (scroll sync unasserted) | 🟡 |
@@ -443,3 +443,15 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   changed. A header-scoped observer mirrors Voyage aria-label changes to title;
   its only DOM write is title, and it disconnects on unmount. Browser coverage
   checks mode, locale and credential-reveal hint changes. No CSS/color changes.
+
+### Workspace query sidebar audit
+
+- Existence: workspace query sections reuse group toggles and `/api/queries`; file
+  identities flow through saved selection, parameter modal and `/api/run` (row 21–22).
+- Capability: workspace ownership, query-only workspaces, database grouping,
+  independent collapse, and same-name selection are covered; no new design gap.
+- Shared-state: `collapsedGroups` is initialized from storage in `uiStore` and written by
+  `toggleCollapsedGroup`, called by sidebar headers and `handleTabSwitch`. Query
+  sections use distinct keys, so tab switching expands only the connection group. Connection, editor, draft, request and result
+  write sites are unchanged; saved selection/modal now carry the file identity.
+  Collapse/reload and selected-file execution are covered together by browser tests.

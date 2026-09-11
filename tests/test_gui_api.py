@@ -793,3 +793,64 @@ def test_events_stream_hello_publish_heartbeat_and_close(gui_server, monkeypatch
             if not chunk:
                 break                             # server closed the connection
             assert b'"_close"' not in chunk       # the close marker is never sent
+
+
+@pytest.mark.unit
+def test_saved_query_file_identity_and_workspace(monkeypatch, tmp_path):
+    from quarry import gui, workspace
+    from quarry.core import QuarryError
+    homes = [tmp_path / 'one', tmp_path / 'two']
+    workspaces = []
+    for n, home in enumerate(homes, 1):
+        queries = home / 'queries'
+        queries.mkdir(parents=True)
+        (queries / 'same.sql').write_text(f'-- @name: same\n-- @db: testpg\nSELECT {n}')
+        workspaces.append(workspace.Workspace(home, home / 'connections.toml', queries, 'psql'))
+    monkeypatch.setattr(workspace, 'WS_LIST', workspaces)
+    listed = gui.api_queries()
+    assert [q['ws'] for q in listed] == [str(h) for h in homes]
+    assert [q['name'] for q in listed] == ['same', 'same']
+    assert listed[0]['queryId'] != listed[1]['queryId']
+    # Capture the selected SQL without connecting to a database.
+    seen = []
+    def params(q, provided):
+        seen.append(q.sql)
+        return {}
+    from types import SimpleNamespace
+    monkeypatch.setattr(gui, '_resolve', lambda *args: SimpleNamespace(logical_db='testpg', env=None))
+    monkeypatch.setattr(gui.core, 'resolve_params', params)
+    monkeypatch.setattr(gui.core, 'run_query', lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: {}))
+    gui.api_run({'name': 'same', 'queryId': listed[1]['queryId']})
+    assert seen == ['SELECT 2']
+    for invalid in ['../../outside.sql', 'missing']:
+        with pytest.raises(QuarryError, match='no longer exists'):
+            gui.api_run({'name': 'same', 'queryId': invalid})
+    monkeypatch.setattr(workspace, 'WS_LIST', workspaces[:1])
+    with pytest.raises(QuarryError, match='no longer exists'):
+        gui.api_run({'name': 'same', 'queryId': listed[1]['queryId']})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("broken", [
+    b"SELECT 1",  # a draft without metadata
+    b"-- @name: wrong-name\n-- @db: testpg\nSELECT 1",
+    b"\xff",  # incomplete/invalid encoding must not hide other workspaces
+])
+def test_query_listing_skips_malformed_files(monkeypatch, tmp_path, caplog, broken):
+    from quarry import gui, workspace
+    workspaces = []
+    for name in ("one", "two"):
+        home = tmp_path / name
+        queries = home / "queries"
+        queries.mkdir(parents=True)
+        (queries / "same.sql").write_text("-- @name: same\n-- @db: testpg\nSELECT 1")
+        workspaces.append(workspace.Workspace(home, home / "connections.toml", queries, "psql"))
+    bad = workspaces[0].queries_dir / "broken.sql"
+    bad.write_bytes(broken)
+    monkeypatch.setattr(workspace, "WS_LIST", workspaces)
+    listed = gui.api_queries()
+    assert len(listed) == 2
+    assert [q["ws"] for q in listed] == [str(w.home) for w in workspaces]
+    assert len({q["queryId"] for q in listed}) == 2
+    assert "Skipping saved query" in caplog.text
+    assert str(bad) in caplog.text

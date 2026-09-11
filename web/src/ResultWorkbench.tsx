@@ -687,10 +687,10 @@ export default function ResultWorkbench() {
   };
 
   const openSaved = (name: string): void => {
-    const q = savedQueries.find((x) => x.name === name);
+    const q = savedQueries.find((x) => (x.queryId ?? x.name) === name);
     if (!q) return;
     const cur = useConnStore.getState().current;
-    const nv = q.sql || `-- ${name}`;
+    const nv = q.sql || `-- ${q.name}`;
     const item = groups.flatMap((group) => group.items).find((item) =>
       item.envs.some((env) => env.key === q.db)) ?? findItem(q.db);
     if (item && (cur?.db !== item.db || workspaceFor(item.db) !== activeTab?.workspace)) {
@@ -715,12 +715,12 @@ export default function ResultWorkbench() {
   // mid-flight re-point of the issuing tab must NOT drop the response — the
   // saved query itself decides the tab's new connection.
   const runSavedQuery = async (name: string, params: Record<string, string>): Promise<void> => {
-    const meta = savedQueries.find((x) => x.name === name);
+    const meta = savedQueries.find((x) => (x.queryId ?? x.name) === name);
     const cur = useConnStore.getState().current;
     const tabId = useTabsStore.getState().activeId;
     const ctx = startReq(tabId, { db: cur?.db ?? "", env: cur?.env ?? null });
     try {
-      const data = await runSaved(name, cur?.env ?? null, params, maxRows);
+      const data = await runSaved(meta?.name ?? name, cur?.env ?? null, params, maxRows, meta?.queryId);
       if (!isCurrentReq(ctx)) return;
       const state = useTabsStore.getState();
       const tab = state.tabs.find((tb) => tb.id === tabId);
@@ -1386,7 +1386,7 @@ export default function ResultWorkbench() {
         <ParamModal
           query={paramModal}
           onClose={() => setParamModal(null)}
-          onSubmit={(params) => void runSavedQuery(paramModal.name, params)}
+          onSubmit={(params) => void runSavedQuery(paramModal.queryId ?? paramModal.name, params)}
         />
       )}
       {connInfoOpen && current && (

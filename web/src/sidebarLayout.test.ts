@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConnItem, SavedQuery } from "./api";
-import { groupQueriesByDb, itemsInEngineOrder } from "./sidebarLayout";
+import { groupQueriesByDb, groupsWithQueries, itemsInEngineOrder } from "./sidebarLayout";
 
 function item(db: string, engine: string, keys: string[] = [db]): ConnItem {
   return {
@@ -88,4 +88,40 @@ describe("groupQueriesByDb", () => {
       expect(byDb.shop_dev).toEqual(["analytics-q"]);
     }
   });
+});
+
+
+describe("groupsWithQueries", () => {
+  it("uses file workspace even when @db belongs elsewhere, and retains query-only workspaces", () => {
+    const groups = [
+      { ws: "/one", group: "One", items: [item("db", "postgres")] },
+      { ws: "/two", group: "Two", items: [] },
+    ];
+    const result = groupsWithQueries(groups, [
+      { ...query("same", "db"), ws: "/one", queryId: "one" },
+      { ...query("same", "db"), ws: "/two", queryId: "two" },
+      { ...query("orphan", "gone"), ws: "/three", queryId: "three" },
+    ]);
+    expect(result.map((g) => [g.ws, g.queries.map((q) => q.queryId)])).toEqual([
+      ["/one", ["one"]], ["/two", ["two"]], ["/three", ["three"]],
+    ]);
+    expect(groups).not.toHaveProperty("0.queries");
+  });
+
+  it("assigns queries only once when multiple groups share a workspace", () => {
+    const result = groupsWithQueries([
+      { ws: "/one", group: "First", items: [] },
+      { ws: "/one", group: "Second", items: [item("db", "postgres", ["db_dev"])] },
+    ], [{ ...query("q", "db_dev"), ws: "/one" }, { ...query("unknown", "gone"), ws: "/one" }]);
+    expect(result.map((g) => g.queries.map((q) => q.name))).toEqual([["unknown"], ["q"]]);
+  });
+});
+
+
+it("places exact connection keys before colliding logical names across workspace groups", () => {
+  const result = groupsWithQueries([
+    { ws: "/one", group: "Logical", items: [item("db_dev", "redis", ["redis"])] },
+    { ws: "/one", group: "Exact", items: [item("db", "postgres", ["db_dev"])] },
+  ], [{ ...query("q", "db_dev"), ws: "/one" }]);
+  expect(result.map((g) => g.queries.length)).toEqual([0, 1]);
 });

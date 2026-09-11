@@ -54,6 +54,8 @@ export type SavedQueryParam = {
 };
 
 export type SavedQuery = {
+  ws?: string;
+  queryId?: string;
   name: string;
   db: string;
   desc: string | null;
@@ -232,8 +234,9 @@ export function runSaved(
   env: string | null,
   params: Record<string, string>,
   maxRows: number,
+  queryId?: string,
 ): Promise<QueryResult & { db: string; env: string | null }> {
-  return postJSON("/api/run", { name, env, params, maxRows });
+  return postJSON("/api/run", { name, env, params, maxRows, queryId });
 }
 
 export function fetchConnInfo(

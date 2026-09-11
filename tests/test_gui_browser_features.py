@@ -1084,7 +1084,7 @@ def test_saved_queries_group_by_logical_db(_pw_browser, tmp_path):
             assert shop.locator('.qname[data-q="session-west"]').count() == 1
             assert shop.locator('.qname[data-q="session-east"]').count() == 1
             assert shop.locator('.qname[data-q="all-cust"]').count() == 0
-            assert "queries" in page.locator('[data-gkey="__saved__"]').inner_text().lower()
+            assert all('queries' in title.lower() for title in page.locator('[data-saved-ws]').all_inner_texts())
             errors = [e for e in page._console_errors
                       if "Failed to load resource" not in e and "net::ERR_" not in e]
             assert not errors, f"console errors: {errors}"
@@ -3125,3 +3125,53 @@ def test_icon_hover_hints_cover_header_workbench_and_modals(page, lang):
     for button in page.locator(".wsdel").all():
         button.hover()
         assert button.get_attribute("title")
+
+
+def test_saved_queries_stay_in_owning_workspace(page_noparam):
+    page = page_noparam
+    tree = page.request.get(page.url.split('/app')[0] + '/api/connections').json()
+    item = next(i for g in tree['groups'] for i in g['items'] if i['db'] == 'testpg')
+    tree['groups'] = [dict(ws='/ws/one', group='One', items=[item]),
+                      dict(ws='/ws/two', group='Two', items=[])]
+    tree['workspaces'] = ['/ws/one', '/ws/two', '/ws/only-queries']
+    queries = [dict(name='same', db='testpg', ws=f'/ws/{ws}', queryId=ws,
+                    desc='', sql=f'SELECT {n}', params=[])
+               for n, ws in enumerate(['one', 'two', 'only-queries'], 1)]
+    # Exercise the modal path as well as direct execution with identical names.
+    queries[1]['params'] = [dict(name='x', type=None, required=False, default='1')]
+    page.route('**/api/connections', lambda r: r.fulfill(json=tree))
+    page.route('**/api/queries', lambda r: r.fulfill(json=queries))
+    runs = []
+    def run(route):
+        body = route.request.post_data_json
+        runs.append(body)
+        route.fulfill(json=dict(columns=[dict(name='value', type='int4')], rows=[[1]],
+                                sql='SELECT 1', db='testpg', env='test', elapsed_ms=1,
+                                truncated=False))
+    page.route('**/api/run', run)
+    page.reload(wait_until='networkidle')
+    one = page.locator('[data-saved-ws="/ws/one"]')
+    two = page.locator('[data-saved-ws="/ws/two"]')
+    only = page.locator('[data-saved-ws="/ws/only-queries"]')
+    one.wait_for()
+    assert only.is_visible()  # no connection group for this workspace
+    assert page.locator('#side > div > [data-saved-ws]').count() == 0
+    q1 = one.locator('xpath=..').locator('.qname')
+    q2 = two.locator('xpath=..').locator('.qname')
+    one.click()
+    assert q1.is_hidden() and q2.is_visible()
+    page.locator('[data-gkey="/ws/two::Two"]').click()
+    assert two.is_hidden() and q2.is_hidden()
+    page.reload(wait_until='networkidle')
+    one.wait_for()
+    assert q1.is_hidden() and two.is_hidden()
+    page.locator('[data-gkey="/ws/two::Two"]').click()
+    q2.click()
+    page.locator('.modal').wait_for()
+    page.locator('.modal input').first.press('Enter')
+    page.wait_for_function('document.querySelector("#grid table") !== null')
+    assert runs[-1]['queryId'] == 'two'
+    one.click()
+    with page.expect_response('**/api/run'):
+        q1.click()
+    assert runs[-1]['queryId'] == 'one'

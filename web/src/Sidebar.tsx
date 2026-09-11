@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
-import { groupKey, groupQueriesByDb, itemsInEngineOrder } from "./sidebarLayout";
+import { groupKey, groupQueriesByDb, groupsWithQueries, itemsInEngineOrder } from "./sidebarLayout";
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 
@@ -332,7 +332,7 @@ export default function Sidebar(props: SidebarProps) {
           <i className="ti ti-loader" /> {t("loading")}
         </div>
       )}
-      {groups.map((g) => {
+      {groupsWithQueries(groups, savedQueries).map((g) => {
         const gkey = groupKey(g.ws, g.group);
         const isCollapsed = collapsed.has(gkey);
         const orig = g.ws ? g.ws.split("/").slice(-2).join("/") : "";
@@ -384,55 +384,56 @@ export default function Sidebar(props: SidebarProps) {
                   </div>
                 );
               })}
+              {g.queries.length > 0 && (
+                <div className="vg-workspace-queries" style={{ paddingLeft: 12 }}>
+                  <div
+                    className="vg-grp grp"
+                    data-grp
+                    title={t(collapsed.has(`${gkey}::queries`) ? "expand" : "collapse")}
+                    data-gkey={`${gkey}::queries`} data-saved-ws={g.ws ?? ""}
+                    onClick={() => toggleCollapsedGroup(`${gkey}::queries`)}
+                  >
+                    <i
+                      className={`ti ${collapsed.has(`${gkey}::queries`) ? "ti-chevron-right" : "ti-chevron-down"}`}
+                    />{" "}
+                    {t("saved_queries")}
+                  </div>
+                  <div className="gbody" style={{ display: collapsed.has(`${gkey}::queries`) ? "none" : undefined }}>
+                    {groupQueriesByDb(
+                      g.queries,
+                      itemsInEngineOrder(g.items),
+                    ).map((section) => (
+                      <div key={section.db}>
+                        <div className="vg-qsrc" data-qsrc={section.db}>
+                          {section.db}
+                        </div>
+                        {section.queries.map((q) => (
+                          <div
+                            key={q.queryId ?? q.name}
+                            className="vg-tname qname"
+                            data-q={q.name}
+                            title={q.desc || q.name}
+                            onClick={() => onOpenSaved(q.queryId ?? q.name)}
+                          >
+                            <i className="ti ti-bookmark" />
+                            <span className="vg-qname-label">{q.name}</span>
+                            {q.params.length > 0 && (
+                              <span className="vg-rbadge rbadge">
+                                {q.params.length} {t("params_suffix")}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
       })}
-      {savedQueries.length > 0 && (
-        <div>
-          <div
-            className="vg-grp grp"
-            data-grp
-            title={t(collapsed.has("__saved__") ? "expand" : "collapse")}
-            data-gkey="__saved__"
-            onClick={() => toggleCollapsedGroup("__saved__")}
-          >
-            <i
-              className={`ti ${collapsed.has("__saved__") ? "ti-chevron-right" : "ti-chevron-down"}`}
-            />{" "}
-            {t("saved_queries")}
-          </div>
-          <div className="gbody" style={{ display: collapsed.has("__saved__") ? "none" : undefined }}>
-            {groupQueriesByDb(
-              savedQueries,
-              groups.flatMap((g) => itemsInEngineOrder(g.items)),
-            ).map((section) => (
-              <div key={section.db}>
-                <div className="vg-qsrc" data-qsrc={section.db}>
-                  {section.db}
-                </div>
-                {section.queries.map((q) => (
-                  <div
-                    key={q.name}
-                    className="vg-tname qname"
-                    data-q={q.name}
-                    title={q.desc || q.name}
-                    onClick={() => onOpenSaved(q.name)}
-                  >
-                    <i className="ti ti-bookmark" />
-                    <span className="vg-qname-label">{q.name}</span>
-                    {q.params.length > 0 && (
-                      <span className="vg-rbadge rbadge">
-                        {q.params.length} {t("params_suffix")}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+
     </aside>
   );
 }
