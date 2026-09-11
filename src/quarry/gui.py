@@ -578,7 +578,7 @@ def api_local_up(body: dict) -> dict:
             f"engine '{engine}' has no local-container support (postgres/redis only)")
     if not local.SAFE_DB_RE.match(db):
         raise QuarryError(f"'{db}' is not a valid local db name")
-    spec = local.SPECS[engine]
+    spec = local.configured_spec(engine)
     state = local.start_container(spec, image=local.stored_local_image(db))
     redis_db = local.source_redis_db(db) if engine == "redis" else None
     key, created = local.register_local_connection(

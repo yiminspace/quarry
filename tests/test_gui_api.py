@@ -534,7 +534,8 @@ def core_exit_sync_denied():
 
 
 @pytest.mark.unit
-def test_api_local_up_orchestration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("port", [5433, 55434])
+def test_api_local_up_orchestration(tmp_path, monkeypatch, port):
     """The GUI endpoint mirrors `qy local up <db>`: container started, local
     connection registered with the source's group. Container/docker behavior
     itself is covered by test_local_docker.py — here the seams are mocked."""
@@ -542,6 +543,8 @@ def test_api_local_up_orchestration(tmp_path, monkeypatch):
 
     from quarry import gui, local, workspace
 
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    workspace._write_table_scalar("local", "postgres_port", str(port))
     (tmp_path / "connections.toml").write_text(
         '[shop_dev]\nurl = "postgresql://dev-host/shop"\nengine = "postgres"\n'
         'env = "dev"\ndb = "shop"\ngroup = "acme"\n',
@@ -564,7 +567,7 @@ def test_api_local_up_orchestration(tmp_path, monkeypatch):
     finally:
         workspace.configure_workspace(None)
     assert out == {"key": "shop_local", "created": True, "engine": "postgres",
-                   "state": "created", "port": local.PG_SPEC.port,
+                   "state": "created", "port": port,
                    "synced_from": "dev"}      # fresh env auto-fills from the sibling
     assert calls == ["start", "ensure:shop", "sync:shop<-dev"]
     assert data["shop_local"]["env"] == "local" and data["shop_local"]["group"] == "acme"

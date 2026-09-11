@@ -539,6 +539,13 @@ def _execute(conn, sql, psql_vars, args) -> int:
             stats=stats,
         )
     except QuarryError as exc:
+        if exc.exit_code == EXIT_CONNECTION_ERROR:
+            try:
+                hint = local.connection_failure_hint(conn)
+            except (QuarryError, OSError, ValueError):
+                hint = None
+            if hint:
+                err(hint)
         err(str(exc), exit_code=exc.exit_code)
         return exc.exit_code
     finally:
@@ -775,6 +782,10 @@ def _format_query_file(q: Query) -> str:
 
 
 def cmd_save(args: argparse.Namespace) -> int:
+    for label, value in (("query name", args.name), ("database key", args.db)):
+        if (not value or value in (".", "..") or "/" in value or "\\" in value
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            err(f"{label} must be a single non-empty filename component", exit_code=EXIT_USAGE)
     if not args.sql and not args.file:
         err("must provide --sql or --file", exit_code=EXIT_USAGE)
     sql = (args.sql if args.sql else _read_sql_file(args.file)).strip()
@@ -1080,12 +1091,12 @@ def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local
                 exit_code=EXIT_USAGE)
         if engine_flag not in (None, "all") and engine_flag != eng:
             err(f"connection '{arg}' is engine {eng}, not {engine_flag}", exit_code=EXIT_USAGE)
-        spec = local.SPECS[eng]
+        spec = local.configured_spec(eng)
         group = match.group
     else:
         logical = arg
         eng = engine_flag if engine_flag not in (None, "all") else "postgres"
-        spec = local.SPECS[eng]
+        spec = local.configured_spec(eng)
         group = None
     if not local.SAFE_DB_RE.match(logical):
         err(f"'{logical}' is not a valid local db name (letters, digits, underscore; "
@@ -1097,7 +1108,10 @@ def cmd_local_up(args: argparse.Namespace) -> int:
     if args.key:
         logical, spec, group = _resolve_local_target(args.key, args.engine)
         image = None if spec.engine == "neptune" else args.image or local.stored_local_image(logical)
-        state = local.start_container(spec, image=image)
+        if getattr(args, "port", None) is not None:
+            spec, state = local.start_on_port(spec, args.port, image=image)
+        else:
+            state = local.start_container(spec, image=image)
         if spec.engine == "neptune":
             print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
         else:
@@ -1121,8 +1135,13 @@ def cmd_local_up(args: argparse.Namespace) -> int:
                 print(f"· next: `qy local sync {logical}` copies the schema from the remote env")
         return EXIT_OK
 
+    if getattr(args, "port", None) is not None and args.engine not in ("postgres", "redis"):
+        err("--port requires --engine postgres or redis (or a database key)", exit_code=EXIT_USAGE)
     for spec in local.specs_for(args.engine):
-        state = local.start_container(spec, image=args.image)
+        if getattr(args, "port", None) is not None:
+            spec, state = local.start_on_port(spec, args.port, image=args.image)
+        else:
+            state = local.start_container(spec, image=args.image)
         if spec.engine == "neptune":
             print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
         else:
@@ -1188,6 +1207,9 @@ def cmd_local_status(args: argparse.Namespace) -> int:
             continue
         if st["running"]:
             print(f"  ✓ {st['engine']:<9} running  port {st['port']}  image {st['image']}")
+        elif st.get("port_conflict"):
+            print(f"  ✗ {st['engine']:<9} not running; port {st['port']} is occupied by {st['port_owner']} — "
+                  f"run `qy local up --engine {st['engine']} --port <free-port>`")
         else:
             data_note = " (data volume present)" if st["volume_exists"] else ""
             print(f"  ✗ {st['engine']:<9} not running{data_note} — "
@@ -1232,7 +1254,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, Redis, Neptune)",
     )
     parser.add_argument("--workspace", default=None,
-                        help="Workspace dir (connections.toml + queries/); overrides $QUARRY_WORKSPACE")
+                        help="Workspace dir (connections.toml + queries/); overrides config.toml")
+    parser.add_argument("--skill-dir", default=None,
+                        help="Expose query links at <skill-dir>/queries/<workspace-name> before running")
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
 
     p_conn = sub.add_parser("connections", help="Manage DB connections (list/add/set/remove/test)")
@@ -1451,6 +1475,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Connection key / logical db to bring up + auto-register (env=local)")
     p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_lu.add_argument("--image", default=None, help="Override the container image tag")
+    p_lu.add_argument("--port", type=_positive_int, default=None,
+                      help="Persist a local Docker port; update managed connections in loaded workspaces")
     p_lu.set_defaults(func=cmd_local_up)
     p_ld = local_sub.add_parser(
         "down", help="Stop local container(s); --purge also deletes the data volume")
@@ -1492,6 +1518,11 @@ def main() -> int:
     workspace.configure_workspace(args.workspace)
     cache.load()
     try:
+        if args.skill_dir:
+            try:
+                workspace.ensure_skill_links(args.skill_dir)
+            except (OSError, ValueError, RuntimeError) as exc:
+                err(f"cannot create skill query links: {exc}", exit_code=EXIT_USAGE)
         return args.func(args)
     except QuarryError as exc:
         print(f"quarry: {exc}", file=sys.stderr)
