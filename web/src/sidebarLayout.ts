@@ -1,4 +1,4 @@
-import type { ConnItem, SavedQuery } from "./api";
+import type { ConnGroup, ConnItem, SavedQuery } from "./api";
 import { t } from "./i18n";
 
 export function groupKey(ws: string | null, group: string | null): string {
@@ -64,4 +64,27 @@ export function groupQueriesByDb(queries: SavedQuery[], items: ConnItem[]): Quer
     if (!seen.has(db)) ordered.push({ db, queries: list });
   }
   return ordered;
+}
+
+/** Keep file ownership independent of @db: a query may target a connection elsewhere. */
+export function groupsWithQueries(groups: ConnGroup[], queries: SavedQuery[]) {
+  const result = groups.map((g) => ({ ...g, queries: [] as SavedQuery[] }));
+  for (const query of queries) {
+    const owners = result.filter((g) => g.ws === query.ws);
+    let owner = owners.find((g) => g.items.some((item) =>
+      item.envs.some((env) => env.key === query.db))) ??
+      owners.find((g) => g.items.some((item) => item.db === query.db)) ?? owners[0];
+    if (!owner && !query.ws) {
+      // Compatibility with an older server that doesn't send workspace metadata.
+      owner = result.find((g) => g.items.some((item) =>
+        item.db === query.db || item.envs.some((env) => env.key === query.db))) ?? result[0];
+    }
+    if (!owner) {
+      owner = { ws: query.ws ?? null, group: query.ws?.split("/").pop() ?? null,
+        items: [], queries: [] };
+      result.push(owner);
+    }
+    owner.queries.push(query);
+  }
+  return result;
 }

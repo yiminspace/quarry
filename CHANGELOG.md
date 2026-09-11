@@ -9,6 +9,9 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- Saved queries appear inside their owning workspace in the sidebar, with independent
+  collapse state and distinct file identities for same-named queries.
+
 - Redis INFO output is accepted as text when redis-cli bypasses JSON formatting;
   malformed output from other commands remains an error.
 - Concurrent CLI calls can create the same skill query link without failing.

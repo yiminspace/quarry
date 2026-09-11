@@ -621,11 +621,23 @@ def api_health(db: str, env: str | None, fresh: bool = False, cached_only: bool 
     return core.cached_health(conn, db, env, fresh=fresh, cached_only=cached_only)
 
 
+def _saved_query_files():
+    # Keep workspace/file identity: names can legitimately repeat across workspaces.
+    for w in workspace.WS_LIST:
+        for path in sorted(w.queries_dir.glob("**/*.sql")):
+            query_id = json.dumps([_display_path(w.home), path.relative_to(w.queries_dir).as_posix()])
+            yield w, path, query_id
+
+
 def api_queries() -> list[dict]:
-    return [{"name": q.name, "db": q.db, "desc": q.desc, "sql": q.sql,
-             "params": [{"name": p.name, "type": p.type, "required": p.required, "default": p.default}
-                        for p in q.params]}
-            for q in core.list_all_queries()]
+    out = []
+    for w, path, query_id in _saved_query_files():
+        q = core.parse_query_file(path)
+        out.append({"name": q.name, "db": q.db, "desc": q.desc, "sql": q.sql,
+                    "ws": _display_path(w.home), "queryId": query_id,
+                    "params": [{"name": p.name, "type": p.type, "required": p.required,
+                                "default": p.default} for p in q.params]})
+    return out
 
 
 def _req(body: dict, field: str):
@@ -658,7 +670,15 @@ def api_query(body: dict) -> dict:
 
 
 def api_run(body: dict) -> dict:
-    q = core.load_query(_req(body, "name"))
+    if body.get("queryId") is not None:
+        # Resolve only files in currently loaded workspaces; never trust a client path.
+        path = next((path for _, path, query_id in _saved_query_files()
+                     if query_id == body["queryId"]), None)
+        if path is None:
+            raise QuarryError("saved query no longer exists in the loaded workspaces")
+        q = core.parse_query_file(path)
+    else:
+        q = core.load_query(_req(body, "name"))
     conn = _resolve(q.db, body.get("env"))
     params = core.resolve_params(q, body.get("params") or {})
     res = core.run_query(
