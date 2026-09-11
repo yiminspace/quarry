@@ -39,6 +39,49 @@ class Workspace:
     psql_bin: str
 
 
+def ensure_skill_links(skill_dir: str) -> None:
+    """Expose query directories at <skill>/queries/<workspace basename>.
+
+    Never link the workspace root (which contains credentials), replace user
+    files, or silently choose between workspaces with the same basename.
+    """
+    skill = Path(skill_dir).expanduser().resolve()
+    if not (skill / "SKILL.md").is_file():
+        raise ValueError(f"skill directory must contain SKILL.md: {skill}")
+    root = skill / "queries"
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ValueError(f"skill queries entry must be a real directory: {root}")
+    planned: dict[Path, Path] = {}
+    for ws in WS_LIST:
+        name = ws.home.name
+        if not name:
+            raise ValueError("cannot link a filesystem-root workspace; use a named directory")
+        link = root / name
+        target = ws.queries_dir.resolve()
+        if target == root or root in target.parents or target in root.parents:
+            raise ValueError(f"query directory would create a recursive skill link: {target}")
+        if link in planned and planned[link] != target:
+            raise ValueError(f"duplicate workspace name '{name}'; select one with --workspace")
+        if link.is_symlink():
+            if link.resolve() != target:
+                raise ValueError(f"skill link points elsewhere; move it before retrying: {link}")
+        elif link.exists() and not link.is_symlink():
+            raise ValueError(f"skill entry already exists; move it before retrying: {link}")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"query directory is not a directory: {target}")
+        planned[link] = target
+    # Validate all entries before creating any, so conflicts leave files intact.
+    root.mkdir(parents=True, exist_ok=True)
+    for link, target in planned.items():
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except FileExistsError:
+            # Another CLI may have created the same entry after preflight.
+            if not link.is_symlink() or link.resolve() != target:
+                raise ValueError(f"skill entry conflicts with query directory: {link}") from None
+
+
 def _config_path() -> Path:
     return Path(os.environ.get("QUARRY_CONFIG")
                 or (Path.home() / ".config" / "quarry" / "config.toml")).expanduser()
@@ -212,6 +255,11 @@ def _find_table_span(lines: list[str], table: str) -> tuple[int, int] | None:
 
 
 def _write_table_bool(table: str, key: str, enabled: bool) -> Path:
+    return _write_table_scalar(table, key, "true" if enabled else "false")
+
+
+def _write_table_scalar(table: str, key: str, val: str) -> Path:
+    """Write a pre-serialized TOML scalar while preserving unrelated config."""
     p = _config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
@@ -221,7 +269,6 @@ def _write_table_bool(table: str, key: str, enabled: bool) -> Path:
             "# Quarry 配置 —— qy 每次读这里决定加载哪些 workspace(与终端环境变量无关)。",
             "# 管理:qy workspace add|remove <dir> / qy workspace list ; qy proxy on|off",
         ]
-    val = "true" if enabled else "false"
     span = _find_table_span(lines, table)
     if span is None:
         if lines and lines[-1].strip() != "":

@@ -249,7 +249,60 @@ qy gui            # sidebar shows both groups side by side
 
 `--workspace a:b` (os.pathsep-separated) works as a temporary override; the first directory is primary for writes.
 
+### Agent skill and saved queries
+
+The portable skill is in [`skills/quarry`](skills/quarry/SKILL.md). Install that
+directory in your agent's skill location and use it with the `qy` CLI built
+from this version. No personal connections or queries ship with the skill.
+English is the default [`SKILL.md`](skills/quarry/SKILL.md); the equivalent
+[Simplified Chinese edition](skills/quarry/SKILL.zh-CN.md) is `SKILL.zh-CN.md`.
+To use Chinese as the installed entry point, copy that edition to `SKILL.md`
+in the installation directory. Install one edition, not two duplicate skills;
+maintain both editions together when changing the skill's behavior.
+
+```bash
+qy --skill-dir /path/to/installed/quarry list
+qy --skill-dir /path/to/installed/quarry --workspace ~/db/acme save customer-count \
+  --db customers --sql 'SELECT count(*) FROM customers'
+```
+
+`save` owns the file format and writes `<workspace>/queries/<db>/<name>.sql`.
+`--skill-dir` creates `<skill>/queries/<workspace-name>` as a symlink to that
+query directory before running the command. Credentials remain outside the
+link. Pass the option on each call to recreate missing links after updates;
+the CLI does not remember or guess skill installation paths. Existing files
+and links to other locations are never replaced. Duplicate workspace directory
+names require selecting one with `--workspace`. Linking errors stop the command
+with a usage error; query data is not removed. Keep generated `queries/` entries
+out of the published skill package.
+
+For legacy workspaces whose `queries/` points into a skill repository, first
+back up and move the query files into a real workspace `queries/` directory,
+then remove the old skill query entry before using `--skill-dir`. The CLI
+does not automatically move existing user data.
+
 ## Local dev containers
+
+If the default port is occupied, choose a free port explicitly:
+
+```bash
+qy local status --engine postgres
+qy local up --engine postgres --port 55434
+```
+
+The port is saved in `[local] postgres_port` (or `redis_port`) in Quarry's
+config.toml and used by CLI and GUI local setup. Only `env=local` connections
+with Quarry's named-volume metadata still pointing to the old loopback port
+are updated, across the loaded workspaces; other connections stay unchanged.
+Changed connection files are backed up beside the originals. Select/register
+all relevant workspaces when changing a shared engine's port.
+
+A port change requires stopping a running Quarry container first with
+`qy local down --engine postgres`. A stopped container is recreated with its
+existing image and named volume; custom data mounts require manual handling.
+Docker must be running. Query commands only diagnose failures, never launch
+Docker or stop conflicting services automatically.
+
 
 When a locally-running service shares a remote (dev) database, every read/write
 crosses the public network — and a test/e2e run that hammers the DB gets flaky

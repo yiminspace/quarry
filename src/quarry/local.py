@@ -22,10 +22,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import core
+from . import core, workspace
 from .core import EXIT_CONNECTION_ERROR, CONN_KEY_RE, QuarryError
 
 LOCAL_ENV = "local"
@@ -45,7 +45,7 @@ class EngineSpec:
     engine: str
     container: str
     volume: str
-    port: int          # host port (fixed convention)
+    port: int          # host port (configurable for Docker engines)
     internal_port: int
     default_image: str
 
@@ -77,8 +77,109 @@ SPECS: dict[str, EngineSpec] = {
 
 def specs_for(engine: str | None) -> list[EngineSpec]:
     if engine in (None, "all"):
-        return [PG_SPEC, REDIS_SPEC, NEPTUNE_SPEC]
-    return [SPECS[engine]]
+        return [configured_spec(name) for name in SPECS]
+    return [configured_spec(engine)]
+
+
+def configured_spec(engine: str) -> EngineSpec:
+    spec = SPECS[engine]
+    port = workspace._read_config().get("local", {}).get(f"{engine}_port", spec.port)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise QuarryError(f"invalid local {engine} port in config.toml", exit_code=core.EXIT_USAGE)
+    return replace(spec, port=port)
+
+
+def port_owner(port: int) -> str:
+    rc, out, _ = _run_docker(["ps", "--filter", f"publish={port}", "--format", "{{.Names}}"], timeout=10)
+    return ", ".join(out.split()) if rc == 0 and out.strip() else "another service"
+
+
+def _port_conflict_message(spec: EngineSpec) -> str:
+    return (f"port {spec.port} is already in use by {port_owner(spec.port)}; "
+            f"choose a free port with `qy local up --engine {spec.engine} --port <port>`. "
+            "The existing service has not been stopped.")
+
+
+def connection_failure_hint(conn: core.Connection) -> str | None:
+    """Read-only context for failed local connections; never auto-start Docker."""
+    from urllib.parse import urlsplit
+
+    url = urlsplit(conn.url)
+    engine = core.connection_engine(conn)
+    if (conn.env != LOCAL_ENV or engine not in ("postgres", "redis")
+            or url.hostname not in ("localhost", "127.0.0.1", "::1") or conn.ssh_host):
+        return None
+    spec = configured_spec(engine)
+    if url.port != spec.port:
+        return f"local connection uses port {url.port}; Quarry's managed {engine} port is {spec.port}. Check the connection target."
+    status = engine_status(spec)
+    if not status["docker"]:
+        return f"Docker is unavailable; start Docker, then run `qy local up --engine {engine}`."
+    if status.get("port_conflict"):
+        return _port_conflict_message(spec)
+    if not status["running"]:
+        return f"Quarry's local {engine} is not running; run `qy local up --engine {engine}`."
+    return f"Quarry's local {engine} is running; check the connection credentials and database name."
+
+
+def _sync_managed_ports(spec: EngineSpec, old_port: int) -> None:
+    """Update only registered Quarry-volume connections still on the old port."""
+    from urllib.parse import urlsplit
+
+    for ws in workspace.WS_LIST:
+        path = ws.connections_file
+        with core.connections_file_lock(path):
+            header, data = core._read_connections_file_parts(path)
+            changed = False
+            for fields in data.values():
+                if (fields.get("env") != LOCAL_ENV or fields.get("local_volume") != spec.volume
+                        or fields.get("ssh_host")):
+                    continue
+                url = urlsplit(str(fields.get("url", "")))
+                if (url.hostname not in ("localhost", "127.0.0.1", "::1") or url.port != old_port
+                        or core.infer_engine(str(fields.get("url", "")), fields.get("engine")) != spec.engine):
+                    continue
+                fields["url"] = url._replace(netloc=url.netloc.rsplit(":", 1)[0] + f":{spec.port}").geturl()
+                changed = True
+            if changed:
+                shutil.copy2(path, path.with_name(f"{path.name}.before-port-{time.time_ns()}"))
+                core._write_connections_file(header, data, path)
+
+
+def start_on_port(spec: EngineSpec, port: int, *, image: str | None = None) -> tuple[EngineSpec, str]:
+    """Explicit port change: preserve the named data volume; never stop services."""
+    if spec.engine not in ("postgres", "redis") or not 1 <= port <= 65535:
+        raise QuarryError("--port requires postgres/redis and a port from 1 to 65535", exit_code=core.EXIT_USAGE)
+    require_docker()
+    updated = replace(spec, port=port)
+    state = container_state(spec.container)
+    actual_port = spec.port
+    if state != "absent":
+        rc, out, _ = _run_docker(["inspect", spec.container], timeout=10)
+        if rc:
+            raise QuarryError("could not inspect local container before port change", exit_code=EXIT_CONNECTION_ERROR)
+        info = json.loads(out)[0]
+        bindings = info.get("HostConfig", {}).get("PortBindings", {}).get(f"{spec.internal_port}/tcp") or []
+        actual_port = int(bindings[0]["HostPort"]) if bindings else 0
+        if actual_port != port:
+            if state == "running":
+                raise QuarryError(f"stop the Quarry container first with `qy local down --engine {spec.engine}` "
+                                  "before changing its port", exit_code=EXIT_CONNECTION_ERROR)
+            if port_in_use(port):
+                raise QuarryError(_port_conflict_message(updated), exit_code=EXIT_CONNECTION_ERROR)
+            # Do not recreate a custom container whose data is stored elsewhere.
+            mounts = info.get("Mounts", [])
+            if not any(m.get("Name") == spec.volume for m in mounts):
+                raise QuarryError("container uses a custom data mount; change its port manually", exit_code=core.EXIT_USAGE)
+            image = image or info.get("Config", {}).get("Image")
+            rc, _, error = _run_docker(["rm", spec.container], timeout=30)
+            if rc:
+                raise QuarryError(f"could not recreate stopped container: {error.strip()}", exit_code=EXIT_CONNECTION_ERROR)
+    result = start_container(updated, image=image)
+    # Save only after startup succeeds. Persisted config is shared by all workspaces.
+    workspace._write_table_scalar("local", f"{spec.engine}_port", str(port))
+    _sync_managed_ports(updated, spec.port)
+    return updated, result
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +301,8 @@ def start_container(spec: EngineSpec, *, image: str | None = None) -> str:
         rc, _, e = _run_docker(["start", spec.container], timeout=30)
         if rc != 0:
             raise QuarryError(
-                f"failed to start container {spec.container}: {e.strip()}",
+                _port_conflict_message(spec) if _is_port_conflict(e, spec.port)
+                else f"failed to start container {spec.container}: {e.strip()}",
                 exit_code=EXIT_CONNECTION_ERROR,
             )
         return "started"
@@ -208,16 +310,14 @@ def start_container(spec: EngineSpec, *, image: str | None = None) -> str:
     # since an already-running quarry container legitimately holds the port).
     if port_in_use(spec.port):
         raise QuarryError(
-            f"port {spec.port} is already in use — free it or stop the "
-            f"conflicting service before `qy local up`",
+            _port_conflict_message(spec),
             exit_code=EXIT_CONNECTION_ERROR,
         )
     rc, _, e = _run_docker(_docker_run_args(spec, image or spec.default_image), timeout=180)
     if rc != 0:
         if _is_port_conflict(e, spec.port):
             raise QuarryError(
-                f"port {spec.port} is already in use — free it or stop the "
-                f"conflicting service before `qy local up`",
+                _port_conflict_message(spec),
                 exit_code=EXIT_CONNECTION_ERROR,
             )
         raise QuarryError(
@@ -318,9 +418,11 @@ def engine_status(spec: EngineSpec) -> dict:
                 "volume": spec.volume, "volume_exists": False}
     state = container_state(spec.container)
     image = container_image(spec.container) if state != "absent" else None
+    conflict = state != "running" and port_in_use(spec.port)
     return {"engine": spec.engine, "docker": True, "running": state == "running",
             "state": state, "port": spec.port, "image": image,
-            "volume": spec.volume, "volume_exists": volume_exists(spec.volume)}
+            "volume": spec.volume, "volume_exists": volume_exists(spec.volume),
+            "port_conflict": conflict, "port_owner": port_owner(spec.port) if conflict else None}
 
 
 # ---------------------------------------------------------------------------

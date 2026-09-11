@@ -7,7 +7,25 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+### Fixed
+
+- Redis INFO output is accepted as text when redis-cli bypasses JSON formatting;
+  malformed output from other commands remains an error.
+- Concurrent CLI calls can create the same skill query link without failing.
+- Local connection failures distinguish Docker availability and occupied ports.
+
 ### Added
+
+- `qy local up --engine postgres|redis --port PORT` persists a host port and
+  updates Quarry-managed connections in loaded workspaces. A stopped container
+  can be recreated on that port while retaining its named data volume; running
+  containers and unrelated services are never stopped automatically.
+
+- A portable Quarry agent skill and `--skill-dir` CLI option that exposes
+  workspace-owned saved queries under `skill/queries/<workspace-name>/`,
+  recreating missing links without replacing existing files or other links.
+- Query save rejects path separators and control characters in query names
+  and database keys to keep generated files within the selected query directory.
 
 - Query tabs are grouped by workspace, database and environment, with recent-tab
   restoration, synchronized table selection, horizontal scrolling, a searchable

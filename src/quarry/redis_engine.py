@@ -136,7 +136,12 @@ def run_redis(url: str, command: str, *, timeout: int = 30) -> tuple[list[dict[s
         value = json.loads(proc.stdout, parse_int=str, parse_float=str)
     except json.JSONDecodeError as exc:
         from .core import EXIT_SQL_ERROR, QuarryError
-        raise QuarryError("redis-cli returned invalid JSON (requires redis-cli 6+)", exit_code=EXIT_SQL_ERROR) from exc
+        # redis-cli forces raw text for INFO, even in --json mode.
+        if argv and argv[0].upper() == "INFO":
+            value = proc.stdout
+        else:
+            raise QuarryError("redis-cli returned invalid JSON for this command",
+                              exit_code=EXIT_SQL_ERROR) from exc
     values = value if isinstance(value, list) else [value]
     return [{"value": item} for item in values], len(proc.stdout.encode("utf-8"))
 

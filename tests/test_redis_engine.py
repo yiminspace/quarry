@@ -199,3 +199,19 @@ def test_inspect_key_missing(monkeypatch):
     monkeypatch.setattr(redis_engine, "run_redis", lambda url, cmd, **k: ([], 0))
     rows = redis_engine.inspect_key(URL, "gone")
     assert rows[0]["type"] == "none"
+
+
+def test_info_raw_text_is_preserved(monkeypatch):
+    raw = '# Server\r\nredis_version:8.6.1\r\n\r\n'
+    monkeypatch.setattr(redis_engine, 'resolve_redis_cli', lambda: 'redis-cli')
+    monkeypatch.setattr(redis_engine.subprocess, 'run', lambda *a, **k: _proc(stdout=raw))
+    rows, size = redis_engine.run_redis(URL, 'INFO server')
+    assert rows == [{'value': raw}]
+    assert size == len(raw.encode())
+
+
+def test_malformed_other_command_still_fails(monkeypatch):
+    monkeypatch.setattr(redis_engine, 'resolve_redis_cli', lambda: 'redis-cli')
+    monkeypatch.setattr(redis_engine.subprocess, 'run', lambda *a, **k: _proc(stdout='not JSON'))
+    with pytest.raises(QuarryError, match='invalid JSON for this command'):
+        redis_engine.run_redis(URL, 'GET k')

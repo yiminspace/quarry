@@ -429,7 +429,7 @@ def _toml_value(v: object) -> str:
 
 
 @contextlib.contextmanager
-def connections_file_lock():
+def connections_file_lock(path: Path | None = None):
     """Serialize read-modify-write access to connections.toml across processes.
 
     Best-effort: on platforms without `fcntl` (e.g. Windows) this is a no-op,
@@ -440,7 +440,8 @@ def connections_file_lock():
     except ImportError:  # pragma: no cover - non-POSIX platform
         yield
         return
-    lock_path = workspace.WS.connections_file.with_name(workspace.WS.connections_file.name + ".lock")
+    conn_file = path or workspace.WS.connections_file
+    lock_path = conn_file.with_name(conn_file.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a+") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
@@ -450,8 +451,8 @@ def connections_file_lock():
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def _read_connections_file_parts() -> tuple[list[str], dict[str, dict[str, object]]]:
-    conn_file = workspace.WS.connections_file
+def _read_connections_file_parts(path: Path | None = None) -> tuple[list[str], dict[str, dict[str, object]]]:
+    conn_file = path or workspace.WS.connections_file
     if not conn_file.exists():
         return ([], {})
     text = conn_file.read_text(encoding="utf-8")
@@ -483,7 +484,8 @@ def _read_connections_file_parts() -> tuple[list[str], dict[str, dict[str, objec
     return (header, data)
 
 
-def _write_connections_file(header: list[str], data: dict[str, dict[str, object]]) -> None:
+def _write_connections_file(header: list[str], data: dict[str, dict[str, object]],
+                            path: Path | None = None) -> None:
     parts: list[str] = []
     if header:
         parts.append("\n".join(header))
@@ -504,7 +506,7 @@ def _write_connections_file(header: list[str], data: dict[str, dict[str, object]
             parts.append(f"{fk} = {_toml_value(fv)}")
         parts.append("")
     text = "\n".join(parts).rstrip("\n") + "\n"
-    workspace.WS.connections_file.write_text(text, encoding="utf-8")
+    (path or workspace.WS.connections_file).write_text(text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
