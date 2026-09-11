@@ -632,7 +632,11 @@ def _saved_query_files():
 def api_queries() -> list[dict]:
     out = []
     for w, path, query_id in _saved_query_files():
-        q = core.parse_query_file(path)
+        try:
+            q = core.parse_query_file(path)
+        except (QuarryError, OSError, UnicodeError) as exc:
+            log.warning("Skipping saved query %s: %s", path, exc)
+            continue
         out.append({"name": q.name, "db": q.db, "desc": q.desc, "sql": q.sql,
                     "ws": _display_path(w.home), "queryId": query_id,
                     "params": [{"name": p.name, "type": p.type, "required": p.required,

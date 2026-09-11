@@ -828,3 +828,29 @@ def test_saved_query_file_identity_and_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(workspace, 'WS_LIST', workspaces[:1])
     with pytest.raises(QuarryError, match='no longer exists'):
         gui.api_run({'name': 'same', 'queryId': listed[1]['queryId']})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("broken", [
+    b"SELECT 1",  # a draft without metadata
+    b"-- @name: wrong-name\n-- @db: testpg\nSELECT 1",
+    b"\xff",  # incomplete/invalid encoding must not hide other workspaces
+])
+def test_query_listing_skips_malformed_files(monkeypatch, tmp_path, caplog, broken):
+    from quarry import gui, workspace
+    workspaces = []
+    for name in ("one", "two"):
+        home = tmp_path / name
+        queries = home / "queries"
+        queries.mkdir(parents=True)
+        (queries / "same.sql").write_text("-- @name: same\n-- @db: testpg\nSELECT 1")
+        workspaces.append(workspace.Workspace(home, home / "connections.toml", queries, "psql"))
+    bad = workspaces[0].queries_dir / "broken.sql"
+    bad.write_bytes(broken)
+    monkeypatch.setattr(workspace, "WS_LIST", workspaces)
+    listed = gui.api_queries()
+    assert len(listed) == 2
+    assert [q["ws"] for q in listed] == [str(w.home) for w in workspaces]
+    assert len({q["queryId"] for q in listed}) == 2
+    assert "Skipping saved query" in caplog.text
+    assert str(bad) in caplog.text
