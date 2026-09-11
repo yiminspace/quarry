@@ -93,6 +93,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.3.1 (2026-09-11)
+
+### Bug Fixes
+
+- **gui**: 按 workspace 展示保存查询并区分同名文件 ([#134](https://github.com/yiminspace/quarry/pull/134),
+  [`3d04e2f`](https://github.com/yiminspace/quarry/commit/3d04e2f62b57a4d67f0a9e5a4eba7121c82c577d))
+
+
 ## v1.3.0 (2026-09-11)
 
 ### Features
