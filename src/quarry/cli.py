@@ -996,6 +996,9 @@ def cmd_keepalive_status(args: argparse.Namespace) -> int:
     running = keeper.get("running")
     pid = keeper.get("pid")
     print(f"keeper: {'running' if running else 'down'}{f' (pid={pid})' if pid else ''}")
+    if data.get("state") == "blocked":
+        reason = data.get("lastError")
+        print(f"configuration: blocked{f'  error: {reason}' if reason else ''}")
     tunnels = data.get("tunnels") or []
     if not tunnels:
         print("tunnels: (none)")
@@ -1010,7 +1013,7 @@ def cmd_keepalive_status(args: argparse.Namespace) -> int:
         line = f"  {conn_label}{('@' + env) if env else ''}: {state}"
         if port:
             line += f"  local:{port}"
-        if last and state in {"down", "reconnecting"}:
+        if last and state in {"down", "reconnecting", "blocked"}:
             line += f"  error: {last}"
         print(line)
     return EXIT_OK

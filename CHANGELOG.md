@@ -19,6 +19,8 @@ pre-1.0 history followed the earlier development policy.
   honor disabled reconnection, and stop retrying permanent configuration failures
   until the relevant configuration changes. Workspace toggles no longer change
   other workspaces through the legacy global tunnel setting.
+- Text `qy status` reports the reason for blocked tunnels and keeper configuration
+  failures, including when no tunnels have been loaded yet.
 
 - Connection files are atomically replaced using unique private (0600) temporary
   files. PostgreSQL URL passwords are passed through a temporary private
