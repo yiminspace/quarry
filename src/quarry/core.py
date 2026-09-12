@@ -28,6 +28,7 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from . import cache
@@ -506,7 +507,23 @@ def _write_connections_file(header: list[str], data: dict[str, dict[str, object]
             parts.append(f"{fk} = {_toml_value(fv)}")
         parts.append("")
     text = "\n".join(parts).rstrip("\n") + "\n"
-    (path or workspace.WS.connections_file).write_text(text, encoding="utf-8")
+    conn_file = path or workspace.WS.connections_file
+    # Keep the existing sidecar lock protocol: replacing the data inode must
+    # not replace the lock inode. A unique sibling also permits atomic rename.
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=conn_file.parent,
+        prefix=f".{conn_file.name}.", suffix=".tmp", delete=False,
+    ) as tmp:
+        temp_path = Path(tmp.name)
+        try:
+            os.fchmod(tmp.fileno(), 0o600)
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            os.replace(temp_path, conn_file)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1052,6 +1069,12 @@ def _psql_args(url: str) -> list[str]:
             "-v", "ON_ERROR_STOP=1"]
 
 
+def _pg_uri_query(query: str) -> list[tuple[str, str]]:
+    # libpq URIs use percent encoding, not HTML form encoding: '+' is literal.
+    return [(unquote(key), unquote(value)) for part in query.split("&") if part
+            for key, _, value in [part.partition("=")]]
+
+
 def _pg_url_with_connect_timeout(url: str, connect_timeout: int) -> str:
     """Force libpq's connect_timeout to `connect_timeout`, overriding any value
     already present in the URL's query string. libpq's precedence is
@@ -1060,9 +1083,9 @@ def _pg_url_with_connect_timeout(url: str, connect_timeout: int) -> str:
     connections.toml) would silently ignore our env var and keep waiting on
     its own value — see issue #94 review r1-1."""
     parsed = urlparse(url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query = dict(_pg_uri_query(parsed.query))
     query["connect_timeout"] = str(connect_timeout)
-    return urlunparse(parsed._replace(query=urlencode(query)))
+    return urlunparse(parsed._replace(query=urlencode(query, quote_via=quote)))
 
 
 def run_psql_capture(
@@ -1085,18 +1108,62 @@ def run_psql_capture(
     don't pass connect_timeout keep their old undifferentiated behavior."""
     if connect_timeout is not None:
         url = _pg_url_with_connect_timeout(url, connect_timeout)
-    cmd = _psql_args(url)
-    for k, v in (psql_vars or {}).items():
-        cmd.extend(["-v", f"{k}={v}"])
-    cmd.extend(["-f", "-"])
-    env = None
-    if connect_timeout is not None:
-        env = {**os.environ, "PGCONNECT_TIMEOUT": str(connect_timeout)}
-    try:
-        proc = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=timeout, env=env)
-    except subprocess.TimeoutExpired:
-        return (-1, "", _with_timeout_hint(f"psql timed out after {timeout}s"))
-    return (proc.returncode, proc.stdout, proc.stderr)
+    with _pg_private_password(url) as (url, env):
+        cmd = _psql_args(url)
+        for k, v in (psql_vars or {}).items():
+            cmd.extend(["-v", f"{k}={v}"])
+        cmd.extend(["-f", "-"])
+        if connect_timeout is not None:
+            env = {**(os.environ if env is None else env),
+                   "PGCONNECT_TIMEOUT": str(connect_timeout)}
+        try:
+            proc = subprocess.run(cmd, input=sql, capture_output=True, text=True, timeout=timeout, env=env)
+        except subprocess.TimeoutExpired:
+            return (-1, "", _with_timeout_hint(f"psql timed out after {timeout}s"))
+        return (proc.returncode, proc.stdout, proc.stderr)
+
+
+@contextlib.contextmanager
+def _pg_private_password(url: str):
+    """Move a PostgreSQL URI password out of argv for one psql invocation."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"postgres", "postgresql"}:
+        yield url, None
+        return
+    password = unquote(parsed.password) if parsed.password is not None else None
+    query = _pg_uri_query(parsed.query)
+    for key, value in query:
+        if key == "password":
+            password = value  # libpq query parameters override URI userinfo.
+    if password is None:
+        yield url, None
+        return
+    if any(char in password for char in "\r\n\0"):
+        raise QuarryError("PostgreSQL URI password contains characters unsupported by PGPASSFILE",
+                          exit_code=EXIT_USAGE)
+    netloc = parsed.netloc
+    if parsed.password is not None:
+        userinfo, host = netloc.rsplit("@", 1)
+        netloc = userinfo.split(":", 1)[0] + "@" + host
+    query = [(key, value) for key, value in query if key != "password"]
+    # A URL passfile would override PGPASSFILE; the explicit password used to
+    # override both it and PGPASSWORD. Retain that precedence.
+    if password:
+        query = [(key, value) for key, value in query if key != "passfile"]
+    url = urlunparse(parsed._replace(netloc=netloc, query=urlencode(query, quote_via=quote)))
+    if not password:
+        yield url, None
+        return
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="quarry-pgpass-") as pgpass:
+        os.fchmod(pgpass.fileno(), 0o600)
+        escaped = password.replace("\\", "\\\\").replace(":", "\\:")
+        # Wildcards preserve multi-host/socket/query-override URI semantics;
+        # this file exists only for this invocation and contains one password.
+        pgpass.write(f"*:*:*:*:{escaped}\n")
+        pgpass.flush()
+        env = {**os.environ, "PGPASSFILE": pgpass.name}
+        env.pop("PGPASSWORD", None)
+        yield url, env
 
 
 def _pg_statement_timeout_prefix(execute_timeout: int) -> str:

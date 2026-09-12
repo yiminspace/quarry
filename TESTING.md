@@ -316,6 +316,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | Region | Missing capability | Decision |
 |--------|--------------------|----------|
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
+| header | per-tunnel permanent failure details (`blocked`) are available in CLI/API but not expanded in the keeper badge | badge reports daemon state; a running keeper does not prove database reachability |
 | sidebar | row-count / size hints next to tables | backlog (low) |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
@@ -330,6 +331,17 @@ grid DOM or synchronous result persistence.
 The Tabler icon webfont is vendored (self-hosted via `@tabler/icons-webfont`,
 bundled by Vite) — no CDN dependency; `test_gui_visual.py` asserts the font
 actually loads. This closed the long-open jsdelivr gap (#14).
+
+### Tunnel status contract audit (2026-09-12)
+
+- Existence: `web/src/api.ts` adds `blocked` to the existing keep-alive response
+  type (row 101). No new interaction bindings, endpoints, or localStorage keys.
+- Capability: the existing header still summarizes keeper process status and
+  reconnection activity; detailed per-tunnel failures remain a recorded gap above.
+  Proxy badges use verified matching tunnel facts (row 99).
+- Shared state: no state write sites change. ResultWorkbench polling and Header
+  start/stop responses still call `setKeepAlive`; Header is the status reader. The type-only change
+  introduces no result, selection, draft, or export state interaction.
 
 ## Adding tests
 
