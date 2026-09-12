@@ -16,7 +16,8 @@ pre-1.0 history followed the earlier development policy.
 
 - Saved queries reuse a read-only tab per file and environment, synchronize sidebar
   selection, and offer Copy as new query for editing. Existing execution and parameter
-  confirmation flows are retained.
+  confirmation flows are retained. History shortcuts restore SQL into an editable
+  tab even when invoked from a read-only query.
 - Sidebar queries appear below their tables, with Neptune label grouping, two-line
   titles and wrapped selected descriptions. Whole table rows expand queries and open
   table previews; query counts are hidden and Collapse all preserves the active editor

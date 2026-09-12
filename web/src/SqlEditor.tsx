@@ -241,6 +241,13 @@ export default function SqlEditor({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     const meta = e.metaKey || e.ctrlKey;
+    // History restores into an editable tab; it never edits the saved template.
+    if (meta && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      const next = navigateHistory(e.key === "ArrowUp" ? "up" : "down", value, db, env);
+      if (next !== null) onChange(next);
+      return;
+    }
     if (readOnly) {
       if (meta && e.key === "Enter") { e.preventDefault(); onRun(); }
       return;
@@ -273,17 +280,6 @@ export default function SqlEditor({
       e.preventDefault();
       onRun();
       return;
-    }
-    if (meta && e.key === "ArrowUp") {
-      e.preventDefault();
-      const next = navigateHistory("up", value, db, env);
-      if (next !== null) onChange(next);
-      return;
-    }
-    if (meta && e.key === "ArrowDown") {
-      e.preventDefault();
-      const next = navigateHistory("down", value, db, env);
-      if (next !== null) onChange(next);
     }
   };
 

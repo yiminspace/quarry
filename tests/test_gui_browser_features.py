@@ -103,6 +103,30 @@ def test_saved_query_waits_for_tables_before_anchoring(page_noparam):
     assert page.locator('.other-queries').count() == 0
 
 
+@pytest.mark.parametrize('direction', ['ArrowUp', 'ArrowDown'])
+def test_fixed_query_history_shortcuts_restore_editable_tab(page_noparam, direction):
+    page = page_noparam
+    _select_testpg(page)
+    history_sql = 'select 7 as previous_query'
+    draft_sql = 'select 88 as unfinished_draft'
+    _run_sql(page, history_sql)
+    if direction == 'ArrowDown':
+        _set_sql(page, draft_sql)
+        page.locator('#sql').press('ControlOrMeta+ArrowUp')
+        assert page.locator('#sql').input_value() == history_sql
+    page.locator('.query-index-children [data-q="all-cust"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    template = page.locator('#sql').input_value()
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    requests = []
+    page.on('request', lambda req: requests.append(req.url) if req.method == 'POST' else None)
+    page.locator('#sql').press('ControlOrMeta+' + direction)
+    assert page.locator('#sql').input_value() == (draft_sql if direction == 'ArrowDown' else history_sql)
+    assert page.locator('#sql').get_attribute('readonly') is None
+    assert page.evaluate('JSON.parse(localStorage.qy_tabs).find(tab => tab.savedQueryId).sql') == template
+    assert not requests
+
+
 def test_graph_query_discovery_rows(page_neptune):
     page = page_neptune
     queries = [

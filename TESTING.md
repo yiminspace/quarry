@@ -168,7 +168,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 20 | sidebar | global search includes cached Redis keys; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 21 | sidebar | All queries index inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database; initial paramless index selection runs, repeated selection restores the fixed tab; explicit Run retains parameter confirmation | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, F:test_param_modal_enter_submits_and_clickout_closes, sidebarLayout.test.ts | ✅ |
 | 22 | sidebar | saved-query param modal (required/default, Enter submits, click-out closes) | B:test_saved_query_param_modal…, F:test_param_modal_enter_submits_and_clickout_closes | ✅ |
-| 21a | sidebar/editor | no query counts; whole table rows expand children and open/reuse previews; indented All queries index; two-line titles and selected wrapped descriptions; saved queries reuse read-only tabs per file/environment, Copy as new query creates editable SQL; table-linked paramless queries do not auto-run; Collapse all shares the sticky sidebar search row and preserves active SQL/results; stable scrollbar gutters; Neptune label grouping; unassociated queries remain in All queries | F:test_table_query_disclosure_preserves_draft_and_does_not_execute, F:test_graph_query_discovery_rows, F:test_query_titles_expand_description_without_counts, tabsStore.test.ts, tablePreview.test.ts, V:test_query_sidebar_tokens, V:test_sidebar_compact_collapse_indent_and_stable_gutter, F:test_saved_query_waits_for_tables_before_anchoring | ✅ |
+| 21a | sidebar/editor | no query counts; whole table rows expand children and open/reuse previews; indented All queries index; two-line titles and selected wrapped descriptions; saved queries reuse read-only tabs per file/environment, Copy as new query creates editable SQL; table-linked paramless queries do not auto-run; Collapse all shares the sticky sidebar search row and preserves active SQL/results; stable scrollbar gutters; Neptune label grouping; unassociated queries remain in All queries | F:test_table_query_disclosure_preserves_draft_and_does_not_execute, F:test_fixed_query_history_shortcuts_restore_editable_tab, F:test_graph_query_discovery_rows, F:test_query_titles_expand_description_without_counts, tabsStore.test.ts, tablePreview.test.ts, V:test_query_sidebar_tokens, V:test_sidebar_compact_collapse_indent_and_stable_gutter, F:test_saved_query_waits_for_tables_before_anchoring | ✅ |
 | 23 | sidebar | sidebar width drag + persistence | F:test_sidebar_width_drag_persists | ✅ |
 | 24 | editor | SQL highlight overlay + scroll sync | F:test_sql_highlight_overlay (scroll sync unasserted) | 🟡 |
 | 25 | editor | placeholder states (no conn / sql / redis) | F:test_placeholder_states, F:test_redis_key_tree… (redis) | ✅ |
@@ -459,6 +459,14 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   checks mode, locale and credential-reveal hint changes. No CSS/color changes.
 
 ### Table query discovery audit
+
+- History follow-up (21a, history navigation): Cmd/Ctrl+Up/Down is handled before
+  the read-only edit guard. Existence: existing keyboard actions still call
+  navigateHistory; no new API or storage key. Capability: both recalled SQL and
+  a stashed handwritten draft remain recoverable from a fixed query tab.
+  Shared-state: onChange goes through ResultWorkbench.setSql, which creates an
+  editable tab before writing SQL; the saved template remains immutable. Browser
+  tests cover both directions, original template retention and no execution.
 
 - Loading follow-up (71): fetchTables has a 30-second AbortSignal deadline. Failed
   fresh requests restore the cached panel before showing an error; background
