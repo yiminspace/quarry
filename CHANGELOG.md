@@ -138,6 +138,17 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.4.0 (2026-09-12)
+
+### Features
+
+- **gui**: 改善查询导航并修复 Redis 列表加载 ([#136](https://github.com/yiminspace/quarry/pull/136),
+  [`3036c5b`](https://github.com/yiminspace/quarry/commit/3036c5b9d4f7fe67246deba792751a9facd83520))
+
+- **gui**: 统一侧栏搜索和查询导航，修复 Redis 列表加载 ([#136](https://github.com/yiminspace/quarry/pull/136),
+  [`3036c5b`](https://github.com/yiminspace/quarry/commit/3036c5b9d4f7fe67246deba792751a9facd83520))
+
+
 ## v1.3.2 (2026-09-12)
 
 ### Bug Fixes
