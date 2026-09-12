@@ -44,7 +44,7 @@
 .vg-tfilter:focus-within{border-color:var(--line2-c, var(--line2))}
 .vg-tfilter .ti{font-size:13px;color:var(--fg3);flex:none}
 .trow .tsearch{flex:1;width:auto;margin:0;min-width:0}
-.vg-trow .tsearch{
+.vg-trow .tsearch, .sidebar-searchbar .tsearch{
   background:transparent;
   border:0;
   border-radius:0;
@@ -52,7 +52,7 @@
   font-size:12px;
   box-shadow:none;
 }
-.vg-trow .tsearch:focus{outline:none}
+.vg-trow .tsearch:focus, .sidebar-searchbar .tsearch:focus{outline:none}
 .vg-trow .treload{flex:none}
 .dbrow.down{opacity:.5}
 .dbrow.down:hover{opacity:.85}
@@ -171,3 +171,46 @@
 .vg-toolbar.toolbar{padding:8px 14px;gap:8px;flex-wrap:wrap}
 .vg-toolbar.toolbar .vg-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;font-size:12px;line-height:20px;border-radius:6px}
 .vg-toolbar.toolbar .vg-btn .ti{font-size:15px}
+/* Saved-query disclosure is independent from table preview. */
+.table-query-group { display: block; }
+.table-query-group > .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.query-disclosure { display: contents; }
+.query-children { grid-column: 1 / -1; padding-left: 24px; min-width: 0; }
+.query-children .qname { width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.other-queries { padding: 8px 12px; color: var(--fg3); font-size: 12px; }
+
+#side .dbrow { display: grid; grid-template-columns: 8px minmax(0, 1fr) 64px; gap: 8px; align-items: center; }
+.db-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#side .dbrow .vg-engine-tag { margin-left: 0; text-align: right; }
+#side .dbrow .treload { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; padding: 2px; opacity: 0; pointer-events: none; }
+#side .dbrow:hover .treload, #side .dbrow:focus-within .treload { opacity: 1; pointer-events: auto; }
+#side .dbrow:has(.treload):hover .vg-engine-tag, #side .dbrow:has(.treload):focus-within .vg-engine-tag { opacity: 0; }
+@media (hover: none) {
+  #side .dbrow .treload { opacity: 1; pointer-events: auto; }
+  #side .dbrow:has(.treload) .vg-engine-tag { opacity: 0; }
+}
+.query-index-heading { display: flex; gap: 8px; align-items: center; padding: 9px 12px 9px 24px; font-size: 12px; color: var(--fg3); cursor: pointer; }
+#side .query-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 32px; padding: 7px 12px; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 12px; text-align: left; cursor: pointer; white-space: normal; }
+#side .query-item:hover, #side .query-item.selected { background: var(--bg2); }
+.query-copy { flex: 1; min-width: 0; }
+.query-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.5; }
+.query-description { display: block; margin-top: 4px; color: var(--fg3); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.query-item > .ti { margin-top: 3px; color: var(--fg3); }
+.query-item:focus-visible, .other-query-heading:focus-visible, [data-t]:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+#side { scrollbar-gutter: stable; }
+#tbl-panel, #grid, .wslist, .tab-menu-items { scrollbar-gutter: stable; }
+.qhead .collapse-all { flex: none; }
+.sidebar-searchbar { position: sticky; top: -7px; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 7px 8px; background: var(--surf-1); }
+.sidebar-searchbar .vg-tfilter { flex: 1; min-width: 0; }
+.sidebar-searchbar input { width: 100%; min-width: 0; }
+.sidebar-searchbar .collapse-all { flex: none; }
+.search-scope { padding: 6px 12px; font-size: 11px; color: var(--fg3); }
+.search-db, .search-object { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; color: var(--fg); text-align: left; cursor: pointer; font: inherit; font-size: 12px; padding: 7px 16px; overflow-wrap: anywhere; }
+.search-object { padding-left: 28px; }
+.search-object small { margin-left: auto; color: var(--fg3); }
+.search-db:hover, .search-object:hover { background: var(--bg2); }
+#side .sidebar-search-results .query-item { padding-left: 28px; }
+.edwrap textarea[readonly] { cursor: not-allowed; }
+#side .query-index-children { padding-left: 24px; }
+#side .query-index-children .query-item { padding-left: 24px; }
+.other-query-heading { display: block; width: 100%; border: 0; background: transparent; color: var(--fg3); font: inherit; padding: 6px 0; text-align: left; cursor: pointer; }

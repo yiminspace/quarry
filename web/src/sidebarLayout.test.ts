@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ConnItem, SavedQuery } from "./api";
-import { groupQueriesByDb, groupsWithQueries, itemsInEngineOrder } from "./sidebarLayout";
+import { groupQueriesByDb, groupsWithQueries, itemsInEngineOrder, queryObjects } from "./sidebarLayout";
+
+it("associates joins and graph labels without matching comments or string values", () => {
+  expect(queryObjects("SELECT 'from fake' FROM customers JOIN orders ON true -- join hidden", "postgres")).toEqual(["customers", "orders"]);
+  expect(queryObjects('SELECT * FROM "public"."customers"', "postgres")).toEqual(["public.customers"]);
+  expect(queryObjects("MATCH (n:MindNode {id: 'x'}) OPTIONAL MATCH (n)-[r]->(a:Artifact) RETURN n", "neptune")).toEqual(["Artifact", "MindNode"]);
+  expect(queryObjects("MATCH (n) RETURN labels(n)", "neptune")).toEqual([]);
+});
 
 function item(db: string, engine: string, keys: string[] = [db]): ConnItem {
   return {

@@ -7,7 +7,35 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+### Added
+
+- Sidebar-wide search covers configured databases, saved query names/descriptions,
+  and cached tables/Redis keys across environments without connecting on input.
+  A sticky search bar shares its row with Collapse all; clearing search restores
+  the previous tree, and Collapse all clears search while preserving SQL/results.
+
+- Saved queries reuse a read-only tab per file and environment, synchronize sidebar
+  selection, and offer Copy as new query for editing. Existing execution and parameter
+  confirmation flows are retained. History shortcuts restore SQL into an editable
+  tab even when invoked from a read-only query.
+- Sidebar queries appear below their tables, with Neptune label grouping, two-line
+  titles and wrapped selected descriptions. Whole table rows expand queries and open
+  table previews; query counts are hidden and Collapse all preserves the active editor
+  and result. A quieter All queries index keeps unassociated queries discoverable.
+
 ### Fixed
+
+- Redis key metadata is fetched in one bounded read-only batch instead of hundreds
+  of serial TYPE/TTL calls. Table/key requests time out after 30 seconds; failed
+  refreshes restore cached lists and show an error instead of spinning indefinitely.
+
+- List refresh now appears on the active database row on hover or keyboard focus;
+  removed its empty toolbar row. Refresh keeps the active connection, SQL and panel.
+
+- All queries children have nested indentation, and sidebar/result scrollbars
+  reserve space before overflow.
+- Removed the duplicate Other queries section; saved-query table selection waits
+  for schema loading. Read-only editors show a prohibited cursor and editing guidance.
 
 - SSH direct mode ignores inherited SSH proxy/jump settings. Tunnel registry
   updates are serialized across processes and shared forwards are checked against

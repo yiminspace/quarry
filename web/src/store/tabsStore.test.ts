@@ -101,6 +101,28 @@ describe("tabTitle", () => {
   });
 });
 
+describe("fixed saved query tabs", () => {
+  it("reuses file identity per environment and protects its SQL at every update entry", () => {
+    localStorage.clear();
+    useTabsStore.setState({ tabs: [tab({ id: 'draft', sql: 'select draft' })], activeId: 'draft', results: {}, emptyGroups: [] });
+    const s = useTabsStore.getState();
+    const query = { name: 'same-name', queryId: 'file-a', db: 'shop', desc: '', sql: 'select 1', params: [] };
+    expect(s.openSavedTab(query, 'shop', 'dev')).toBe(true);
+    const fixedId = useTabsStore.getState().activeId;
+    s.updateTab(fixedId, { sql: 'select overwritten' });
+    s.updateActiveTab({ sql: 'select overwritten again' });
+    expect(useTabsStore.getState().tabs.find(t => t.id === fixedId)?.sql).toBe('select 1');
+    s.switchTab('draft');
+    expect(s.openSavedTab(query, 'shop', 'dev')).toBe(false);
+    expect(useTabsStore.getState().activeId).toBe(fixedId);
+    expect(s.openSavedTab(query, 'shop', 'prod')).toBe(true);
+    expect(s.openSavedTab({ ...query, queryId: 'file-b' }, 'shop', 'dev')).toBe(true);
+    expect(useTabsStore.getState().tabs).toHaveLength(4);
+    expect(JSON.parse(localStorage.getItem('qy_tabs')!)[1].savedQueryId).toBe('file-a');
+    expect(useTabsStore.getState().tabs[0].sql).toBe('select draft');
+  });
+});
+
 describe("bounded result persistence", () => {
   beforeEach(() => {
     localStorage.clear();

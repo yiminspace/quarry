@@ -160,14 +160,15 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
 | 13 | sidebar | explicit env switch restores destination SQL or copies source SQL into an empty editor, then executes only if no saved result exists; returning restores SQL and result without a request; production retains SQL without executing; closed groups remain closed | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
 | 14 | sidebar | row click selects + opens table panel; re-click toggles panel | F:test_reclick_connection_toggles_panel | ✅ |
-| 15 | sidebar | table filter box (inline search + refresh); filter survives the SWR repaint | F:test_table_filter_box (repaint-survival unasserted), test_gui_visual:test_table_filter_uses_surface_tokens | 🟡 |
+| 15 | sidebar | sticky global search + Collapse all; searches all database names and query names/descriptions plus cached tables/keys; no fetch on typing; empty state, Escape restoration, cross-connection result navigation and draft preservation | F:test_sidebar_search_is_global_restores_tree_and_does_not_fetch, F:test_table_filter_box, V:test_table_filter_uses_surface_tokens | ✅ |
 | 16 | sidebar | table panel connection-error state / `no tables` empty state | F:test_dead_connection_click_shows_error_panel (error only) | 🟡 |
 | 17 | sidebar | TCACHE instant paint + SWR background refresh | F:test_swr_refreshes_stale_table_list | ✅ |
 | 18 | sidebar | redis key tree: `:` hierarchy, fold, count badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 19 | sidebar | redis type + TTL badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
-| 20 | sidebar | redis key filter; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
-| 21 | sidebar | query list titled `queries` inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database (env siblings share a group; an exact connection key beats another item's logical `db`); param badge, desc tooltip; paramless runs on click; long names ellipsize | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, sidebarLayout.test.ts | ✅ |
+| 20 | sidebar | global search includes cached Redis keys; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
+| 21 | sidebar | All queries index inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database; initial paramless index selection runs, repeated selection restores the fixed tab; explicit Run retains parameter confirmation | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, F:test_param_modal_enter_submits_and_clickout_closes, sidebarLayout.test.ts | ✅ |
 | 22 | sidebar | saved-query param modal (required/default, Enter submits, click-out closes) | B:test_saved_query_param_modal…, F:test_param_modal_enter_submits_and_clickout_closes | ✅ |
+| 21a | sidebar/editor | no query counts; whole table rows expand children and open/reuse previews; indented All queries index; two-line titles and selected wrapped descriptions; saved queries reuse read-only tabs per file/environment, Copy as new query creates editable SQL; table-linked paramless queries do not auto-run; Collapse all shares the sticky sidebar search row and preserves active SQL/results; stable scrollbar gutters; Neptune label grouping; unassociated queries remain in All queries | F:test_table_query_disclosure_preserves_draft_and_does_not_execute, F:test_fixed_query_history_shortcuts_restore_editable_tab, F:test_graph_query_discovery_rows, F:test_query_titles_expand_description_without_counts, tabsStore.test.ts, tablePreview.test.ts, V:test_query_sidebar_tokens, V:test_sidebar_compact_collapse_indent_and_stable_gutter, F:test_saved_query_waits_for_tables_before_anchoring | ✅ |
 | 23 | sidebar | sidebar width drag + persistence | F:test_sidebar_width_drag_persists | ✅ |
 | 24 | editor | SQL highlight overlay + scroll sync | F:test_sql_highlight_overlay (scroll sync unasserted) | 🟡 |
 | 25 | editor | placeholder states (no conn / sql / redis) | F:test_placeholder_states, F:test_redis_key_tree… (redis) | ✅ |
@@ -216,7 +217,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 68 | tabs | closing a tab pushes its SQL to History (active + inactive close) | F:test_close_tab_preserves_sql_in_history | ✅ |
 | 69 | tabs | tab with a vanished connection unbinds (never silently rebinds) | F:test_stale_tab_connection_unbinds_not_rebinds | ✅ |
 | 70 | sidebar | current-table highlight follows exact table previews on tab/connection changes and reload; edited/custom SQL clears it | F:test_table_click_highlights_current_table, F:test_tab_preview_selection_restores_and_preserves_edited_sql | ✅ |
-| 71 | sidebar | manual list refresh button (tables + redis keys); filter survives refresh | F:test_table_list_manual_refresh (redis button + filter-survival unasserted) | 🟡 |
+| 71 | sidebar | list refresh on active database row, shown on hover/focus without layout shift; no standalone toolbar row; click preserves SQL, connection and open panel; 30s timeout ends loading, failed refresh restores cached lists | F:test_table_list_timeout_ends_spinner, F:test_failed_refresh_keeps_cached_tables_and_stops_loading, F:test_table_list_manual_refresh, V:test_database_refresh_reveals_without_layout_shift (Redis fetch path shared; Redis refresh unasserted) | 🟡 |
 | 72 | sidebar | table list cap notice at 5000 | backend: test_api_tables_capped_flag_at_5000 (UI note unasserted) | 🟡 |
 | 73 | sidebar | Alt+click inserts generated SQL without running | F:test_alt_click_inserts_without_running | ✅ |
 | 74 | tabs | per-tab result persistence: every bounded tab result survives a reload (`qy_tabres`), each restored under its own connection; unchanged results are not reserialized on SQL input/tab switches | F:test_per_tab_results_persist_across_reload; tabsStore.test.ts | ✅ |
@@ -255,7 +256,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit non-production environment switches execute SQL; configured production shows the no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
-| 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; filter clears, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
+| 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; Escape clears global search, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
 | 110 | tabs | no automatic tab-count cap; single-row horizontal scroll with minimum width, active-tab reveal, fixed add/list controls; searchable list, no-match state, outside/Escape dismissal, Arrow/Home/End navigation | F:test_tab_overflow_search_keyboard_and_scoped_bulk_close; test_gui_visual:test_tab_menu_uses_surface_tokens_and_fixed_controls | ✅ |
 | 111 | tabs | active close selects same-group MRU; last close leaves a zero-tab empty workbench; close all/others/right stays in group and saves every closed draft in History | F:test_tab_close_uses_mru_and_keeps_last_close_in_same_group, F:test_tab_overflow_search_keyboard_and_scoped_bulk_close, F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_closed_query_response_cannot_resurrect_tab | ✅ |
 
@@ -318,6 +319,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
 | header | per-tunnel permanent failure details (`blocked`) are available in CLI/API but not expanded in the keeper badge | badge reports daemon state; a running keeper does not prove database reachability |
 | sidebar | row-count / size hints next to tables | backlog (low) |
+| sidebar | complete SQL/Cypher parsing and live Neptune schema navigation | query associations are hints from saved query text; complex/ambiguous references may remain under Other; labels shown here are not a complete live inventory |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
 
@@ -455,6 +457,101 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   changed. A header-scoped observer mirrors Voyage aria-label changes to title;
   its only DOM write is title, and it disconnects on unmount. Browser coverage
   checks mode, locale and credential-reveal hint changes. No CSS/color changes.
+
+### Table query discovery audit
+
+- History follow-up (21a, history navigation): Cmd/Ctrl+Up/Down is handled before
+  the read-only edit guard. Existence: existing keyboard actions still call
+  navigateHistory; no new API or storage key. Capability: both recalled SQL and
+  a stashed handwritten draft remain recoverable from a fixed query tab.
+  Shared-state: onChange goes through ResultWorkbench.setSql, which creates an
+  editable tab before writing SQL; the saved template remains immutable. Browser
+  tests cover both directions, original template retention and no execution.
+
+- Loading follow-up (71): fetchTables has a 30-second AbortSignal deadline. Failed
+  fresh requests restore the cached panel before showing an error; background
+  refreshes now check both connection key and request sequence. Existence: same
+  endpoint, new timeout/error paths tested by test_table_list_timeout_ends_spinner
+  and test_failed_refresh_keeps_cached_tables_and_stops_loading. Capability: errors
+  end the spinner and cached tables remain usable. Shared-state: panel, tcache and
+  health readers audited; late responses cannot repaint a newer same-db request.
+  Redis metadata now uses one bounded internal TYPE/TTL script; arbitrary EVAL
+  remains blocked. Redis engine tests cover result mapping, ACL fallback and key
+  escaping; browser Redis type/TTL and capped-list tests cover the GUI contract.
+
+- Inline-refresh follow-up (71): the same refresh binding moved from TablePanel
+  into the active database row. Click propagation is stopped before connection
+  selection; hover/focus swaps engine label for the icon within the existing row
+  width, with an always-visible control on devices without hover. Existence: no
+  new endpoint/key; onRefresh still refreshes the current db/env table/key cache.
+  Capability: keyboard focus exposes the button, and no extra row or width shift
+  is introduced. Shared-state: existing loadTables updates panel/tcache/health;
+  regression verifies refresh preserves editor SQL, active connection and panel
+  visibility, while theme tests pin hover/focus layout and token styling.
+
+- Global-search follow-up (rows 15, 18, 20, 21a, 109): top sticky input and collapse
+  button replace the in-database input. Search is component-local and reads all
+  connection groups, saved query metadata and tcache for each known environment;
+  it does not fetch remote schema or execute SQL. Scope is visible in results.
+  Existence: input/Escape, result database/object/query clicks and Collapse all map
+  to row 15. No new endpoint or persistence key. Capability: results keep workspace,
+  database and environment context; unloaded objects are explicitly outside scope.
+  Shared-state: normal tree remains mounted while search results are shown, preserving
+  local expansion state. Typing only writes search; clear/Escape restores the tree.
+  Collapse clears search and uses existing collapseToken/collapsedGroups/panelOpen
+  writes. Explicit object clicks select the correct connection/environment before
+  existing preview/key handlers run; saved queries use their immutable identity.
+  Browser coverage checks no requests on typing, cached results across connections,
+  query descriptions, no-match state, expansion restoration, and draft-safe navigation.
+
+- Selection follow-up: removed duplicate Other queries UI and its expansion writes.
+  Table reveal waits for successful list loading and recognizes unqualified public
+  table names. Delayed schema browser coverage proves the selected saved query
+  expands under its actual table. Existence: Collapse all moved to ResultWorkbench;
+  its counter feeds Sidebar/TablePanel, and existing collapsedGroups writes remain
+  unchanged. Capability: unassociated queries stay accessible via All queries;
+  read-only textarea has a prohibited cursor and a localized copy-to-edit hint.
+  Shared-state: activeId/savedQueryId readers drive selection after asynchronous
+  panel updates; collapse changes visibility only. Editor readOnly and SQL guards
+  remain unchanged and are covered together with cursor/title in row 21a.
+
+- Compact-layout follow-up (row 21a): Collapse all is in the workbench toolbar, outside workspace headings. All queries database
+  labels and query items use successive indentation. Stable scrollbar gutters
+  prevent overflow from changing sidebar row width. Covered by
+  `V:test_sidebar_compact_collapse_indent_and_stable_gutter`; existing collapse
+  interaction coverage still proves editor/result preservation. Existence: no
+  new binding, key or endpoint. Capability: header space and tree hierarchy fixed.
+  Shared-state: only control placement and CSS changed; all collapse writes/readers
+  remain as documented below.
+
+- Existence: full table rows and keyboard Enter/Space expand children and open
+  previews (21a); All queries retains its full-row toggle (21). Collapse all uses
+  existing workspace collapse persistence plus local table expansion state. Copy
+  as new query adds an editable tab. No new API or localStorage key; `qy_tabs`
+  persists `savedQueryId` alongside SQL. Two-line titles and selected full
+  descriptions are covered by `F:test_query_titles_expand_description_without_counts`.
+- Capability: query counts and inner disclosure arrows are removed. Query titles
+  remain readable, joined queries may appear under multiple tables, and unmatched queries remain in All queries.
+  Neptune labels are inferred from saved queries, not a complete live schema.
+  SQL association is a navigation heuristic, not a full SQL parser; comma joins,
+  dynamic SQL and ambiguous identifiers remain a design gap. Header, toolbar,
+  result grid and export capabilities are unchanged.
+- Shared-state: `openSavedTab` creates immutable template SQL and reuses file +
+  connection + environment identity. `updateTab` guards SQL for fixed tabs and is
+  also the sink for `updateActiveTab`: editor input, formatting, table/key insertion,
+  history recall, focus restore and saved-run response cannot overwrite templates.
+  `setSql` routes intentional replacement of a fixed template to a new draft;
+  Copy as new query uses addTab/updateActiveTab. Persisted tabs restore identity.
+  Readers include editor readOnly/Format, Run parameter lookup, preview matching,
+  sidebar selection and description expansion. Selecting a tab reveals its query;
+  selecting the query reuses its tab without execution. Collapse all changes only
+  visibility. Result writes still use per-tab request guards, and production never
+  auto-runs previews. Browser interaction tests cover draft retention, immutable
+  reuse, copy, selection and collapse together; store tests cover both update entry
+  points and file/environment isolation. Parameter modal behavior is separately pinned.
+  `F:test_fixed_query_uses_explicit_environment_without_production_autorun`
+  checks that a saved file pinned to a concrete connection key reuses that
+  environment and does not auto-run when it is marked production.
 
 ### Workspace query sidebar audit
 

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { findPreviewTab, focusRestorePlan, previewSql, quoteIdent, tableClickPlan } from "./tablePreview";
 
 describe("previewSql", () => {
+  it("previews Neptune labels with escaped identifiers", () => {
+    expect(previewSql('Mind`Node', 'neptune')).toBe('MATCH (n:`Mind``Node`) RETURN n LIMIT 25');
+  });
   it("emits select-star with no LIMIT", () => {
     expect(previewSql("customers", "postgres")).toBe("select * from customers");
     expect(previewSql("qy_gui_schema.events", "postgres")).toBe("select * from qy_gui_schema.events");
@@ -25,6 +28,10 @@ describe("tableClickPlan", () => {
       tabId: "t2",
     });
     expect(findPreviewTab(tabs, "shop", "dev", "customers", "postgres")?.id).toBe("t2");
+  });
+
+  it("does not reuse a fixed saved query as an editable table preview", () => {
+    expect(findPreviewTab([{ ...tabs[1], savedQueryId: 'fixed' }], 'shop', 'dev', 'customers', 'postgres')).toBeUndefined();
   });
 
   it("reuses the empty active tab", () => {

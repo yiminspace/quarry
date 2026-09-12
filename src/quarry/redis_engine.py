@@ -193,21 +193,24 @@ def scan_keys(url: str, *, pattern: str = "*", count: int = 500) -> list[str]:
 
 
 def keys_with_meta(url: str, *, pattern: str = "*", cap: int = 400) -> list[dict[str, Any]]:
-    """Return [{key, type, ttl}] for up to `cap` keys (TYPE+TTL per key).
+    """Read bounded key metadata in one round trip, rather than 2N processes.
 
-    Cheap for small keyspaces; capped so a huge DB can't stall the UI.
+    This internal, fixed script only calls TYPE and TTL. Keys are passed as
+    arguments, never interpolated into Lua; user-supplied EVAL remains blocked.
     """
     keys = scan_keys(url, pattern=pattern, count=cap)
-    out: list[dict[str, Any]] = []
-    for k in keys:
-        try:
-            t, _ = run_redis(url, f"TYPE {shlex.quote(k)}", timeout=10)
-            ttl, _ = run_redis(url, f"TTL {shlex.quote(k)}", timeout=10)
-            out.append({"key": k, "type": t[0]["value"] if t else "?",
-                        "ttl": int(ttl[0]["value"]) if ttl else -1})
-        except Exception:
-            out.append({"key": k, "type": "?", "ttl": -1})
-    return out
+    if not keys:
+        return []
+    script = "local r = {}; for i,k in ipairs(KEYS) do r[i] = {redis.call('TYPE', k).ok, redis.call('TTL', k)} end; return r"
+    try:
+        rows, _ = run_redis(url, shlex.join(['EVAL', script, str(len(keys)), *keys]), timeout=10)
+        if len(rows) != len(keys):
+            raise ValueError('incomplete metadata response')
+        return [{"key": key, "type": row['value'][0], "ttl": int(row['value'][1])}
+                for key, row in zip(keys, rows)]
+    except Exception:
+        # ACLs may disallow scripting. Keep the list usable without retrying N keys.
+        return [{"key": key, "type": "?", "ttl": -1} for key in keys]
 
 
 def inspect_key(url: str, key: str) -> list[dict[str, Any]]:

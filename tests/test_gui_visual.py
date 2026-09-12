@@ -47,6 +47,46 @@ LIGHT = {
 }
 
 
+def test_query_sidebar_tokens(page):
+    page.route('**/api/queries', lambda route: route.fulfill(json=[{
+        'name': 'sample', 'db': 'testpg', 'desc': '查看客户',
+        'sql': 'SELECT * FROM customers', 'params': []}]))
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    for mode in ('dark', 'light'):
+        if page.evaluate('document.documentElement.dataset.mode') != mode:
+            page.locator('.vg-switcher-mode').click()
+        button = page.locator('[data-saved-ws]').first
+        page.mouse.move(1000, 800)
+        assert button.evaluate("el => { const probe = document.createElement('span'); probe.style.color = 'var(--fg3)'; el.append(probe); const match = getComputedStyle(el).color === getComputedStyle(probe).color; probe.remove(); return match; }")
+
+
+def test_sidebar_compact_collapse_indent_and_stable_gutter(page, tmp_path):
+    page.route('**/api/queries', lambda route: route.fulfill(json=[{
+        'name': 'sample', 'db': 'testpg', 'desc': '查看客户',
+        'sql': 'SELECT * FROM customers', 'params': []}]))
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    collapse = page.get_by_role('button', name='Collapse all', exact=True)
+    assert page.locator('.sidebar-searchbar .collapse-all').count() == 1
+    assert page.locator('.qhead .collapse-all').count() == 0
+    assert collapse.is_visible()
+    heading_icon = page.locator('[data-saved-ws] .ti').first.bounding_box()
+    source = page.locator('.query-index-children .vg-qsrc').first.evaluate('el => { const range = document.createRange(); range.selectNodeContents(el); return { x: range.getBoundingClientRect().x }; }')
+    child_icon = page.locator('.query-index-children .query-item .ti').first.bounding_box()
+    assert source['x'] > heading_icon['x']
+    assert child_icon['x'] > source['x']
+    assert page.locator('#side').evaluate('el => getComputedStyle(el).scrollbarGutter') == 'stable'
+    widths = page.locator('#side').evaluate('''el => {
+      const row = el.querySelector('.dbrow');
+      el.style.height = '2000px'; const before = row.getBoundingClientRect().width;
+      el.style.height = '100px'; const after = row.getBoundingClientRect().width;
+      el.style.height = ''; return [before, after];
+    }''')
+    assert widths[0] == widths[1]
+    page.screenshot(path=str(tmp_path / 'compact-sidebar.png'))
+
+
 def test_default_theme_is_dark_with_legacy_palette(page):
     assert page.evaluate("document.documentElement.dataset.mode") == "dark"
     assert _style(page, "body", "backgroundColor") == DARK["bg0"]
@@ -296,11 +336,33 @@ def test_engine_tag_differs_from_workspace_origin(page):
 
 def test_table_filter_uses_surface_tokens(page):
     _select_testpg(page)
-    page.locator("#tbl-panel .tsearch").wait_for()
+    page.locator(".sidebar-searchbar .tsearch").wait_for()
     assert _style(page, ".vg-tfilter", "backgroundColor") == _token_bg(page, "--bg2")
-    assert _style(page, "#tbl-panel .tsearch", "backgroundColor") in ("rgba(0, 0, 0, 0)", "transparent")
+    assert _style(page, ".sidebar-searchbar .tsearch", "backgroundColor") in ("rgba(0, 0, 0, 0)", "transparent")
     assert page.locator(".vg-tfilter .ti-search").count() == 1
-    assert page.locator("#tbl-panel .treload").is_visible()
+    assert page.locator(".dbrow.on .treload").count() == 1
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_database_refresh_reveals_without_layout_shift(page, mode, tmp_path):
+    _select_testpg(page)
+    if page.evaluate('document.documentElement.dataset.mode') != mode:
+        page.locator('.vg-switcher-mode').click()
+    row = page.locator('.dbrow.on')
+    button = row.locator('.treload')
+    page.mouse.move(1000, 800)
+    before = row.bounding_box()
+    assert button.evaluate('el => getComputedStyle(el).opacity') == '0'
+    assert page.locator('#tbl-panel .trow').count() == 0
+    row.hover()
+    assert button.evaluate('el => getComputedStyle(el).opacity') == '1'
+    assert row.bounding_box() == before
+    page.mouse.move(1000, 800)
+    button.focus()
+    assert button.evaluate('el => getComputedStyle(el).opacity') == '1'
+    assert button.get_attribute('title')
+    assert button.evaluate('el => getComputedStyle(el).color') == _token_color(page, '--fg3')
+    page.screenshot(path=str(tmp_path / 'inline-refresh.png'))
 
 
 @pytest.mark.parametrize('mode', ['dark', 'light'])

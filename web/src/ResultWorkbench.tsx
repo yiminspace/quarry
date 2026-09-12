@@ -24,7 +24,7 @@ import { anyModalOpen } from "./modalStack";
 import { decodeFocus, decodeQueryLink, encodeFocusSearch, encodeQueryLink, focusTitle, type QueryLinkPayload } from "./queryLink";
 import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
-import { groupKey } from "./sidebarLayout";
+import { groupKey, groupsWithQueries } from "./sidebarLayout";
 import SqlEditor from "./SqlEditor";
 import { useConnStore } from "./store/connStore";
 import {
@@ -146,7 +146,7 @@ export default function ResultWorkbench() {
   const setSql = useCallback(
     (v: string): void => {
       const state = useTabsStore.getState();
-      if (!state.activeId) state.addTab();
+      if (!state.activeId || state.tabs.find((tab) => tab.id === state.activeId)?.savedQueryId) state.addTab();
       updateActiveTab({ sql: v });
     },
     [updateActiveTab],
@@ -154,6 +154,7 @@ export default function ResultWorkbench() {
   const sqlRef = useRef(sql);
   sqlRef.current = sql;
 
+  const [collapseToken, setCollapseToken] = useState(0);
   const [savedQueries, setSavedQueries] = useState<SavedQuery[]>([]);
   const [panel, setPanel] = useState<PanelData>(EMPTY_PANEL);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -232,7 +233,7 @@ export default function ResultWorkbench() {
             fetchTables(db, env, { fresh: true })
               .then((fd) => {
                 putTcache(key, fd);
-                if (panelKeyRef.current === key) applyPanel(fd);
+                if (stillCurrent()) applyPanel(fd);
               })
               .catch(() => {});
           }
@@ -240,8 +241,9 @@ export default function ResultWorkbench() {
         .catch((e) => {
           const msg = String((e as Error).message ?? e);
           setHealth(db, false, msg);
-          if (!cached && stillCurrent()) {
-            setPanel({ ...EMPTY_PANEL, error: msg });
+          if (stillCurrent()) {
+            if (cached) applyPanel(cached);
+            setPanel((previous) => ({ ...previous, loading: false, error: msg }));
           }
         });
     },
@@ -438,6 +440,15 @@ export default function ResultWorkbench() {
     overrideTarget?: { db: string; env: string | null },
     overrideSql?: string,
   ): Promise<void> => {
+    const tabState = useTabsStore.getState();
+    const fixed = tabState.tabs.find((tab) => tab.id === tabState.activeId);
+    if (fixed?.savedQueryId && overrideSql === undefined) {
+      const saved = savedQueries.find((q) => (q.queryId ?? JSON.stringify([q.ws ?? null, q.name, q.db])) === fixed.savedQueryId);
+      if (!saved) { toast(t("saved_missing"), false); return; }
+      if (saved.params.length) setParamModal(saved);
+      else await runSavedQuery(saved.queryId ?? saved.name, {});
+      return;
+    }
     const state = useConnStore.getState();
     const target = overrideTarget ?? (state.current ? { db: state.current.db, env: state.current.env } : null);
     // an explicit SQL is passed by call sites that just called setSql() — the
@@ -651,7 +662,7 @@ export default function ResultWorkbench() {
         revalidateTab(tab);
       }
       useConnStore.getState().setCurrentTable(table);
-      if (!useTabsStore.getState().results[plan.tabId]?.result) {
+      if (cur.production !== true && !pendingByTab[plan.tabId] && !useTabsStore.getState().results[plan.tabId]?.result) {
         void run({ db: cur.db, env: cur.env }, next);
       }
       return;
@@ -661,7 +672,7 @@ export default function ResultWorkbench() {
     }
     useTabsStore.getState().updateActiveTab({ db: cur.db, env: cur.env, sql: next });
     useConnStore.getState().setCurrentTable(table);
-    void run({ db: cur.db, env: cur.env }, next);
+    if (cur.production !== true) void run({ db: cur.db, env: cur.env }, next);
   };
 
   const handleInspectKey = async (key: string): Promise<void> => {
@@ -686,21 +697,22 @@ export default function ResultWorkbench() {
     }
   };
 
-  const openSaved = (name: string): void => {
+  const openSaved = (name: string, preview = false): void => {
     const q = savedQueries.find((x) => (x.queryId ?? x.name) === name);
     if (!q) return;
     const cur = useConnStore.getState().current;
     const nv = q.sql || `-- ${q.name}`;
     const item = groups.flatMap((group) => group.items).find((item) =>
       item.envs.some((env) => env.key === q.db)) ?? findItem(q.db);
-    if (item && (cur?.db !== item.db || workspaceFor(item.db) !== activeTab?.workspace)) {
-      selectDb(item.db, null);
-    }
-    let state = useTabsStore.getState();
-    if (!state.activeId) { state.addTab(); state = useTabsStore.getState(); }
-    const target = state.tabs.find((tab) => tab.id === state.activeId)!;
-    keepDraft(target.sql, nv, target.db, target.env);
-    setSql(nv);
+    if (!item) { toast(t("saved_missing"), false); return; }
+    const pinnedEnv = q.db !== item.db ? item.envs.find((e) => e.key === q.db) : undefined;
+    const env = pinnedEnv ? pinnedEnv.env : item.envs.some((e) => e.env === cur?.env) ? cur!.env : defaultEnvFor(item);
+    const state = useTabsStore.getState();
+    const created = state.openSavedTab({ ...q, sql: nv }, item.db, env);
+    selectDb(item.db, env, { force: true });
+    if (!created) return;
+    if (item.envs.find((e) => e.env === env)?.production === true) return;
+    if (preview && !q.params.length) return;
     if (!q.params.length) {
       void runSavedQuery(name, {});
       return;
@@ -743,7 +755,8 @@ export default function ResultWorkbench() {
         if (db && (cur?.db !== db || (cur?.env ?? null) !== (env ?? null)) && findItem(db)) {
           selectDb(db, env, { force: true });
         }
-        setSql(clean.sql);
+        // Keep the saved template intact; only the result contains substituted SQL.
+        if (!tab.savedQueryId) setSql(clean.sql);
       }
     } catch (e) {
       reqFailed(ctx, e);
@@ -755,6 +768,7 @@ export default function ResultWorkbench() {
   /** Light SQL formatter: collapse whitespace, uppercase major keywords,
    * newline before major clauses (the legacy Format button, verbatim). */
   const formatSql = (): void => {
+    if (activeTab?.savedQueryId) return;
     let s = sqlRef.current;
     s = s.replace(/\s+/g, " ").replace(/\s*,\s*/g, ", ").trim();
     s = s.replace(
@@ -1102,6 +1116,23 @@ export default function ResultWorkbench() {
         }}
         savedQueries={savedQueries}
         onOpenSaved={openSaved}
+        collapseToken={collapseToken}
+        onCollapseAll={() => {
+          const ui = useUiStore.getState();
+          for (const group of groupsWithQueries(groups, savedQueries)) {
+            const key = groupKey(group.ws, group.group);
+            for (const target of [key, key + '::queries']) {
+              if (!useUiStore.getState().collapsedGroups.has(target)) ui.toggleCollapsedGroup(target);
+            }
+          }
+          setCollapseToken((n) => n + 1);
+          setPanelOpen(false);
+        }}
+        onOpenSearchObject={(db, env, name, redis) => {
+          selectDb(db, env, { viaPill: true });
+          if (redis) void handleInspectKey(name);
+          else handleTableClick(name, false);
+        }}
       />
       <div className="vg-resizer resizer" id="resizer" onMouseDown={startSidebarResize} />
       <section className="vg-section">
@@ -1152,6 +1183,7 @@ export default function ResultWorkbench() {
         <TabBar onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
         <SqlEditor
+          readOnly={!!activeTab.savedQueryId}
           value={sql}
           onChange={setSql}
           onRun={() => void run()}
@@ -1166,7 +1198,12 @@ export default function ResultWorkbench() {
           <button className="vg-btn btn primary" id="runBtn" title={t("run")} onClick={() => void run()}>
             <i className="ti ti-player-play" /> <span id="runLbl">{t("run")}</span>
           </button>
-          <button className="vg-btn btn" id="fmtBtn" title={t("fmt")} onClick={formatSql}>
+          {activeTab.savedQueryId && <button className="vg-btn btn" id="copySavedBtn"
+            title={t("copy_as_query")} onClick={() => {
+              useTabsStore.getState().addTab({ db: activeTab.db, env: activeTab.env });
+              useTabsStore.getState().updateActiveTab({ sql: activeTab.sql });
+            }}><i className="ti ti-copy" /> {t("copy_as_query")}</button>}
+          <button className="vg-btn btn" id="fmtBtn" title={t("fmt")} disabled={!!activeTab.savedQueryId} onClick={formatSql}>
             <i className="ti ti-wand" /> <span id="fmtLbl">{t("fmt")}</span>
           </button>
           <button

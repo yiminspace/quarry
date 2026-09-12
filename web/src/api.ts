@@ -156,8 +156,8 @@ export type UpdateInfo = { current: string; latest: string | null; available: bo
 
 export type ChangelogVersion = { version: string; date: string; entries: string[] };
 
-async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, { signal });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || `${path} -> ${res.status}`);
@@ -193,7 +193,7 @@ export function fetchTables(
 ): Promise<TablesResponse> {
   const qs = new URLSearchParams({ db, env: env ?? "" });
   if (opts?.fresh) qs.set("fresh", "1");
-  return getJSON(`/api/tables?${qs}`);
+  return getJSON(`/api/tables?${qs}`, AbortSignal.timeout(30000));
 }
 
 export function fetchColumns(
