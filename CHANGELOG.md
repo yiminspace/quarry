@@ -110,6 +110,20 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.3.2 (2026-09-12)
+
+### Bug Fixes
+
+- 加固 SSH 隧道共享、keeper 重连和 PostgreSQL 凭据处理 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+- 加固隧道共享、keeper 重连与 PostgreSQL 凭据处理 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+- 显示 keeper 阻塞原因并补充进程故障回归测试 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+
 ## v1.3.1 (2026-09-11)
 
 ### Bug Fixes
