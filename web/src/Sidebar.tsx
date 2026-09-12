@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
-import { groupKey, groupQueriesByDb, groupsWithQueries, itemsInEngineOrder } from "./sidebarLayout";
+import { groupKey, groupQueriesByDb, groupsWithQueries, itemsInEngineOrder, queryObjects } from "./sidebarLayout";
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
+import { useTabsStore } from "./store/tabsStore";
 
 export type PanelData = {
   loading: boolean;
@@ -26,8 +27,37 @@ export type SidebarProps = {
   onInspectKey: (key: string) => void;
   onRefresh: () => void;
   savedQueries: SavedQuery[];
-  onOpenSaved: (name: string) => void;
+  onOpenSaved: (name: string, preview?: boolean) => void;
+  collapseToken: number;
+  onCollapseAll: () => void;
+  onOpenSearchObject: (db: string, env: string | null, name: string, redis: boolean) => void;
 };
+
+const QuerySelection = createContext<string | null>(null);
+
+function QueryItem({ query, onOpen }: { query: SavedQuery; onOpen: () => void }) {
+  const selected = useContext(QuerySelection) === (query.queryId ?? JSON.stringify([query.ws ?? null, query.name, query.db]));
+  const title = (query.desc || query.name).split(/[，,；;。\n]/)[0];
+  return <button className={'vg-tname qname query-item' + (selected ? ' selected' : '')}
+    data-q={query.name} title={(query.desc || query.name) + '\n' + query.name}
+    aria-pressed={selected} onClick={onOpen}>
+    <i className="ti ti-bookmark" />
+    <span className="query-copy"><span className="query-title">{title}</span>
+      {selected && query.desc && <span className="query-description">{query.desc}</span>}
+    </span>
+  </button>;
+}
+
+function QueryDisclosure({ open, queries, onOpenSaved }: {
+  open: boolean; queries: SavedQuery[]; onOpenSaved: SidebarProps["onOpenSaved"];
+}) {
+  if (!queries.length) return null;
+  return <div className="query-disclosure">
+    {open && <div className="query-children">{queries.map((query) =>
+      <QueryItem key={query.queryId ?? query.name} query={query}
+        onOpen={() => onOpenSaved(query.queryId ?? query.name, true)} />)}</div>}
+  </div>;
+}
 
 export function defaultEnvFor(item: ConnItem): string | null {
   return item.envs.find((e) => e.env === "dev")?.env ?? item.envs[0]?.env ?? null;
@@ -184,15 +214,16 @@ function TablePanel({
   current,
   panel,
   filter,
-  onFilterChange,
   onTableClick,
   onInspectKey,
-  onRefresh,
   visible,
+  savedQueries,
+  onOpenSaved,
+  collapseToken,
 }: Pick<
   SidebarProps,
-  "current" | "panel" | "filter" | "onFilterChange" | "onTableClick" | "onInspectKey" | "onRefresh"
-> & { visible: boolean }) {
+  "current" | "panel" | "filter" | "onFilterChange" | "onTableClick" | "onInspectKey" | "onRefresh" | "savedQueries" | "onOpenSaved"
+> & { visible: boolean; collapseToken: number }) {
   const currentTable = useConnStore((s) => s.currentTable);
   const selectedRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -200,12 +231,47 @@ function TablePanel({
   }, [currentTable, panel.tables, visible]);
   const [folded, setFolded] = useState<Set<string>>(new Set());
   const [structTable, setStructTable] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const activeId = useTabsStore((s) => s.activeId);
+  const selectedQuery = useContext(QuerySelection);
   const isRedis = panel.engine === "redis";
+  const objectQueries = new Map<string, SavedQuery[]>();
+  for (const query of savedQueries) {
+    const objects = queryObjects(query.sql, panel.engine);
+    const matches = panel.engine === "neptune" ? objects : (panel.tables ?? []).filter((table) =>
+      objects.includes(table) || (!table.includes(".") && objects.includes('public.' + table)) ||
+      (table.startsWith('public.') && objects.includes(table.slice(7))));
+    for (const object of matches) objectQueries.set(object, [...(objectQueries.get(object) ?? []), query]);
+  }
+  const revealObjects = JSON.stringify([
+    ...(currentTable ? [currentTable] : []),
+    ...[...objectQueries].filter(([, qs]) => qs.some((query) =>
+      (query.queryId ?? JSON.stringify([query.ws ?? null, query.name, query.db])) === selectedQuery)).map(([name]) => name),
+  ]);
+  useEffect(() => {
+    if (panel.loading || panel.error || (panel.engine !== "neptune" && panel.tables === null)) return;
+    setExpanded((previous) => new Set([...previous, ...JSON.parse(revealObjects) as string[]]));
+  }, [activeId, revealObjects, panel.loading, panel.error, panel.engine, panel.tables]);
+  const previousCollapse = useRef(collapseToken);
+  useEffect(() => {
+    if (previousCollapse.current === collapseToken) return;
+    previousCollapse.current = collapseToken;
+    setExpanded(new Set());
+    setStructTable(null);
+    // Redis namespaces also collapse, without changing the selected key/result.
+    const paths = (panel.keys ?? []).flatMap(({ key }) => {
+      const parts = key.split(':');
+      return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join(':'));
+    });
+    setFolded(new Set(paths));
+  }, [collapseToken, panel.keys]);
 
   const q = filter.trim().toLowerCase();
   const shownTables = useMemo(
-    () => (panel.tables ?? []).filter((tb) => tb.toLowerCase().includes(q)),
-    [panel.tables, q],
+    () => (panel.engine === "neptune"
+      ? [...new Set(savedQueries.flatMap((query) => queryObjects(query.sql, "neptune")))]
+      : panel.tables ?? []).filter((tb) => tb.toLowerCase().includes(q)),
+    [panel.tables, panel.engine, savedQueries, q],
   );
   const shownKeys = useMemo(
     () => (panel.keys ?? []).filter((k) => k.key.toLowerCase().includes(q)),
@@ -226,6 +292,7 @@ function TablePanel({
 
   return (
     <div id="tbl-panel" data-db={current?.db} style={{ display: visible ? undefined : "none" }}>
+      {panel.error && loaded && <div className="vg-empty" role="status">{panel.error}</div>}
       {panel.error && !loaded ? (
         <div className="vg-empty empty">{panel.error}</div>
       ) : !loaded ? (
@@ -234,20 +301,6 @@ function TablePanel({
         </div>
       ) : (
         <>
-          <div className="vg-trow trow">
-            <label className="vg-tfilter">
-              <i className="ti ti-search" aria-hidden="true" />
-              <input
-                className="vg-input tsearch"
-                placeholder={isRedis ? t("filter_keys") : t("filter_tables")}
-                value={filter}
-                onChange={(e) => onFilterChange(e.target.value)}
-              />
-            </label>
-            <button className="vg-iconbtn treload" title={t("refresh_list")} onClick={onRefresh}>
-              <i className="ti ti-refresh" />
-            </button>
-          </div>
           {panel.capped && (
             <div className="vg-hmeta hmeta" style={{ padding: "0 12px 5px" }}>
               {isRedis
@@ -258,17 +311,24 @@ function TablePanel({
           {!isRedis &&
             (shownTables.length ? (
               shownTables.map((tb) => (
+                <div key={tb} className="table-query-group">
                 <div
-                  key={tb}
                   className={`vg-tname tname${tb === currentTable ? " on" : ""}`}
                   ref={tb === currentTable ? selectedRef : undefined}
                   data-t={tb}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={expanded.has(tb)}
                   title={`${tb}\n${t("alt_insert")}`}
-                  onClick={(e) => onTableClick(tb, e.altKey)}
-                  onDoubleClick={() => setStructTable(tb)}
+                  onClick={(e) => { setExpanded((previous) => new Set([...previous, tb])); onTableClick(tb, e.altKey); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((previous) => new Set([...previous, tb])); onTableClick(tb, false); } }}
+                  onDoubleClick={() => panel.engine !== "neptune" && setStructTable(tb)}
                 >
                   <i className="ti ti-table" />
                   {tb}
+                </div>
+                <QueryDisclosure open={expanded.has(tb)}
+                  queries={objectQueries.get(tb) ?? []} onOpenSaved={onOpenSaved} />
                 </div>
               ))
             ) : (
@@ -307,9 +367,32 @@ function TablePanel({
  * engine-sorted connections, the selected connection's table/key panel,
  * and saved queries — legacy DOM (`.grp/.gbody/.dbrow/.qname`) throughout. */
 export default function Sidebar(props: SidebarProps) {
-  const { current, panelOpen, onSelect, savedQueries, onOpenSaved } = props;
-  const loaded = useConnStore((s) => s.loaded);
+  const { current, panelOpen, onSelect, savedQueries } = props;
+  const selectedQuery = useTabsStore((s) => s.tabs.find((tab) => tab.id === s.activeId)?.savedQueryId ?? null);
+  const collapseToken = props.collapseToken;
+  const [search, setSearch] = useState("");
   const groups = useConnStore((s) => s.groups);
+  const tcache = useConnStore((s) => s.tcache);
+  const needle = search.trim().toLowerCase();
+  const matches = (value: string) => value.toLowerCase().includes(needle);
+  const searchGroups = groupsWithQueries(groups, savedQueries).map((group) => {
+    const sections = groupQueriesByDb(group.queries, group.items);
+    const dbs = [...new Set([...group.items.map(item => item.db), ...sections.map(section => section.db)])];
+    return { ...group, results: dbs.map(db => {
+      const item = group.items.find(item => item.db === db);
+      const queries = (sections.find(section => section.db === db)?.queries ?? []).filter(query =>
+        matches(db) || matches(query.name) || matches(query.desc || ""));
+      const objects = (item?.envs ?? []).flatMap(env => {
+        const data = tcache[`${db}@${env.env || ""}`];
+        if (!data) return [];
+        const names = 'keys' in data ? data.keys.map(key => key.key) : data.tables;
+        return names.filter(name => matches(db) || matches(name)).map(name => ({ name, env: env.env, redis: data.engine === 'redis' }));
+      });
+      return { db, item, queries, objects };
+    }).filter(result => matches(result.db) || result.queries.length || result.objects.length) };
+  }).filter(group => group.results.length);
+  const onOpenSaved = props.onOpenSaved;
+  const loaded = useConnStore((s) => s.loaded);
   const health = useConnStore((s) => s.health);
   const checking = useConnStore((s) => s.checking);
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
@@ -326,7 +409,36 @@ export default function Sidebar(props: SidebarProps) {
   );
 
   return (
+    <QuerySelection.Provider value={selectedQuery}>
     <aside className="vg-aside" id="side" style={{ width: sidebarWidth }}>
+      <div className="sidebar-searchbar">
+        <label className="vg-tfilter">
+          <i className="ti ti-search" aria-hidden="true" />
+          <input className="vg-input tsearch" aria-label={t("search_sidebar")} placeholder={t("search_sidebar")}
+            title={t("search_sidebar_scope")} value={search} onChange={event => setSearch(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Escape') setSearch(""); }} />
+        </label>
+        <button className="vg-iconbtn collapse-all" title={t("collapse_all")} aria-label={t("collapse_all")}
+          onClick={() => { setSearch(""); props.onCollapseAll(); }}><i className="ti ti-fold" /></button>
+      </div>
+      {needle && <div className="sidebar-search-results">
+        <div className="search-scope">{t("search_sidebar_scope")}</div>
+        {!searchGroups.length && <div className="vg-empty">{t("search_no_matches")}</div>}
+        {searchGroups.map(group => <div key={groupKey(group.ws, group.group)}>
+          <div className="vg-grp">{group.group || t("other")}</div>
+          {group.results.map(result => <div key={result.db}>
+            <button className="search-db" onClick={() => { if (result.item) onSelect(result.db, null); }}>{result.db}</button>
+            {result.objects.map(object => <button className="search-object" key={object.env + ':' + object.name}
+              onClick={() => props.onOpenSearchObject(result.db, object.env, object.name, object.redis)}>
+              <i className={'ti ' + (object.redis ? 'ti-key' : 'ti-table')} /> {object.name}
+              <small>{object.env}</small>
+            </button>)}
+            {result.queries.map(query => <QueryItem key={query.queryId ?? query.name} query={query}
+              onOpen={() => onOpenSaved(query.queryId ?? query.name, true)} />)}
+          </div>)}
+        </div>)}
+      </div>}
+      <div className="sidebar-tree" style={{ display: needle ? 'none' : undefined }}>
       {!loaded && (
         <div className="vg-empty spin">
           <i className="ti ti-loader" /> {t("loading")}
@@ -355,6 +467,7 @@ export default function Sidebar(props: SidebarProps) {
             </div>
             <div className="gbody" style={{ display: isCollapsed ? "none" : undefined }}>
               {itemsInEngineOrder(g.items).map((item) => {
+                const queries = groupQueriesByDb(g.queries, g.items).find((s) => s.db === item.db)?.queries ?? [];
                 const isCurrent = current?.db === item.db;
                 const h = health[item.db];
                 return (
@@ -366,11 +479,20 @@ export default function Sidebar(props: SidebarProps) {
                       onClick={() => onSelect(item.db, null)}
                     >
                       <span className={dotClass(item.db)} />
-                      {item.db}
+                      <span className="db-name">{item.db}</span>
                       <small className="vg-engine-tag">{item.engine}</small>
+                      {isCurrent && <button className="vg-iconbtn treload" title={t("refresh_list")}
+                        aria-label={t("refresh_list")} onClick={(event) => {
+                          event.stopPropagation();
+                          props.onRefresh();
+                        }}><i className="ti ti-refresh" /></button>}
                     </div>
                     {isCurrent && (
                       <TablePanel
+                        collapseToken={collapseToken}
+                        key={gkey + ':' + item.db + ':' + current?.env}
+                        savedQueries={queries}
+                        onOpenSaved={onOpenSaved}
                         current={current}
                         panel={props.panel}
                         filter={props.filter}
@@ -385,20 +507,18 @@ export default function Sidebar(props: SidebarProps) {
                 );
               })}
               {g.queries.length > 0 && (
-                <div className="vg-workspace-queries" style={{ paddingLeft: 12 }}>
+                <div className="vg-workspace-queries">
                   <div
-                    className="vg-grp grp"
+                    className="query-index-heading"
                     data-grp
                     title={t(collapsed.has(`${gkey}::queries`) ? "expand" : "collapse")}
                     data-gkey={`${gkey}::queries`} data-saved-ws={g.ws ?? ""}
                     onClick={() => toggleCollapsedGroup(`${gkey}::queries`)}
                   >
-                    <i
-                      className={`ti ${collapsed.has(`${gkey}::queries`) ? "ti-chevron-right" : "ti-chevron-down"}`}
-                    />{" "}
-                    {t("saved_queries")}
+                    <i className="ti ti-list" aria-hidden="true" />
+                    <span>{t("all_queries")}</span>
                   </div>
-                  <div className="gbody" style={{ display: collapsed.has(`${gkey}::queries`) ? "none" : undefined }}>
+                  <div className="gbody query-index-children" style={{ display: collapsed.has(`${gkey}::queries`) ? "none" : undefined }}>
                     {groupQueriesByDb(
                       g.queries,
                       itemsInEngineOrder(g.items),
@@ -408,21 +528,9 @@ export default function Sidebar(props: SidebarProps) {
                           {section.db}
                         </div>
                         {section.queries.map((q) => (
-                          <div
+                          <QueryItem query={q}
                             key={q.queryId ?? q.name}
-                            className="vg-tname qname"
-                            data-q={q.name}
-                            title={q.desc || q.name}
-                            onClick={() => onOpenSaved(q.queryId ?? q.name)}
-                          >
-                            <i className="ti ti-bookmark" />
-                            <span className="vg-qname-label">{q.name}</span>
-                            {q.params.length > 0 && (
-                              <span className="vg-rbadge rbadge">
-                                {q.params.length} {t("params_suffix")}
-                              </span>
-                            )}
-                          </div>
+                            onOpen={() => onOpenSaved(q.queryId ?? q.name)} />
                         ))}
                       </div>
                     ))}
@@ -434,6 +542,8 @@ export default function Sidebar(props: SidebarProps) {
         );
       })}
 
+      </div>
     </aside>
+    </QuerySelection.Provider>
   );
 }

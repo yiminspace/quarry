@@ -28,6 +28,134 @@ from test_gui_browser import page_saved  # noqa: F401  (fixture reused below)
 pytestmark = [requires_browser, pytest.mark.browser]
 
 
+def test_table_query_disclosure_preserves_draft_and_does_not_execute(page_noparam):
+    page = page_noparam
+    _select_testpg(page)
+    _set_sql(page, "select 42 as keep_my_draft")
+    requests = []
+    page.on("request", lambda req: requests.append(req.url) if req.method == "POST" and
+            (req.url.endswith("/api/query") or req.url.endswith("/api/run")) else None)
+    row = page.locator('.table-query-group').filter(has=page.locator('[data-t="customers"]'))
+    row.locator('[data-t="customers"]').click()
+    _run_result(page)
+    requests.clear()
+    row.locator('[data-q="all-cust"]').click()
+    page.wait_for_function("document.querySelector('#sql').value.includes('FROM customers')")
+    assert not requests
+    assert page.evaluate("JSON.parse(localStorage.qy_tabs).some(t => t.sql === 'select 42 as keep_my_draft')")
+    assert page.locator('.query-count').count() == 0
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    assert page.locator('#sql').evaluate('el => getComputedStyle(el).cursor') == 'not-allowed'
+    assert 'read-only' in page.locator('#sql').get_attribute('title')
+    fixed_index = page.locator('#tabs [aria-selected="true"]').get_attribute('data-i')
+    tab_count = page.evaluate('JSON.parse(localStorage.qy_tabs).length')
+    row.locator('[data-q="all-cust"]').click()
+    assert page.evaluate('JSON.parse(localStorage.qy_tabs).length') == tab_count
+    assert not requests
+    original = page.locator('#sql').input_value()
+    page.locator('#copySavedBtn').click()
+    assert page.locator('#sql').get_attribute('readonly') is None
+    _set_sql(page, 'select 123 as editable_copy')
+    assert row.locator('[data-q="all-cust"]').get_attribute('aria-pressed') == 'false'
+    page.locator('#tabs [data-i="' + fixed_index + '"]').click()
+    assert row.locator('[data-q="all-cust"]').get_attribute('aria-pressed') == 'true'
+    row.locator('[data-q="all-cust"]').click()
+    assert page.locator('#sql').input_value() == original
+    assert row.locator('[data-q="all-cust"]').get_attribute('aria-pressed') == 'true'
+    page.get_by_role('button', name='Collapse all', exact=True).click()
+    assert page.locator('#sql').input_value() == original
+    assert not row.is_visible()
+
+
+def test_fixed_query_uses_explicit_environment_without_production_autorun(page_envset):
+    page = page_envset
+    page.route('**/api/queries', lambda route: route.fulfill(json=[dict(
+        name='prod-customers', queryId='pinned-prod', db='shop_prod', desc='Production customers',
+        sql='SELECT * FROM customers', params=[])]))
+    page.reload(wait_until='networkidle')
+    requests = []
+    page.on('request', lambda req: requests.append(req.url) if req.method == 'POST' and
+            (req.url.endswith('/api/query') or req.url.endswith('/api/run')) else None)
+    # The workspace index remains available even before a connection is selected.
+    page.locator('.qname[data-q="prod-customers"]').click()
+    page.locator('#prodBadge').wait_for(state='visible')
+    count = page.evaluate('JSON.parse(localStorage.qy_tabs).length')
+    page.locator('.qname[data-q="prod-customers"]').last.click()
+    assert page.evaluate('JSON.parse(localStorage.qy_tabs).length') == count
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    assert not requests
+
+
+def test_saved_query_waits_for_tables_before_anchoring(page_noparam):
+    page = page_noparam
+    pending = []
+    page.route('**/api/tables?*', lambda route: pending.append(route))
+    page.locator('.query-index-children [data-q="all-cust"]').click()
+    page.wait_for_timeout(100)
+    assert page.locator('.other-queries').count() == 0
+    assert pending
+    for route in pending:
+        route.fulfill(json={'engine': 'postgres', 'tables': ['public.customers'], 'capped': False})
+    query = page.locator('#tbl-panel [data-q="all-cust"]')
+    query.wait_for(state='visible')
+    assert query.get_attribute('aria-pressed') == 'true'
+    assert page.locator('#tbl-panel [data-t="public.customers"]').get_attribute('aria-expanded') == 'true'
+    assert page.locator('.other-queries').count() == 0
+
+
+def test_graph_query_discovery_rows(page_neptune):
+    page = page_neptune
+    queries = [
+        {'name': 'related', 'db': 'graph', 'desc': '查看记忆关联',
+         'sql': 'MATCH (n:MindNode)-[r]->(a:Artifact) RETURN n LIMIT 10', 'params': []},
+        {'name': 'structure', 'db': 'graph', 'desc': '查看节点类别',
+         'sql': 'MATCH (n) RETURN labels(n) LIMIT 10', 'params': []},
+    ]
+    page.route('**/api/queries', lambda route: route.fulfill(json=queries))
+    page.route('**/api/tables?*', lambda route: route.fulfill(json={
+        'engine': 'neptune', 'tables': [], 'capped': False}))
+    page.route('**/api/query', lambda route: route.fulfill(json={
+        'columns': [], 'rows': [], 'rowCount': 0, 'truncated': False,
+        'elapsedMs': 0, 'engine': 'neptune', 'sql': '', 'downloadBytes': 0}))
+    page.reload(wait_until='networkidle')
+    page.locator('.dbrow[data-db="graph"]').click()
+    page.locator('#tbl-panel [data-t="MindNode"]').wait_for()
+    assert page.locator('.query-count').count() == 0
+    for label in ('MindNode', 'Artifact'):
+        row = page.locator('.table-query-group').filter(has=page.locator('[data-t="' + label + '"]'))
+        row.locator('[data-t="' + label + '"]').click()
+        assert row.locator('[data-q="related"]').inner_text() == '查看记忆关联'
+    assert page.locator('.other-queries').count() == 0
+    assert page.locator('.query-index-children [data-q="structure"]').is_visible()
+
+
+def test_query_titles_expand_description_without_counts(page_envset, tmp_path):
+    page = page_envset
+    description = 'LINE 相关记忆，按更新时间倒序返回 10 条，每条摘要最多 500 字符。'
+    queries = [dict(name='line', db='testpg', desc=description,
+                    sql='SELECT * FROM customers', params=[]),
+               dict(name='shop-query', db='shop', desc='查看客户记录',
+                    sql='SELECT * FROM customers', params=[])]
+    page.route('**/api/queries', lambda route: route.fulfill(json=queries))
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    assert page.locator('.query-count').count() == 0
+    heading = page.locator('[data-saved-ws]').first
+    assert 'All queries' in heading.inner_text()
+    assert 'vg-grp' not in (heading.get_attribute('class') or '')
+    row = page.locator('.table-query-group').filter(has=page.locator('[data-t="customers"]'))
+    row.locator('[data-t="customers"]').click()
+    query = row.locator('[data-q="line"]')
+    assert query.locator('.query-title').inner_text() == 'LINE 相关记忆'
+    assert query.locator('.query-description').count() == 0
+    query.click()
+    assert query.locator('.query-description').inner_text() == description
+    assert query.get_attribute('aria-pressed') == 'true'
+    assert query.locator('.query-description').evaluate('el => el.scrollWidth <= el.clientWidth')
+    page.screenshot(path=str(tmp_path / 'sidebar-layout.png'))
+    print('Layout screenshot:', tmp_path / 'sidebar-layout.png')
+
+
 def test_app_uses_distinct_svg_favicon(page):
     icon = page.locator('head link[rel="icon"]')
     assert icon.get_attribute("type") == "image/svg+xml"
@@ -715,11 +843,53 @@ def test_new_result_resets_sort_state(page):
 
 def test_table_filter_box(page):
     _select_testpg(page)
-    page.locator("#tbl-panel .tsearch").fill("cust")
-    assert page.locator('#tbl-panel .tname[data-t="customers"]').is_visible()
-    assert page.locator('#tbl-panel .tname[data-t="orders"]').is_hidden()
-    page.locator("#tbl-panel .tsearch").fill("")
+    page.locator(".sidebar-searchbar .tsearch").fill("cust")
+    assert page.locator('.search-object').filter(has_text='customers').is_visible()
+    assert page.locator('.search-object').filter(has_text='orders').count() == 0
+    page.locator(".sidebar-searchbar .tsearch").fill("")
     assert page.locator('#tbl-panel .tname[data-t="orders"]').is_visible()
+
+
+def test_sidebar_search_is_global_restores_tree_and_does_not_fetch(page_envset, tmp_path):
+    page = page_envset
+    page.route('**/api/queries', lambda route: route.fulfill(json=[dict(
+        name='find-line', db='shop', desc='查找 LINE 记忆', sql='SELECT 1', params=[])]))
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    page.locator('[data-t="customers"]').wait_for()
+    _set_sql(page, 'select 77 as preserved_draft')
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.locator('#tbl-panel[data-db="shop"] [data-t="customers"]').wait_for()
+    # Capture all persisted expansion state; searching must not write it.
+    before = page.evaluate('localStorage.qy_collapsed')
+    active = page.locator('#tabs [aria-selected="true"]').get_attribute('title')
+    requests = []
+    page.on('request', lambda request: requests.append(request.url) if '/api/' in request.url else None)
+    search = page.locator('.sidebar-searchbar input')
+    search.fill('customers')
+    results = page.locator('.sidebar-search-results')
+    assert results.locator('.search-db').all_text_contents() == ['testpg', 'shop']
+    assert results.locator('.search-object').count() >= 2
+    page.screenshot(path=str(tmp_path / 'global-search.png'))
+    search.fill('LINE')
+    assert results.locator('[data-q="find-line"]').is_visible()
+    assert results.locator('.search-db').inner_text() == 'shop'
+    search.fill('does-not-exist-xyz')
+    assert 'No matches' in results.inner_text()
+    search.press('Escape')
+    assert page.evaluate('localStorage.qy_collapsed') == before
+    assert page.locator('#tabs [aria-selected="true"]').get_attribute('title') == active
+    assert not requests
+    search.fill('customers')
+    results.locator('.search-object').first.click()
+    page.wait_for_selector('#grid table')
+    assert page.locator('#qtitle').inner_text() == 'testpg'
+    assert page.evaluate("JSON.parse(localStorage.qy_tabs).some(tab => tab.sql === 'select 77 as preserved_draft')")
+    sql = page.locator('#sql').input_value()
+    page.get_by_role('button', name='Collapse all', exact=True).click()
+    assert search.input_value() == ''
+    assert page.locator('#sql').input_value() == sql
+    assert page.locator('.sidebar-tree > div > .gbody').evaluate_all('els => els.every(el => getComputedStyle(el).display === "none")')
 
 
 # ---------------------------------------------------------------------------
@@ -1066,6 +1236,11 @@ def test_saved_query_without_params_runs_directly(page_noparam):
     assert page.locator("#grid tbody tr").count() == 3
     assert "customers" in page.locator("#sql").input_value().lower()
     assert page.locator('[data-qsrc="testpg"]').inner_text() == "testpg"
+    page.get_by_role('button', name='Collapse all', exact=True).click()
+    assert page.locator('#grid tbody tr').count() == 3
+    page.reload(wait_until='networkidle')
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    assert page.locator('#grid tbody tr').count() == 3
 
 
 def test_saved_queries_group_by_logical_db(_pw_browser, tmp_path):
@@ -1199,10 +1374,10 @@ def test_redis_key_tree_badges_filter_and_inspect(page_redis):
     jobs = page.locator('#tbl-panel .tname[data-key="qygui:jobs"]')
     assert "list" in jobs.locator(".rbadge").first.inner_text()
     # filter narrows the tree
-    page.locator("#tbl-panel .tsearch").fill("jobs")
-    page.wait_for_selector('#tbl-panel .tname[data-key="qygui:sess:1"]', state="detached")
-    assert page.locator('#tbl-panel .tname[data-key="qygui:jobs"]').count() == 1
-    page.locator("#tbl-panel .tsearch").fill("")
+    page.locator(".sidebar-searchbar .tsearch").fill("jobs")
+    assert page.locator('.search-object').filter(has_text='qygui:sess:1').count() == 0
+    assert page.locator('.search-object').filter(has_text='qygui:jobs').count() == 1
+    page.locator(".sidebar-searchbar .tsearch").fill("")
     # inspect a key -> grid renders, editor shows the inspect marker
     page.wait_for_selector('#tbl-panel .tname[data-key="qygui:sess:1"]')
     page.locator('#tbl-panel .tname[data-key="qygui:sess:1"]').click()
@@ -1508,7 +1683,7 @@ def test_param_modal_enter_submits_and_clickout_closes(page_saved):
     page.keyboard.press("Enter")                          # Enter submits
     page.wait_for_selector(".modal", state="detached")
     page.wait_for_selector("#grid table tbody tr")
-    page.locator('.qname[data-q="cust-by-id"]').click()   # reopen
+    page.locator('#runBtn').click()   # Re-run explicitly; selecting a fixed tab only restores it.
     page.wait_for_selector(".modal input.pf")
     page.locator(".modal").click(position={"x": 8, "y": 8})   # backdrop click closes
     page.wait_for_selector(".modal", state="detached")
@@ -1796,10 +1971,37 @@ def test_table_list_manual_refresh(page, pg_exec):
     pg_exec("CREATE TABLE qyref_zzz (id int)")
     try:
         assert page.locator('#tbl-panel .tname[data-t="qyref_zzz"]').count() == 0
-        page.locator("#tbl-panel .treload").click()       # manual fresh fetch
+        _set_sql(page, 'select 123 as keep_draft')
+        page.locator('.dbrow.on').hover()
+        page.locator(".dbrow.on .treload").click()       # manual fresh fetch
         page.wait_for_selector('#tbl-panel .tname[data-t="qyref_zzz"]', timeout=20000)
+        assert page.locator('#tbl-panel').is_visible()
+        assert page.locator('#sql').input_value() == 'select 123 as keep_draft'
+        assert page.locator('#qtitle').inner_text() == 'testpg'
     finally:
         pg_exec("DROP TABLE IF EXISTS qyref_zzz")
+
+
+def test_failed_refresh_keeps_cached_tables_and_stops_loading(page):
+    _select_testpg(page)
+    page.locator('[data-t="customers"]').wait_for()
+    page.route('**/api/tables?*', lambda route: route.fulfill(status=503, json={'error': 'List refresh unavailable'}))
+    page.locator('.dbrow.on').hover()
+    page.locator('.dbrow.on .treload').click()
+    page.locator('#tbl-panel [role="status"]').wait_for()
+    assert page.locator('[data-t="customers"]').is_visible()
+    assert page.locator('#tbl-panel .spin').count() == 0
+    assert 'List refresh unavailable' in page.locator('#tbl-panel').inner_text()
+
+
+def test_table_list_timeout_ends_spinner(page):
+    page.add_init_script('''const original = AbortSignal.timeout.bind(AbortSignal);
+      AbortSignal.timeout = ms => original(ms === 30000 ? 150 : ms);''')
+    page.route('**/api/tables?*', lambda route: None)
+    page.reload(wait_until='domcontentloaded')
+    page.locator('.dbrow[data-db="testpg"]').click()
+    page.wait_for_function("document.querySelector('#tbl-panel')?.textContent.toLowerCase().includes('time')")
+    assert page.locator('#tbl-panel .spin').count() == 0
 
 
 def test_alt_click_inserts_without_running(page):
@@ -2660,6 +2862,7 @@ def test_connection_tabs_restore_mru_table_and_env(page_envset):
     page.locator('.tab[data-i="0"]').click()
     page.wait_for_selector('.tname.on[data-t="customers"]')
     page.fill('.tsearch', 'orders')
+    page.locator('.tsearch').press('Escape')
     page.locator('.dbrow[data-db="shop"]').click()
     assert page.locator('#tabs .tab').count() == 1
     assert page.locator('#sql').input_value() == ''
@@ -3099,6 +3302,8 @@ def test_icon_hover_hints_cover_header_workbench_and_modals(page, lang):
     _select_testpg(page)
     for selector in ["#ciBtn", "#tabAdd", "#tabList", "#runBtn", "#fmtBtn",
                      "#csvBtn", "#jsonBtn", "#histBtn", "#linkBtn", ".treload"]:
+        if selector == '.treload':
+            page.locator('.dbrow.on').hover()
         button = page.locator(selector)
         button.hover()
         assert (button.get_attribute("title") or "").strip(), selector

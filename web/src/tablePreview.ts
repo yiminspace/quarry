@@ -10,11 +10,12 @@ export function quoteIdent(name: string, engine: string): string {
 /** Sidebar table-click SQL: first page only — the toolbar max-rows cap
  * (and "load more") bound the result. Do not bake a LIMIT into the text. */
 export function previewSql(table: string, engine: string): string {
+  if (engine === "neptune") return 'MATCH (n:`' + table.replaceAll('`', '``') + '`) RETURN n LIMIT 25';
   const target = engine !== "mysql" && table.includes(".") ? table : quoteIdent(table, engine);
   return `select * from ${target}`;
 }
 
-export type TabLike = { id: string; sql: string; db: string | null; env: string | null };
+export type TabLike = { id: string; sql: string; db: string | null; env: string | null; savedQueryId?: string };
 
 export function findPreviewTab(
   tabs: TabLike[],
@@ -24,7 +25,7 @@ export function findPreviewTab(
   engine: string,
 ): TabLike | undefined {
   const preview = previewSql(table, engine);
-  return tabs.find((t) => t.db === db && (t.env ?? null) === env && t.sql.trim() === preview);
+  return tabs.find((t) => !t.savedQueryId && t.db === db && (t.env ?? null) === env && t.sql.trim() === preview);
 }
 
 export type TableClickPlan =

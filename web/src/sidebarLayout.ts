@@ -29,6 +29,17 @@ export function itemsInEngineOrder(items: ConnItem[]): ConnItem[] {
 
 export type QuerySection = { db: string; queries: SavedQuery[] };
 
+/** Navigation hints only: never used to decide the execution target. */
+export function queryObjects(sql: string, engine: string): string[] {
+  const clean = sql.replace(/'(?:''|[^'])*'|--[^\n]*|\/\*[\s\S]*?\*\//g, " ");
+  const ident = '(?:"(?:""|[^"])+"|`(?:``|[^`])+`|[A-Za-z_][\\w$]*)';
+  const pattern = engine === "neptune"
+    ? new RegExp('\\([^)]*?:\\s*(' + ident + ')', 'g')
+    : new RegExp('\\b(?:from|join|update|into)\\s+(' + ident + '(?:\\s*\\.\\s*' + ident + ')?)', 'gi');
+  return [...new Set([...clean.matchAll(pattern)].map((m) =>
+    m[1].replace(/\s*\.\s*/g, ".").replace(/""/g, '"').replace(/``/g, '`').replace(/^["`]|["`]$/g, '').replace(/["`]\.["`]/g, '.')))].sort();
+}
+
 /** Group saved queries by sidebar logical db. `@db` may be a connection key
  * (west2_matrix_runtime) or the logical name; env siblings share one bucket.
  * Exact connection keys win over another item's logical `db`, matching

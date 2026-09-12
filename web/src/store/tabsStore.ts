@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult } from "../api";
+import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
 import { useConnStore } from "./connStore";
 
@@ -16,6 +16,7 @@ export type Tab = {
   env: string | null;
   workspace?: string | null;
   visited?: number;
+  savedQueryId?: string;
 };
 
 /** Workspace is part of a tab's identity, including when a removed workspace
@@ -100,7 +101,7 @@ function newId(): TabId {
   return `t${++TID}`;
 }
 
-type StoredTab = { id?: string; sql?: string; db?: string | null; env?: string | null; title?: string | null; workspace?: string | null; visited?: number };
+type StoredTab = { id?: string; sql?: string; db?: string | null; env?: string | null; title?: string | null; workspace?: string | null; visited?: number; savedQueryId?: string };
 type StoredResult = { db?: string | null; env?: string | null; res?: (QueryResult & { _sql?: string }) | null } | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
@@ -171,6 +172,7 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     env: tb.env ?? null,
     workspace: tb.workspace,
     visited: Number.isFinite(tb.visited) ? tb.visited : 0,
+    savedQueryId: typeof tb.savedQueryId === "string" ? tb.savedQueryId : undefined,
   }));
   const ati = Math.min(Math.max(Number(localStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
   return { tabs, activeId: tabs[ati]?.id ?? "", results: readStoredResults(tabs, ati) };
@@ -180,7 +182,7 @@ function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
     localStorage.setItem(
       TABS_KEY,
-      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited }))),
+      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited, savedQueryId: tb.savedQueryId }))),
     );
     localStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
@@ -282,6 +284,7 @@ export type TabsState = {
   claimWorkspaces: () => void;
   selectGroup: (db: string, env: string | null) => void;
   addTab: (seed?: { db?: string | null; env?: string | null }) => void;
+  openSavedTab: (query: SavedQuery, db: string, env: string | null) => boolean;
   switchTab: (id: TabId) => void;
   closeTab: (id: TabId) => void;
   renameTab: (id: TabId, title: string | null) => void;
@@ -343,6 +346,22 @@ export const useTabsStore = create<TabsState>((set, get) => {
       set({ tabs, activeId: tab.id, emptyGroups });
     },
 
+    openSavedTab: (query, db, env) => {
+      const s = get();
+      const identity = query.queryId ?? JSON.stringify([query.ws ?? null, query.name, query.db]);
+      const existing = s.tabs.find((tab) => tab.savedQueryId === identity && tab.db === db &&
+        tab.env === env && tab.workspace === workspaceFor(db));
+      if (existing) { get().switchTab(existing.id); return false; }
+      const tab = { ...blankTab({ db, env }), sql: query.sql,
+        title: (query.desc || query.name).split(/[，,；;。\n]/)[0], savedQueryId: identity };
+      const tabs = visit([...s.tabs, tab], tab.id);
+      const emptyGroups = s.emptyGroups.filter((key) => key !== tabGroupKey(tab));
+      persistEmptyGroups(emptyGroups);
+      saveTabs(tabs, tab.id);
+      set({ tabs, activeId: tab.id, emptyGroups });
+      return true;
+    },
+
     switchTab: (id) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id) || id === s.activeId) return;
@@ -397,6 +416,11 @@ export const useTabsStore = create<TabsState>((set, get) => {
 
     updateTab: (id, patch) => {
       const s = get();
+      // Saved query text is immutable. Every editor/history/format write passes here.
+      if (s.tabs.find((tab) => tab.id === id)?.savedQueryId && "sql" in patch) {
+        patch = { ...patch };
+        delete patch.sql;
+      }
       let tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch, ...("db" in patch ? { workspace: workspaceFor(patch.db ?? null) } : {}) } : t));
       if (id === s.activeId && ("db" in patch || "env" in patch)) tabs = visit(tabs, id);
       // SQL input is the hot path: never reserialize unchanged result payloads

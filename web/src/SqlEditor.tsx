@@ -8,6 +8,7 @@ type AcItem = { text: string; kind: AcKind };
 type AcRange = { from: number; to: number };
 
 type SqlEditorProps = {
+  readOnly?: boolean;
   value: string;
   onChange: (next: string) => void;
   onRun: () => void;
@@ -108,7 +109,7 @@ function dedupCap(items: AcItem[], cap: number): AcItem[] {
  * the drag-to-resize bar under it, and the caret-anchored autocomplete box —
  * legacy DOM, ids and token classes throughout. */
 export default function SqlEditor({
-  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory,
+  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory, readOnly = false,
 }: SqlEditorProps) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const hlRef = useRef<HTMLPreElement | null>(null);
@@ -240,6 +241,10 @@ export default function SqlEditor({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     const meta = e.metaKey || e.ctrlKey;
+    if (readOnly) {
+      if (meta && e.key === "Enter") { e.preventDefault(); onRun(); }
+      return;
+    }
     if (e.key === "Escape" && !meta) {
       acDismissedRef.current = true;
       e.preventDefault();
@@ -310,6 +315,8 @@ export default function SqlEditor({
         />
         <textarea
           id="sql"
+          readOnly={readOnly}
+          title={readOnly ? t("saved_readonly") : undefined}
           ref={taRef}
           spellCheck={false}
           placeholder={placeholder}

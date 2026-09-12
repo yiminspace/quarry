@@ -146,12 +146,13 @@ def test_scan_keys_timeout_returns_empty(monkeypatch):
 
 def test_keys_with_meta(monkeypatch):
     monkeypatch.setattr(redis_engine, "scan_keys", lambda url, **k: ["a", "b"])
-    calls = {"a": [[{"value": "string"}], [{"value": "-1"}]],
-             "b": [[{"value": "hash"}], [{"value": "30"}]]}
-
     def fake_run(url, cmd, **k):
-        key = cmd.split()[1]
-        return calls[key].pop(0), 0
+        import shlex
+        args = shlex.split(cmd)
+        assert args[0] == 'EVAL'
+        assert args[2:] == ['2', 'a', 'b']
+        assert k['timeout'] == 10
+        return [{'value': ['string', '-1']}, {'value': ['hash', '30']}], 0
     monkeypatch.setattr(redis_engine, "run_redis", fake_run)
     out = redis_engine.keys_with_meta(URL)
     assert out == [{"key": "a", "type": "string", "ttl": -1},
@@ -165,6 +166,22 @@ def test_keys_with_meta_swallows_errors(monkeypatch):
         raise QuarryError("boom")
     monkeypatch.setattr(redis_engine, "run_redis", boom)
     assert redis_engine.keys_with_meta(URL) == [{"key": "x", "type": "?", "ttl": -1}]
+
+
+def test_metadata_batch_keeps_untrusted_keys_out_of_script(monkeypatch):
+    import shlex
+    keys = ['a b', "x'); redis.call('DEL','victim'); --", 'quote"key']
+    monkeypatch.setattr(redis_engine, 'scan_keys', lambda *a, **k: keys)
+    calls = []
+    def run(url, command, **kwargs):
+        args = shlex.split(command)
+        calls.append(args)
+        assert args[3:] == keys
+        assert 'DEL' not in args[1]
+        return [{'value': ['string', '-1']} for _ in keys], 0
+    monkeypatch.setattr(redis_engine, 'run_redis', run)
+    assert len(redis_engine.keys_with_meta(URL)) == 3
+    assert len(calls) == 1
 
 
 # ---- inspect_key ----
