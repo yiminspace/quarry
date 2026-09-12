@@ -595,7 +595,7 @@ group = "acme"
 
 @contextmanager
 def _proxied_envset_page(browser, tmp_path, monkeypatch, *, enabled: bool, discovered: bool, reachable: bool = True):
-    """Like page_envset, but shop_dev carries ssh_host and `tunnel.list_tunnels()`
+    """Like page_envset, but shop_dev carries ssh_host and `tunnel.tunnel_fact_for()`
     is monkeypatched to simulate an already-established tunnel (issue #101
     r1-2: the badge reflects a *live* tunnel fact, not a prediction of what a
     fresh connection would do — merely toggling workspace config doesn't
@@ -614,7 +614,8 @@ def _proxied_envset_page(browser, tmp_path, monkeypatch, *, enabled: bool, disco
         "alive": True,
     }
     state = {"proxied": enabled and discovered and reachable}
-    monkeypatch.setattr(tunnel, "list_tunnels", lambda: [live_tunnel] if state["proxied"] else [])
+    monkeypatch.setattr(tunnel, "tunnel_fact_for", lambda conn, engine:
+                        live_tunnel if state["proxied"] and conn.ssh_host else None)
     with _running_gui(tmp_path, extra_conn=PROXY_ENVSET_TOML) as url:
         ctx, pg = _mk_page(browser, url)
         try:

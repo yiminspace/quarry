@@ -9,6 +9,23 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- SSH direct mode ignores inherited SSH proxy/jump settings. Tunnel registry
+  updates are serialized across processes and shared forwards are checked against
+  owner and SSH process identities before reuse. Proxy changes let active users
+  finish, and unrelated destinations no longer wait behind one slow SSH setup.
+- PostgreSQL tunnels preserve the database hostname for `sslmode=verify-full`
+  while connecting through the local forwarded port.
+- Tunnel keepers enforce single-instance ownership, avoid signalling stale PIDs,
+  honor disabled reconnection, and stop retrying permanent configuration failures
+  until the relevant configuration changes. Workspace toggles no longer change
+  other workspaces through the legacy global tunnel setting.
+- Text `qy status` reports the reason for blocked tunnels and keeper configuration
+  failures, including when no tunnels have been loaded yet.
+
+- Connection files are atomically replaced using unique private (0600) temporary
+  files. PostgreSQL URL passwords are passed through a temporary private
+  `PGPASSFILE` instead of appearing in process arguments.
+
 - Saved queries appear inside their owning workspace in the sidebar, with independent
   collapse state and distinct file identities for same-named queries. Malformed
   query files are skipped without hiding valid queries.

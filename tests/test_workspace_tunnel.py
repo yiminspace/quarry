@@ -322,15 +322,17 @@ def test_tunnel_flags_read_legacy_tunnel_table(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_set_tunnel_flags_write_tunnel_table(monkeypatch, tmp_path):
+def test_set_tunnel_flags_write_workspace_overrides(monkeypatch, tmp_path):
     cfg = _use_config(monkeypatch, tmp_path)
     ws = tmp_path / "ws"
     workspace.set_tunnel_keep_alive(str(ws), True)
     workspace.set_tunnel_reconnect(str(ws), True)
     text = cfg.read_text(encoding="utf-8")
-    assert "[tunnel]" in text
-    assert "keep_alive = true" in text
-    assert "reconnect = true" in text
+    import tomllib
+    data = tomllib.loads(text)
+    assert "tunnel" not in data
+    assert data["tunnel_keep_alive_workspaces"] == [str(ws.resolve())]
+    assert data["tunnel_reconnect_workspaces"] == [str(ws.resolve())]
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +548,7 @@ class _FakeProc:
     """Stand-in for subprocess.Popen. poll() returns _poll_value."""
 
     def __init__(self, poll_value=None):
+        self.pid = 12345
         self._poll_value = poll_value
         self.terminated = False
         self.waited = False
@@ -619,11 +622,14 @@ class _Conn:
 
 
 @pytest.fixture(autouse=True)
-def _clear_pool():
+def _clear_pool(monkeypatch):
     """Never leak pooled fake procs across tests / to real close_all at exit."""
     tunnel._POOL.clear()
+    tunnel._RETIRED.clear()
+    monkeypatch.setattr(tunnel, "_process_identity", lambda pid: f"identity-{pid}" if pid else None)
     yield
     tunnel._POOL.clear()
+    tunnel._RETIRED.clear()
 
 
 @pytest.mark.unit
@@ -659,7 +665,8 @@ def test_open_tunnel_default_disabled_no_proxycommand_in_cmd(monkeypatch):
     with tunnel.open_tunnel(conn, "postgres"):
         pass
     cmd = popen_calls[0]
-    assert not any("ProxyCommand" in str(c) for c in cmd)
+    assert "ProxyCommand=none" in cmd
+    assert "ProxyJump=none" in cmd
 
 
 @pytest.mark.unit
@@ -824,6 +831,9 @@ def test_open_tunnel_registers_new_tunnel_in_cross_process_registry(monkeypatch)
         "proxied": False,
         "proxy": None,
         "owner": "client",
+        "owner_identity": f"identity-{os.getpid()}",
+        "ssh_pid": 12345,
+        "ssh_identity": "identity-12345",
     }
 
 
@@ -963,6 +973,7 @@ def test_list_tunnels_includes_live_registry_entries_from_other_processes():
         tunnel._save_registry({"other@bastion-x:22|-|db-x:5432|-": {"424242": {
             "ssh_target": "other@bastion-x:22", "db_target": "db-x:5432",
             "local_port": port, "proxied": False, "proxy": None,
+            "owner_identity": "identity-424242", "ssh_pid": 12345, "ssh_identity": "identity-12345",
         }}})
         items = {i["local_port"]: i for i in tunnel.list_tunnels()}
         assert items[port] == {
@@ -972,6 +983,7 @@ def test_list_tunnels_includes_live_registry_entries_from_other_processes():
             "proxied": False,
             "proxy": None,
             "alive": True,
+            "owner_identity": "identity-424242", "ssh_pid": 12345, "ssh_identity": "identity-12345",
         }
     finally:
         srv.close()
@@ -1012,7 +1024,8 @@ def test_tunnel_fact_for_no_live_tunnel_returns_none():
 
 
 @pytest.mark.unit
-def test_tunnel_fact_for_matches_live_pooled_tunnel():
+def test_tunnel_fact_for_matches_live_pooled_tunnel(monkeypatch):
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: proxy.ProxyInfo(host="127.0.0.1", port=7890, source="test"))
     key = ("bastion", 22, "root", "", "remote-db", 5432, ("127.0.0.1", 7890))
     tunnel._POOL[key] = tunnel._Tunnel(_FakeProc(poll_value=None), 15002)
     conn = _Conn("postgresql://u@remote-db:5432/app", ssh_host="bastion")
@@ -1078,7 +1091,8 @@ def test_open_tunnel_proxy_enabled_but_port_unreachable_falls_back_direct(monkey
     with tunnel.open_tunnel(conn, "postgres"):
         pass
     cmd = popen_calls[0]
-    assert not any("ProxyCommand" in str(c) for c in cmd)
+    assert "ProxyCommand=none" in cmd
+    assert "ProxyJump=none" in cmd
 
 
 @pytest.mark.unit
@@ -1100,7 +1114,7 @@ def test_open_tunnel_with_ssh_rewrites_and_pools(monkeypatch):
         ssh_user="deploy",
     )
     with tunnel.open_tunnel(conn, "postgres") as url:
-        assert url == "postgresql://alice:pw@127.0.0.1:54321/app"
+        assert url == "postgresql://alice:pw@remote-db:54321/app?hostaddr=127.0.0.1&port=54321"
 
     # exactly one tunnel spawned + pooled
     assert len(popen_calls) == 1
@@ -1270,10 +1284,13 @@ def test_open_tunnel_attaches_to_live_registry_entry_without_spawning_ssh(monkey
         "proxied": False,
         "proxy": None,
         "owner": "keeper",
+        "owner_identity": "identity-999999",
+        "ssh_pid": 12345,
+        "ssh_identity": "identity-12345",
     }}})
 
     with tunnel.open_tunnel(conn, "postgres") as url:
-        assert "127.0.0.1:55123" in url
+        assert "remote-db:55123" in url and "hostaddr=127.0.0.1" in url
     assert popen_calls == []
     pooled = next(iter(tunnel._POOL.values()))
     assert pooled.proc is None
@@ -1302,7 +1319,7 @@ def test_open_tunnel_does_not_attach_non_keeper_registry_entry(monkeypatch):
     }}})
 
     with tunnel.open_tunnel(conn, "postgres") as url:
-        assert "127.0.0.1:55124" in url
+        assert "remote-db:55124" in url and "hostaddr=127.0.0.1" in url
     assert len(popen_calls) == 1
 
 
@@ -1375,3 +1392,338 @@ def test_make_tunnel_wait_fail_cleanup_swallows_exception(monkeypatch):
         tunnel._make_tunnel(conn, "remote", 5432)
     # no stderr captured -> generic fallback detail
     assert "port not ready / timeout" in str(ei.value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("changed", ["owner_identity", "ssh_identity", "missing"])
+def test_shared_attach_rejects_reused_processes_even_with_open_port(monkeypatch, changed):
+    monkeypatch.setattr(tunnel, "_port_open", lambda *a: True)
+    entry = {"owner": "keeper", "local_port": 55123,
+             "owner_identity": "identity-999999", "ssh_pid": 12345,
+             "ssh_identity": "identity-12345"}
+    if changed == "missing":
+        entry.pop("ssh_identity")
+    else:
+        entry[changed] = "previous-process"
+    key = ("bastion", 22, "root", "", "remote-db", 5432, None)
+    tunnel._save_registry({tunnel._registry_key(key): {"999999": entry}})
+    assert tunnel._registry_attached_tunnel(key) is None
+    assert tunnel.list_tunnels() == []
+
+
+@pytest.mark.unit
+def test_cached_attachment_revalidates_identity_on_next_open(monkeypatch):
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: None)
+    monkeypatch.setattr(tunnel, "_port_open", lambda *a: True)
+    conn = _Conn("postgresql://u@remote-db/app", ssh_host="bastion")
+    key = tunnel.tunnel_identity(conn, "postgres")
+    entry = {"owner": "keeper", "local_port": 55123,
+             "owner_identity": "identity-999999", "ssh_pid": 12345,
+             "ssh_identity": "identity-12345"}
+    tunnel._save_registry({tunnel._registry_key(key): {"999999": entry}})
+    with tunnel.open_tunnel(conn, "postgres"):
+        assert tunnel._POOL[key].attached
+    monkeypatch.setattr(tunnel, "_process_identity", lambda pid: "reused")
+    replacement = tunnel._Tunnel(_FakeProc(), 55124)
+    monkeypatch.setattr(tunnel, "_make_tunnel", lambda *a, **k: replacement)
+    with tunnel.open_tunnel(conn, "postgres") as url:
+        assert "remote-db:55124" in url
+    assert tunnel._POOL[key] is replacement
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("shared", [False, True])
+def test_proxy_change_retires_without_interrupting_borrowers(monkeypatch, shared):
+    if shared:
+        monkeypatch.setenv("QUARRY_TUNNEL_OWNER", "keeper")
+    else:
+        monkeypatch.delenv("QUARRY_TUNNEL_OWNER", raising=False)
+    choices = iter([None, proxy.ProxyInfo(host="proxy", port=7890, source="test")])
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: next(choices))
+    made = []
+    def make(*a, **k):
+        t = tunnel._Tunnel(_FakeProc(), 55000 + len(made))
+        made.append(t)
+        return t
+    monkeypatch.setattr(tunnel, "_make_tunnel", make)
+    conn = _Conn("postgresql://u@db/app", ssh_host="bastion")
+    with tunnel.open_tunnel(conn, "postgres"):
+        with tunnel.open_tunnel(conn, "postgres"):
+            assert not made[0].proc.terminated
+            assert made[0].retired
+            assert len(tunnel._load_registry()) == 1
+        assert not made[0].proc.terminated
+    assert made[0].proc.terminated is (not shared)
+    tunnel.close_all()
+    assert all(t.proc.terminated for t in made)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("engine,url", [
+    ("postgres", "postgresql://alice:p%40ss@db.example:5432/app?sslmode=verify-full&hostaddr=10.0.0.1&port=5432&application_name=a+b&password=p+a%20b"),
+    ("postgres", "postgresql://alice@[2001:db8::1]:5432/app?sslmode=verify-full"),
+    ("mysql", "mysql://alice@db.example:3306/app?charset=utf8mb4"),
+])
+def test_tunneled_urls_preserve_pg_tls_identity_only(monkeypatch, engine, url):
+    from urllib.parse import parse_qs, urlparse
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: None)
+    monkeypatch.setattr(tunnel, "_make_tunnel", lambda *a, **k: tunnel._Tunnel(_FakeProc(), 55111))
+    with tunnel.open_tunnel(_Conn(url, ssh_host="bastion"), engine) as effective:
+        parsed = urlparse(effective)
+        params = parse_qs(parsed.query)
+        assert parsed.port == 55111
+        if engine == "postgres":
+            assert parsed.hostname == urlparse(url).hostname
+            assert params["sslmode"] == ["verify-full"]
+            assert params["hostaddr"] == ["127.0.0.1"]
+            assert params["port"] == ["55111"]
+            assert parsed.password == urlparse(url).password
+            if "application_name" in params:
+                assert params["application_name"] == ["a+b"]
+                assert params["password"] == ["p+a b"]
+        else:
+            assert parsed.hostname == "127.0.0.1"
+            assert "hostaddr" not in params
+            assert parsed.query == urlparse(url).query
+
+
+@pytest.mark.unit
+def test_explicit_no_proxy_overrides_inherited_ssh_configuration(monkeypatch):
+    commands = []
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda cmd, **kw: commands.append(cmd) or _FakeProc())
+    monkeypatch.setattr(tunnel, "_wait_port", lambda *a, **k: True)
+    monkeypatch.setattr(tunnel, "_free_port", lambda: 55100)
+    def direct(*a, **kw):
+        assert kw["override"] is False
+        return None
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", direct)
+    with tunnel.open_tunnel(_Conn("postgresql://u@db/app", ssh_host="bastion"), "postgres", use_proxy=False):
+        pass
+    assert "ProxyCommand=none" in commands[0]
+    assert "ProxyJump=none" in commands[0]
+
+
+@pytest.mark.unit
+def test_tunnel_fact_matches_key_proxy_and_liveness(monkeypatch):
+    current_proxy = None
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **kw: current_proxy)
+    conn = _Conn("postgresql://u@db/app", ssh_host="bastion", ssh_key="key-a")
+    key = tunnel.tunnel_identity(conn, "postgres")
+    t = tunnel._Tunnel(_FakeProc(), 55100)
+    tunnel._POOL[key] = t
+    assert tunnel.tunnel_fact_for(conn, "postgres")["local_port"] == 55100
+    conn.ssh_key = "key-b"
+    assert tunnel.tunnel_fact_for(conn, "postgres") is None
+    conn.ssh_key = "key-a"
+    current_proxy = proxy.ProxyInfo(host="proxy", port=7890, source="test")
+    assert tunnel.tunnel_fact_for(conn, "postgres") is None
+    current_proxy = None
+    t.proc.die()
+    assert tunnel.tunnel_fact_for(conn, "postgres") is None
+
+
+@pytest.mark.unit
+def test_registry_atomic_private_unique_temps_and_cleanup(monkeypatch):
+    actual_replace = os.replace
+    temps = []
+    def replace(src, dst):
+        temps.append(src)
+        assert Path(src).stat().st_mode & 0o777 == 0o600
+        actual_replace(src, dst)
+    monkeypatch.setattr(tunnel.os, "replace", replace)
+    with tunnel._registry_transaction():
+        tunnel._save_registry({"one": {}})
+        tunnel._save_registry({"two": {}})
+    assert len(set(temps)) == 2
+    assert tunnel.REGISTRY_FILE.stat().st_mode & 0o777 == 0o600
+    assert Path(str(tunnel.REGISTRY_FILE) + ".lock").stat().st_mode & 0o777 == 0o600
+    assert not list(tunnel.REGISTRY_FILE.parent.glob("*.tmp"))
+    def fail(*a):
+        raise OSError("replace failed")
+    monkeypatch.setattr(tunnel.os, "replace", fail)
+    with pytest.raises(OSError):
+        tunnel._save_registry({"bad": {}})
+    assert tunnel._load_registry() == {"two": {}}
+    assert not list(tunnel.REGISTRY_FILE.parent.glob("*.tmp"))
+
+
+@pytest.mark.unit
+def test_registry_parallel_process_registration_preserves_all_writers():
+    import subprocess
+    import sys
+    script = '''
+import os, sys, time
+from types import SimpleNamespace
+from quarry import tunnel
+sys.stdin.readline()
+tunnel._process_identity = lambda pid: str(pid)
+original_load = tunnel._load_registry
+def delayed_load():
+    data = original_load()
+    time.sleep(0.01)
+    return data
+tunnel._load_registry = delayed_load
+for i in range(6):
+    key = ("bastion", 22, "root", "", "db", 5432 + i, None)
+    with tunnel._LOCK:
+        tunnel._register_tunnel(key, tunnel._Tunnel(SimpleNamespace(pid=os.getpid()), 55100), None)
+os._exit(0)
+'''
+    children = [subprocess.Popen([sys.executable, "-c", script], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for _ in range(6)]
+    try:
+        for child in children:
+            child.stdin.write("go\n")
+            child.stdin.flush()
+        for child in children:
+            _, err = child.communicate(timeout=15)
+            assert child.returncode == 0, err
+        registry = tunnel._load_registry()
+        assert len(registry) == 6
+        assert all(set(procs) == {str(c.pid) for c in children} for procs in registry.values())
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+
+
+@pytest.mark.unit
+def test_registry_pruning_does_not_erase_concurrent_registration(monkeypatch):
+    key = "target"
+    old = {"local_port": 55100}
+    new = {"local_port": 55101}
+    tunnel._save_registry({key: {"999999": old}})
+    def stale(pid, entry):
+        # Simulate another process replacing the same PID slot after our read.
+        tunnel._save_registry({key: {"999999": new}, "other": {"888888": new}})
+        return False
+    monkeypatch.setattr(tunnel, "_entry_alive", stale)
+    assert tunnel.list_tunnels() == []
+    assert tunnel._load_registry() == {key: {"999999": new}, "other": {"888888": new}}
+
+
+@pytest.mark.unit
+def test_slow_setup_does_not_block_other_target(monkeypatch):
+    import concurrent.futures
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **k: None)
+    def make(conn, *a, **k):
+        if conn.ssh_host == "slow":
+            entered.set()
+            assert release.wait(5)
+        return tunnel._Tunnel(_FakeProc(), 55001)
+    monkeypatch.setattr(tunnel, "_make_tunnel", make)
+    def run(host):
+        with tunnel.open_tunnel(_Conn("postgresql://u@db/app", ssh_host=host), "postgres"):
+            return host
+    with concurrent.futures.ThreadPoolExecutor(2) as executor:
+        slow = executor.submit(run, "slow")
+        assert entered.wait(2)
+        try:
+            assert executor.submit(run, "fast").result(timeout=2) == "fast"
+        finally:
+            release.set()
+        assert slow.result(timeout=2) == "slow"
+
+
+@pytest.mark.unit
+def test_stderr_capture_drains_large_pipe_with_bounded_tail():
+    import subprocess
+    import sys
+    proc = subprocess.Popen([sys.executable, "-c", "import os; os.write(2,b'x'*1000000+b'last diagnostic')"],
+                            stderr=subprocess.PIPE)
+    capture = tunnel._StderrCapture(proc.stderr)
+    try:
+        proc.wait(timeout=5)
+        capture.thread.join(timeout=2)
+        assert not capture.thread.is_alive()
+        assert len(capture.diagnostic()) <= 8 * 4096
+        assert capture.diagnostic().endswith(b"last diagnostic")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+@pytest.mark.unit
+def test_registry_failure_reaps_unpublished_child(monkeypatch):
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **kw: None)
+    child = tunnel._Tunnel(_FakeProc(), 55101)
+    monkeypatch.setattr(tunnel, "_make_tunnel", lambda *a, **kw: child)
+    def fail(data):
+        raise OSError("disk full")
+    monkeypatch.setattr(tunnel, "_save_registry", fail)
+    with pytest.raises(OSError, match="disk full"):
+        with tunnel.open_tunnel(_Conn("postgresql://u@db/app", ssh_host="bastion"), "postgres"):
+            pass
+    assert child.proc.terminated and child.proc.waited
+    assert tunnel._POOL == {}
+    assert tunnel._load_registry() == {}
+
+
+@pytest.mark.unit
+def test_dead_entry_is_removed_even_if_replacement_fails(monkeypatch):
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **kw: None)
+    conn = _Conn("postgresql://u@db/app", ssh_host="bastion")
+    key = tunnel.tunnel_identity(conn, "postgres")
+    dead = tunnel._Tunnel(_FakeProc(poll_value=1), 55101)
+    tunnel._POOL[key] = dead
+    tunnel._register_tunnel(key, dead, None)
+    def fail(*a, **kw):
+        raise RuntimeError("ssh failed")
+    monkeypatch.setattr(tunnel, "_make_tunnel", fail)
+    with pytest.raises(RuntimeError, match="ssh failed"):
+        with tunnel.open_tunnel(conn, "postgres"):
+            pass
+    assert tunnel._POOL == {}
+    assert tunnel._load_registry() == {}
+    assert dead.proc.waited
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("extra,target", [("", "query-db"), ("&hostaddr=10.0.0.5", "10.0.0.5")])
+def test_pg_query_host_and_port_override_forward_target(monkeypatch, extra, target):
+    from urllib.parse import parse_qs, urlparse
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **kw: None)
+    targets = []
+    def make(conn, host, port, **kw):
+        targets.append((host, port))
+        return tunnel._Tunnel(_FakeProc(), 55101)
+    monkeypatch.setattr(tunnel, "_make_tunnel", make)
+    conn = _Conn("postgresql://u@authority-db:5432/app?host=query-db&port=6432&sslmode=verify-full" + extra,
+                 ssh_host="bastion")
+    with tunnel.open_tunnel(conn, "postgres") as effective:
+        params = parse_qs(urlparse(effective).query)
+        assert params["host"] == ["query-db"]
+        assert params["port"] == ["55101"]
+        assert params["hostaddr"] == ["127.0.0.1"]
+        assert params["sslmode"] == ["verify-full"]
+    assert targets == [(target, 6432)]
+
+
+@pytest.mark.unit
+def test_same_target_concurrent_setup_is_single_flight(monkeypatch):
+    import concurrent.futures
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(tunnel.proxy_mod, "should_use_proxy", lambda *a, **kw: None)
+    made = []
+    def make(*a, **kw):
+        made.append(tunnel._Tunnel(_FakeProc(), 55101))
+        entered.set()
+        assert release.wait(3)
+        return made[-1]
+    monkeypatch.setattr(tunnel, "_make_tunnel", make)
+    def run():
+        with tunnel.open_tunnel(_Conn("postgresql://u@db/app", ssh_host="bastion"), "postgres") as url:
+            return url
+    with concurrent.futures.ThreadPoolExecutor(2) as executor:
+        first = executor.submit(run)
+        assert entered.wait(2)
+        second = executor.submit(run)
+        release.set()
+        assert first.result(timeout=3) == second.result(timeout=3)
+    assert len(made) == 1

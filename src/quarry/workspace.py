@@ -317,30 +317,45 @@ def tunnel_reconnect_workspaces() -> list[str]:
     return _workspace_toggle_values(_TUNNEL_RECONNECT_KEY)
 
 
-def is_tunnel_keep_alive_enabled(ws_home: "str | Path") -> bool:
+def _tunnel_workspace_setting(key: str, legacy_key: str, ws_home: "str | Path") -> bool | None:
     target = _resolved(str(ws_home))
-    if target in {_resolved(x) for x in tunnel_keep_alive_workspaces()}:
+    # Explicit false wins even for hand-edited configs containing both lists.
+    disabled_key = key.removesuffix("_workspaces") + "_disabled_workspaces"
+    if target in {_resolved(x) for x in _workspace_toggle_values(disabled_key)}:
+        return False
+    if target in {_resolved(x) for x in _workspace_toggle_values(key)}:
         return True
-    table_flag = _tunnel_table_bool("keep_alive")
-    return table_flag is True
+    return _tunnel_table_bool(legacy_key)
+
+
+def is_tunnel_keep_alive_enabled(ws_home: "str | Path") -> bool:
+    return _tunnel_workspace_setting(_TUNNEL_KEEP_ALIVE_KEY, "keep_alive", ws_home) is True
+
+
+def tunnel_reconnect_setting(ws_home: "str | Path") -> bool | None:
+    """Effective explicit setting, or None when no scoped/legacy value exists.
+
+    qy up defaults an absent value to true; an explicit false is preserved.
+    """
+    return _tunnel_workspace_setting(_TUNNEL_RECONNECT_KEY, "reconnect", ws_home)
 
 
 def is_tunnel_reconnect_enabled(ws_home: "str | Path") -> bool:
-    target = _resolved(str(ws_home))
-    if target in {_resolved(x) for x in tunnel_reconnect_workspaces()}:
-        return True
-    table_flag = _tunnel_table_bool("reconnect")
-    return table_flag is True
+    return tunnel_reconnect_setting(ws_home) is True
+
+
+def _set_tunnel_workspace_toggle(key: str, ws_home: str, enabled: bool) -> Path:
+    disabled_key = key.removesuffix("_workspaces") + "_disabled_workspaces"
+    _set_workspace_toggle(disabled_key, ws_home, not enabled)
+    return _set_workspace_toggle(key, ws_home, enabled)
 
 
 def set_tunnel_keep_alive(ws_home: str, enabled: bool) -> Path:
-    _set_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
-    return _write_table_bool(_TUNNEL_SECTION, "keep_alive", enabled)
+    return _set_tunnel_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
 
 
 def set_tunnel_reconnect(ws_home: str, enabled: bool) -> Path:
-    _set_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
-    return _write_table_bool(_TUNNEL_SECTION, "reconnect", enabled)
+    return _set_tunnel_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
 
 
 def _split_dirs(explicit: str | None) -> list[Path]:

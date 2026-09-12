@@ -354,9 +354,8 @@ def test_api_conninfo_resolves_and_masks(tmp_path, monkeypatch):
 @pytest.mark.unit
 def test_api_connections_marks_env_as_proxied_when_a_live_tunnel_is_actually_proxied(tmp_path, monkeypatch):
     """issue #101 r1-2: the badge must reflect an *actually established*
-    proxied tunnel (tunnel.list_tunnels() fact), not merely that a fresh
-    connection attempt would currently choose to proxy — so this fakes the
-    tunnel pool directly instead of the proxy-discovery plumbing."""
+    proxied tunnel for this connection, not merely that a fresh connection
+    attempt would choose a proxy. Pool identity checks have their own tests."""
     from pathlib import Path
 
     from quarry import gui, tunnel, workspace
@@ -380,7 +379,7 @@ def test_api_connections_marks_env_as_proxied_when_a_live_tunnel_is_actually_pro
         "proxy": "127.0.0.1:6152",
         "alive": True,
     }
-    monkeypatch.setattr(tunnel, "list_tunnels", lambda: [live_tunnel])
+    monkeypatch.setattr(tunnel, "tunnel_fact_for", lambda conn, engine: live_tunnel)
     workspace.configure_workspace(str(tmp_path))
     try:
         out = gui.api_connections()

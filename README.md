@@ -168,9 +168,9 @@ If you query the same SSH-backed connections repeatedly (CLI + GUI + MCP), run
 the workspace keeper once and reuse warm forwards across processes:
 
 ```bash
-qy up                    # start keeper for current workspace (also turns keep-alive on)
+qy up                    # enable keep-alive; default reconnect on unless explicitly disabled
 qy status                # text status: keeper + per-connection tunnel state
-qy status --format json  # machine-readable state (up/reconnecting/down)
+qy status --format json  # per-tunnel state (up/reconnecting/down/blocked)
 qy down                  # stop keeper
 ```
 
@@ -180,6 +180,24 @@ re-opened with exponential backoff and reported as `reconnecting` in both `qy
 status` and the GUI header badge. If keep-alive is enabled but the keeper is
 down, cold `qy exec`/`qy run` still work (legacy behavior) and print a one-line
 hint to stderr suggesting `qy up`.
+
+With reconnection explicitly disabled, the keeper makes an initial attempt but
+does not retry failed or dropped tunnels. Missing keys, authentication failures,
+and invalid SSH configuration report `blocked`; fixing the relevant connection
+or SSH files allows another attempt. `qy status` describes tunnel transport,
+not database authentication or query health; the GUI's “keeper up” badge means
+the background process is running. Use a read-only query to test the full path.
+
+The registry verifies process identities before sharing a forward. Older keeper
+records containing only a PID are not trusted; stop the old version's keeper
+before upgrading. On proxy changes, active queries retain their existing
+forward. Retired keeper-owned forwards stay alive until keeper shutdown because
+external clients may still be using them.
+
+For PostgreSQL server identity verification, add `sslmode=verify-full` and a
+trusted `sslrootcert` to the database URL. Quarry preserves the database hostname
+for certificate verification and supplies `hostaddr=127.0.0.1` plus the forwarded
+port to libpq. An SSH tunnel alone does not verify the database server.
 
 ### Proxy (for throttled tunnels)
 

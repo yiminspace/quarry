@@ -125,7 +125,7 @@ export type WorkspacesResponse = {
 export type KeepAliveTunnelStatus = {
   connection: string;
   env: string | null;
-  state: "up" | "reconnecting" | "down";
+  state: "up" | "reconnecting" | "down" | "blocked";
   localPort?: number | null;
   lastError?: string | null;
   updatedAt?: number;

@@ -798,6 +798,40 @@ class TestSpeedtest:
 
 @pytest.mark.unit
 class TestKeepAliveCommands:
+    @pytest.mark.parametrize("state", ["down", "reconnecting", "blocked"])
+    def test_status_text_preserves_tunnel_failure_reason(self, wsdir, monkeypatch, capsys, state):
+        monkeypatch.setattr(cli.keepalive, "status", lambda ws: {
+            "workspace": str(ws), "enabled": True, "reconnect": True,
+            "keeper": {"running": True, "pid": 43210},
+            "tunnels": [{"connection": "shop", "env": "dev", "state": state,
+                         "lastError": "ssh key not found: /keys/bastion.pem"}],
+        })
+        assert run_cli(wsdir, "status") == EXIT_OK
+        out = capsys.readouterr().out
+        assert f"shop@dev: {state}" in out
+        assert "error: ssh key not found: /keys/bastion.pem" in out
+
+    @pytest.mark.parametrize("tunnels", [[], [{"connection": "shop", "state": "up", "localPort": 55123}]])
+    def test_status_reports_configuration_failure_before_tunnels(self, wsdir, monkeypatch, capsys, tunnels):
+        payload = {"workspace": str(wsdir), "enabled": True, "reconnect": True,
+                   "keeper": {"running": True, "pid": 43210}, "state": "blocked",
+                   "lastError": "invalid connections.toml at line 2", "tunnels": tunnels}
+        monkeypatch.setattr(cli.keepalive, "status", lambda ws: payload)
+        assert run_cli(wsdir, "status") == EXIT_OK
+        out = capsys.readouterr().out
+        assert "configuration: blocked  error: invalid connections.toml at line 2" in out
+        assert out.index("configuration: blocked") < out.index("tunnels:")
+        assert run_cli(wsdir, "status", "--format", "json") == EXIT_OK
+        assert json.loads(capsys.readouterr().out) == payload
+
+    def test_status_reports_blocked_configuration_without_error_text(self, wsdir, monkeypatch, capsys):
+        monkeypatch.setattr(cli.keepalive, "status", lambda ws: {
+            "workspace": str(ws), "keeper": {"running": True}, "state": "blocked", "tunnels": []})
+        assert run_cli(wsdir, "status") == EXIT_OK
+        out = capsys.readouterr().out
+        assert "configuration: blocked\n" in out
+        assert "None" not in out
+
     def test_up_down_and_status_json(self, wsdir, monkeypatch, capsys):
         from quarry import keepalive
 
