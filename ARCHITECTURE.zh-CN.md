@@ -2,7 +2,7 @@
 
 Quarry 是一个运行在本机的数据库工作台。它把连接管理、查询执行和安全规则放在 Python 内核中，让人和 AI 通过不同入口使用同一套能力。
 
-本文基于 2026-09-12 的仓库代码整理。
+本文基于 2026-09-13 的仓库代码整理。
 
 ## 1. 整体结构：一个内核，多个入口
 
@@ -173,7 +173,7 @@ Neptune 空服务不执行或持久化真实图数据，图查询正确性需要
 
 ## 8. GUI 如何维护工作状态
 
-`qy gui` 启动本机 Python HTTP 服务：`/app/` 提供构建好的 React 页面，`/api/*` 处理请求，SSE 通知前端配置变化。运行已安装的 GUI 无需 Node.js；Node.js 用于前端开发和构建。
+`qy gui` 启动本机 Python HTTP 服务：`/app/` 提供构建好的 React 页面，`/api/*` 处理请求。打开页面后如何跟上文件变化和进程升级，见第 9 节。运行已安装的 GUI 无需 Node.js；Node.js 用于前端开发和构建。
 
 前端使用 Zustand 管理连接、界面和标签页状态：
 
@@ -185,18 +185,37 @@ Neptune 空服务不执行或持久化真实图数据，图查询正确性需要
 - 结果网格、状态栏和导出跟随当前标签页，避免混用其他查询的结果。
 - 手写 SQL 通过草稿和历史机制保护，表预览等操作避免静默覆盖。
 
-## 9. 代码入口
+## 9. GUI 如何自动刷新
+
+打开的 GUI 要跟上两类本机变化：磁盘上的 workspace 文件被改了，以及 Quarry 进程被升级重启了。它不靠整页轮询，而是用一条提示通道。
+
+`GET /api/events` 是 Server-Sent Events。事件只告诉前端「该去重拉什么」，不携带连接列表或查询内容。丢一条无妨，也没有补发。
+
+```text
+磁盘文件变化 → 后端监视 → workspace_changed → 前端重拉连接和查询列表
+进程重启升级 → EventSource 自动重连 → 对比 /api/version → 提示刷新页面
+PyPI 有新版本 → 后台检查 → update_available → 角标（可升级，不是热替换当前页）
+```
+
+**工作区文件。** 有人连上事件通道后，后端每隔约 2 秒比对 `config.toml`、各 workspace 的 `connections.toml` 和 `queries/**/*.sql` 的修改时间。有增删改就重载 workspace，并推送 `workspace_changed`。前端据此刷新侧栏，并给出简短提示。
+
+**本机升级。** 浏览器的 EventSource 在服务断开后会自动重连。重连成功后再读 `/api/version`。版本变了，说明旧标签页还在跑旧界面，于是挂一条不消失的横幅，请用户刷新页面加载新 UI。这不是静默热替换 JavaScript。
+
+**远端新版本。** 后台会偶尔查询 PyPI 上的 `quarry-db`。可编辑安装、显式关闭检查或网络失败都保持静默。发现更新只显示角标，不会自动安装。
+
+## 10. 代码入口
 
 | 文件 | 职责 |
 |---|---|
 | `src/quarry/core.py` | 连接解析、安全检查、引擎执行、结果格式 |
 | `src/quarry/workspace.py` | workspace 发现、配置、查询目录链接 |
 | `src/quarry/cli.py` | `qy` 命令入口 |
-| `src/quarry/gui.py` | 本地 HTTP API 和静态文件服务 |
+| `src/quarry/gui.py` | 本地 HTTP API、静态文件和事件通道 |
 | `src/quarry/mcp.py` | AI 工具接口和 MCP 授权 |
 | `src/quarry/tunnel.py` / `keepalive.py` | SSH 隧道复用和后台保活 |
 | `src/quarry/proxy.py` / `proxycommand.py` | 代理发现、路径选择和 HTTP CONNECT |
 | `src/quarry/local.py` / `local_sync.py` | 本地服务创建和 PostgreSQL 结构同步 |
+| `web/src/useEvents.ts` | SSE 订阅、版本对比和刷新提示 |
 | `web/src/ResultWorkbench.tsx` / `store/` | 查询交互、标签页和结果状态 |
 
 进一步阅读：[README](README.zh-CN.md)、[支持边界](COMPATIBILITY.md)、[测试说明](TESTING.md)。
