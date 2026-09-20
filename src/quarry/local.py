@@ -13,8 +13,10 @@ docker volume so it survives `down` (and `stop`/`start`) unless `--purge`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -36,8 +38,8 @@ LOCAL_ENV = "local"
 LOCAL_PG_USER = "quarry"
 LOCAL_PG_PASSWORD = "quarry"
 
-# A logical-db name doubles as a Postgres database name and a connection-key
-# suffix, so it must be a safe SQL identifier — reuse the connection-key rule.
+# A logical-db name contributes to the generated connection key and namespaced
+# Postgres database name, so it must be a safe SQL identifier.
 SAFE_DB_RE = CONN_KEY_RE
 
 
@@ -64,7 +66,14 @@ class LocalRegistration:
     key: str
     created: bool
     workspace: Path
+    database: str
     reconciled: bool = False
+
+
+@dataclass(frozen=True)
+class LocalIdentity:
+    scope: str
+    database: str
 
 
 PG_SPEC = EngineSpec(
@@ -137,6 +146,10 @@ def _sync_managed_ports(spec: EngineSpec, old_port: int) -> None:
 
     for ws in _known_workspaces():
         path = ws.connections_file
+        # A configured workspace may have been deleted while it was inactive.
+        # Port reconciliation must not resurrect it just to create a lock file.
+        if not ws.home.is_dir() or not path.is_file():
+            continue
         with core.connections_file_lock(path):
             header, data = core._read_connections_file_parts(path)
             changed = False
@@ -631,30 +644,79 @@ def _workspace_for_home(home: str | Path | None) -> workspace.Workspace:
 
 
 def _local_registrations(
-    logical: str,
+    logical: str, identity: LocalIdentity, target: workspace.Workspace,
 ) -> list[tuple[workspace.Workspace, str, dict[str, object]]]:
     found: list[tuple[workspace.Workspace, str, dict[str, object]]] = []
     for candidate in _known_workspaces():
         _, data = core._read_connections_file_parts(candidate.connections_file)
-        key = existing_local_key(data, logical)
-        if key is not None:
-            found.append((candidate, key, data[key]))
+        for key, fields in data.items():
+            if (_logical_of(key, fields) != logical
+                    or str(fields.get("env") or "").lower() != LOCAL_ENV):
+                continue
+            stored_scope = fields.get("local_scope")
+            if stored_scope == identity.scope:
+                found.append((candidate, key, fields))
+                continue
+            # Backward compatibility for entries created before local_scope:
+            # a matching group is the project identity; without a group, only
+            # an entry already in the source workspace belongs to this scope.
+            if stored_scope is None:
+                if identity.scope.startswith("group:"):
+                    if fields.get("group") == identity.scope.removeprefix("group:"):
+                        found.append((candidate, key, fields))
+                elif candidate.home.expanduser().resolve() == target.home.expanduser().resolve():
+                    found.append((candidate, key, fields))
     return found
 
 
 def _one_local_registration(
-    logical: str,
+    logical: str, identity: LocalIdentity, target: workspace.Workspace,
 ) -> tuple[workspace.Workspace, str, dict[str, object]] | None:
-    found = _local_registrations(logical)
+    found = _local_registrations(logical, identity, target)
     if len(found) > 1:
         locations = ", ".join(
             f"[{key}] in {candidate.connections_file}" for candidate, key, _ in found)
         raise QuarryError(
-            f"multiple env=local connections exist for '{logical}': {locations}. "
+            f"multiple env=local connections exist for '{identity.scope}/{logical}': {locations}. "
             "Keep one canonical local connection before running `qy local up`.",
             core.EXIT_USAGE,
         )
     return found[0] if found else None
+
+
+def _local_registry_lock_target() -> Path:
+    """Stable cross-workspace target used by connections_file_lock()."""
+    return workspace._config_path().with_name("local-registrations")
+
+
+def _safe_db_component(value: str) -> str:
+    component = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").lower()
+    if not component or not component[0].isalpha():
+        component = f"ws_{component}" if component else "workspace"
+    return component
+
+
+def _local_identity(
+    logical: str, *, group: str | None, target: workspace.Workspace,
+) -> LocalIdentity:
+    if group:
+        scope = f"group:{group}"
+        namespace = _safe_db_component(group)
+        if namespace != group.lower():
+            digest = hashlib.sha256(group.encode()).hexdigest()[:8]
+            namespace = f"{namespace}_{digest}"
+    else:
+        resolved = str(target.home.expanduser().resolve())
+        scope = f"workspace:{resolved}"
+        digest = hashlib.sha256(resolved.encode()).hexdigest()[:8]
+        namespace = f"{_safe_db_component(target.home.name)}_{digest}"
+    database = f"{namespace}_{logical}"
+    # local_sync appends "__staging" and PostgreSQL caps identifiers at 63
+    # bytes. Preserve a readable prefix and add a stable collision guard.
+    if len(database.encode()) > 54:
+        digest = hashlib.sha256(f"{scope}:{logical}".encode()).hexdigest()[:8]
+        database = f"{database[:45]}_{digest}"
+    return LocalIdentity(scope=scope, database=database)
 
 
 def _is_managed_local(fields: dict[str, object], spec: EngineSpec) -> bool:
@@ -664,16 +726,18 @@ def _is_managed_local(fields: dict[str, object], spec: EngineSpec) -> bool:
 
 
 def _reconcile_managed_local(
-    fields: dict[str, object], logical: str, spec: EngineSpec, *, image: str | None,
-    group: str | None, redis_db: int | None,
+    fields: dict[str, object], logical: str, identity: LocalIdentity, spec: EngineSpec,
+    *, image: str | None, group: str | None, redis_db: int | None,
 ) -> bool:
     if not _is_managed_local(fields, spec):
         return False
     desired: dict[str, object] = {
-        "url": spec.url(logical, redis_db=redis_db),
+        "url": spec.url(identity.database if spec.engine == "postgres" else logical,
+                        redis_db=redis_db),
         "engine": spec.engine,
         "env": LOCAL_ENV,
         "db": logical,
+        "local_scope": identity.scope,
     }
     if group is not None:
         desired["group"] = group
@@ -706,7 +770,9 @@ def redis_db_of(url: str) -> int | None:
     return int(seg) if seg.isdigit() else None
 
 
-def source_redis_db(logical: str) -> int | None:
+def source_redis_db(
+    logical: str, *, group: str | None = None, workspace_home: str | Path | None = None,
+) -> int | None:
     """Redis db index of the env-set's remote member (DEFAULT_ENV preferred),
     so the auto-registered local connection keeps the same index and a
     service's connection string ports over with only host:port changed."""
@@ -714,19 +780,29 @@ def source_redis_db(logical: str) -> int | None:
         conns = core.load_connections()
     except QuarryError:
         return None
-    members = {
-        (c.env or ""): c for c in conns.values()
-        if c.logical_db == logical and (c.env or "").lower() != LOCAL_ENV
-        and core.connection_engine(c) == "redis"
-    }
+    target = _workspace_for_home(workspace_home)
+    members = {}
+    for c in conns.values():
+        if (c.logical_db != logical or (c.env or "").lower() == LOCAL_ENV
+                or core.connection_engine(c) != "redis"):
+            continue
+        if group is not None and c.group != group:
+            continue
+        if group is None and Path(c.source or "").expanduser().resolve() != target.home.resolve():
+            continue
+        members[c.env or ""] = c
     if not members:
         return None
     pick = members.get(core.DEFAULT_ENV) or members[sorted(members)[0]]
     return redis_db_of(pick.url)
 
 
-def stored_local_image(logical: str) -> str | None:
-    existing = _one_local_registration(logical)
+def stored_local_image(
+    logical: str, *, group: str | None = None, workspace_home: str | Path | None = None,
+) -> str | None:
+    target = _workspace_for_home(workspace_home)
+    identity = _local_identity(logical, group=group, target=target)
+    existing = _one_local_registration(logical, identity, target)
     img = existing[2].get("local_image") if existing else None
     return str(img) if img is not None else None
 
@@ -735,40 +811,51 @@ def register_local_connection(
     logical: str, spec: EngineSpec, *, image: str | None = None, group: str | None = None,
     redis_db: int | None = None, workspace_home: str | Path | None = None,
 ) -> LocalRegistration:
-    """Globally ensure one env=local connection for `logical` exists.
+    """Ensure one scoped env=local connection for `logical` exists.
 
-    Existing entries are reused across configured workspaces. Quarry-managed
-    entries are reconciled to the current shared-container contract; legacy
-    hand-written entries are left untouched. New entries are written beside the
-    source connection rather than whichever workspace happens to be primary.
+    The source group identifies a project across workspace moves; ungrouped
+    connections use their source workspace. Existing entries are reused across
+    configured workspaces only within that scope. Quarry-managed entries are
+    reconciled to the current shared-container contract; legacy hand-written
+    entries are left untouched. New entries are written beside the source.
     """
-    registered = _one_local_registration(logical)
-    target = registered[0] if registered else _workspace_for_home(workspace_home)
-    path = target.connections_file
-    with core.connections_file_lock(path):
-        header, data = core._read_connections_file_parts(path)
-        existing = existing_local_key(data, logical)
-        if existing:
-            reconciled = _reconcile_managed_local(
-                data[existing], logical, spec, image=image, group=group, redis_db=redis_db)
-            if reconciled:
-                core._write_connections_file(header, data, path)
-            return LocalRegistration(existing, False, target.home, reconciled)
-        key = _pick_local_key(data, logical)
-        fields: dict[str, str] = {
-            "url": spec.url(logical, redis_db=redis_db),
-            "engine": spec.engine,
-            "env": LOCAL_ENV,
-            "db": logical,
-        }
-        if group:
-            fields["group"] = group
-        if image:
-            fields["local_image"] = image
-        if spec.volume:
-            fields["local_volume"] = spec.volume
-        if spec.engine == "neptune":
-            fields["local_backend"] = "empty"
-        data[key] = fields
-        core._write_connections_file(header, data, path)
-        return LocalRegistration(key, True, target.home)
+    # One shared lock covers both the global uniqueness check and the target
+    # workspace write. Per-file locks alone cannot serialize two processes that
+    # choose different workspaces at the same time.
+    with core.connections_file_lock(_local_registry_lock_target()):
+        source_target = _workspace_for_home(workspace_home)
+        identity = _local_identity(logical, group=group, target=source_target)
+        registered = _one_local_registration(logical, identity, source_target)
+        target = registered[0] if registered else source_target
+        path = target.connections_file
+        with core.connections_file_lock(path):
+            header, data = core._read_connections_file_parts(path)
+            existing = registered[1] if registered else None
+            if existing:
+                reconciled = _reconcile_managed_local(
+                    data[existing], logical, identity, spec,
+                    image=image, group=group, redis_db=redis_db)
+                if reconciled:
+                    core._write_connections_file(header, data, path)
+                return LocalRegistration(
+                    existing, False, target.home, identity.database, reconciled)
+            key = _pick_local_key(data, logical)
+            fields: dict[str, str] = {
+                "url": spec.url(identity.database if spec.engine == "postgres" else logical,
+                                redis_db=redis_db),
+                "engine": spec.engine,
+                "env": LOCAL_ENV,
+                "db": logical,
+                "local_scope": identity.scope,
+            }
+            if group:
+                fields["group"] = group
+            if image:
+                fields["local_image"] = image
+            if spec.volume:
+                fields["local_volume"] = spec.volume
+            if spec.engine == "neptune":
+                fields["local_backend"] = "empty"
+            data[key] = fields
+            core._write_connections_file(header, data, path)
+            return LocalRegistration(key, True, target.home, identity.database)

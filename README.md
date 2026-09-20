@@ -342,19 +342,23 @@ qy local down --purge       # stop + delete the volume (next up is an empty DB)
 
 `qy local up <db>` stores a new local connection in the source database's
 workspace. Before creating it, Quarry checks every configured workspace and
-reuses the one existing local entry; multiple matches are reported as a config
-error instead of silently creating or choosing another connection. Managed
-local entries are reconciled to the configured port and localhost credentials
-when the shared container is recreated.
+reuses the one existing local entry for the same project scope (`group`, or the
+source workspace when ungrouped); multiple matches in that scope are reported
+as a config error. Different projects may use the same logical DB name safely:
+their physical Postgres databases are namespaced, for example
+`brain_matrix_runtime` and `yiminlab_matrix_runtime`. Managed local entries are
+reconciled to the configured port, namespace, and localhost credentials when
+the shared container is recreated.
 
 The local Neptune service listens on `https://localhost:18182`, accepts both
 Quarry and AWS Neptune Data API openCypher requests, and always returns an empty
 result. Writes are acknowledged but intentionally not persisted, so each local
 matrix-runtime run starts without Mind Graph memory.
 
-One shared Postgres container hosts a logical database per connection key (fixed
-port `5433`; redis `6380`), and data lives on a named docker volume. Requires a
-docker daemon; the image tag is overridable with `--image`.
+One shared Postgres container hosts a namespaced physical database per scoped
+logical connection (fixed port `5433`; redis `6380`), and data lives on a named
+docker volume. Requires a docker daemon; the image tag is overridable with
+`--image`.
 
 ## GUI
 

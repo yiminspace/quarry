@@ -11,6 +11,7 @@ when docker is unavailable.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import socket
 import tomllib
@@ -439,7 +440,9 @@ def test_register_creates_local_connection(local_ws):
     assert registration.key == "shop_local"
     reg = data[registration.key]
     assert reg["env"] == "local" and reg["db"] == "shop"
-    assert reg["url"] == "postgresql://quarry:quarry@localhost:5433/shop"
+    assert reg["url"] == "postgresql://quarry:quarry@localhost:5433/commerce_shop"
+    assert reg["local_scope"] == "group:commerce"
+    assert registration.database == "commerce_shop"
     assert reg["local_image"] == "postgres:17"
     assert reg["local_volume"] == "quarry-local-pgdata"
     assert reg["group"] == "commerce"
@@ -456,7 +459,7 @@ def test_register_is_idempotent(local_ws):
     second = local.register_local_connection("shop", local.PG_SPEC)
     assert first.created is True and second.created is False and first.key == second.key
     assert second.reconciled is True
-    assert _read_conns(local_ws)[first.key]["url"].endswith("/shop")
+    assert _read_conns(local_ws)[first.key]["url"].endswith(f"/{first.database}")
 
 
 def test_register_writes_to_source_workspace_not_primary(tmp_path):
@@ -491,25 +494,28 @@ def test_register_reuses_local_hidden_by_explicit_workspace(tmp_path, monkeypatc
         (root / "queries").mkdir()
     (old / "connections.toml").write_text(
         '[shop_local]\nurl = "postgresql://quarry:quarry@localhost:5433/shop"\n'
-        'engine = "postgres"\nenv = "local"\ndb = "shop"\n'
+        'engine = "postgres"\nenv = "local"\ndb = "shop"\ngroup = "commerce"\n'
         'local_volume = "quarry-local-pgdata"\n',
         encoding="utf-8",
     )
     (source / "connections.toml").write_text(
         '[shop_dev]\nurl = "postgresql://dev-host/shop"\nengine = "postgres"\n'
-        'env = "dev"\ndb = "shop"\n',
+        'env = "dev"\ndb = "shop"\ngroup = "commerce"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(workspace, "config_workspaces", lambda: [str(old), str(source)])
     workspace.configure_workspace(str(source))
     try:
         registration = local.register_local_connection(
-            "shop", local.PG_SPEC, workspace_home=source)
+            "shop", local.PG_SPEC, group="commerce", workspace_home=source)
     finally:
         workspace.configure_workspace(None)
     assert registration.created is False
     assert registration.workspace == old
     assert "shop_local" not in _read_conns(source)
+    reused = _read_conns(old)["shop_local"]
+    assert reused["local_scope"] == "group:commerce"
+    assert reused["url"].endswith("/commerce_shop")
 
 
 def test_register_rejects_duplicate_local_across_workspaces(tmp_path, monkeypatch):
@@ -520,16 +526,73 @@ def test_register_rejects_duplicate_local_across_workspaces(tmp_path, monkeypatc
         (root / "queries").mkdir()
         (root / "connections.toml").write_text(
             '[shop_local]\nurl = "postgresql://quarry:quarry@localhost:5433/shop"\n'
-            'engine = "postgres"\nenv = "local"\ndb = "shop"\n',
+            'engine = "postgres"\nenv = "local"\ndb = "shop"\ngroup = "commerce"\n',
             encoding="utf-8",
         )
     monkeypatch.setattr(workspace, "config_workspaces", lambda: [str(one), str(two)])
     workspace.configure_workspace(str(one))
     try:
         with pytest.raises(core.QuarryError, match="multiple env=local"):
-            local.register_local_connection("shop", local.PG_SPEC)
+            local.register_local_connection("shop", local.PG_SPEC, group="commerce")
     finally:
         workspace.configure_workspace(None)
+
+
+def test_register_locks_global_scan_and_target_write(local_ws, monkeypatch):
+    held: list[Path] = []
+    global_target = local._local_registry_lock_target().resolve()
+    connections_file = (local_ws / "connections.toml").resolve()
+    real_scan = local._one_local_registration
+    real_write = core._write_connections_file
+
+    @contextlib.contextmanager
+    def tracking_lock(path=None):
+        target = (path or workspace.WS.connections_file).resolve()
+        held.append(target)
+        try:
+            yield
+        finally:
+            assert held.pop() == target
+
+    def checked_scan(logical, identity, target):
+        assert held == [global_target]
+        return real_scan(logical, identity, target)
+
+    def checked_write(header, data, path=None):
+        assert held == [global_target, connections_file]
+        return real_write(header, data, path)
+
+    monkeypatch.setattr(core, "connections_file_lock", tracking_lock)
+    monkeypatch.setattr(local, "_one_local_registration", checked_scan)
+    monkeypatch.setattr(core, "_write_connections_file", checked_write)
+
+    registration = local.register_local_connection("shop", local.PG_SPEC)
+    assert registration.created is True
+    assert held == []
+
+
+def test_same_logical_db_in_different_groups_gets_distinct_local_database(tmp_path, monkeypatch):
+    brain = tmp_path / "brain"
+    yiminlab = tmp_path / "yiminlab"
+    for root in (brain, yiminlab):
+        root.mkdir()
+        (root / "queries").mkdir()
+        (root / "connections.toml").write_text("", encoding="utf-8")
+    monkeypatch.setattr(workspace, "config_workspaces", lambda: [str(brain), str(yiminlab)])
+    workspace.configure_workspace(str(brain))
+    try:
+        first = local.register_local_connection(
+            "matrix_runtime", local.PG_SPEC, group="brain", workspace_home=brain)
+        second = local.register_local_connection(
+            "matrix_runtime", local.PG_SPEC, group="yiminlab", workspace_home=yiminlab)
+    finally:
+        workspace.configure_workspace(None)
+
+    assert first.database == "brain_matrix_runtime"
+    assert second.database == "yiminlab_matrix_runtime"
+    assert first.workspace == brain and second.workspace == yiminlab
+    assert _read_conns(brain)[first.key]["url"].endswith("/brain_matrix_runtime")
+    assert _read_conns(yiminlab)[second.key]["url"].endswith("/yiminlab_matrix_runtime")
 
 
 def test_pick_local_key_avoids_collision(local_ws):
@@ -744,14 +807,14 @@ def test_cmd_local_up_registers_before_readiness_wait(monkeypatch, local_ws):
 
 
 def test_cmd_local_up_already_registered(monkeypatch, capsys, local_ws):
-    local.register_local_connection("shop", local.PG_SPEC)
+    local.register_local_connection("shop", local.PG_SPEC, group="commerce")
     monkeypatch.setattr(local, "start_container", lambda spec, image=None: "running")
     monkeypatch.setattr(local, "container_image", lambda _name: "postgres:16-alpine")
     monkeypatch.setattr(local, "wait_pg_ready", lambda spec: True)
     monkeypatch.setattr(local, "ensure_pg_database", lambda spec, db: None)
     args = argparse.Namespace(key="shop", engine=None, image=None)
     assert cli.cmd_local_up(args) == core.EXIT_OK
-    assert "reconciled connection [shop_local]" in capsys.readouterr().out
+    assert "connection [shop_local] (env=local) already registered" in capsys.readouterr().out
 
 
 def test_cmd_local_down_purge(monkeypatch, capsys):

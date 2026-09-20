@@ -26,9 +26,10 @@ pre-1.0 history followed the earlier development policy.
 ### Fixed
 
 - `qy local up <db>` writes new local connections beside their source database,
-  reuses them across configured workspaces, rejects duplicate local identities
-  and accidental `_local_local` names, and reconciles Quarry-managed entries to
-  the current shared-container port and localhost credentials.
+  reuses them across configured workspaces within the same project scope,
+  rejects duplicate scoped identities and accidental `_local_local` names, and
+  namespaces physical Postgres databases by group/workspace so unrelated
+  projects can safely share a logical DB name and Docker container.
 
 - Redis key metadata is fetched in one bounded read-only batch instead of hundreds
   of serial TYPE/TTL calls. Table/key requests time out after 30 seconds; failed

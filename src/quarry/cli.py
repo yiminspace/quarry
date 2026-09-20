@@ -1121,7 +1121,9 @@ def _resolve_local_target(
 def cmd_local_up(args: argparse.Namespace) -> int:
     if args.key:
         logical, spec, group, source = _resolve_local_target(args.key, args.engine)
-        image = None if spec.engine == "neptune" else args.image or local.stored_local_image(logical)
+        image = (None if spec.engine == "neptune" else args.image
+                 or local.stored_local_image(
+                     logical, group=group, workspace_home=source))
         if getattr(args, "port", None) is not None:
             spec, state = local.start_on_port(spec, args.port, image=image)
         else:
@@ -1134,7 +1136,9 @@ def cmd_local_up(args: argparse.Namespace) -> int:
                   f"(port {spec.port}, image {actual_image})")
         # Register the connection right away so it reflects the container that
         # now exists even if the readiness wait below times out.
-        redis_db = local.source_redis_db(logical) if spec.engine == "redis" else None
+        redis_db = (local.source_redis_db(
+            logical, group=group, workspace_home=source)
+            if spec.engine == "redis" else None)
         registration = local.register_local_connection(
             logical, spec, image=args.image, group=group, redis_db=redis_db,
             workspace_home=source)
@@ -1150,7 +1154,7 @@ def cmd_local_up(args: argparse.Namespace) -> int:
         if spec.engine == "postgres":
             if not local.wait_pg_ready(spec):
                 err("local postgres did not become ready in time", exit_code=EXIT_CONNECTION_ERROR)
-            local.ensure_pg_database(spec, logical)
+            local.ensure_pg_database(spec, registration.database)
             if registration.created:
                 print(f"· next: `qy local sync {logical}` copies the schema from the remote env")
         return EXIT_OK
