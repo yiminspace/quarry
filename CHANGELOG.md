@@ -25,6 +25,11 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- `qy local up <db>` writes new local connections beside their source database,
+  reuses them across configured workspaces, rejects duplicate local identities
+  and accidental `_local_local` names, and reconciles Quarry-managed entries to
+  the current shared-container port and localhost credentials.
+
 - Redis key metadata is fetched in one bounded read-only batch instead of hundreds
   of serial TYPE/TTL calls. Table/key requests time out after 30 seconds; failed
   refreshes restore cached lists and show an error instead of spinning indefinitely.

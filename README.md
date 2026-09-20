@@ -312,9 +312,8 @@ qy local up --engine postgres --port 55434
 The port is saved in `[local] postgres_port` (or `redis_port`) in Quarry's
 config.toml and used by CLI and GUI local setup. Only `env=local` connections
 with Quarry's named-volume metadata still pointing to the old loopback port
-are updated, across the loaded workspaces; other connections stay unchanged.
-Changed connection files are backed up beside the originals. Select/register
-all relevant workspaces when changing a shared engine's port.
+are updated across all configured workspaces; other connections stay unchanged.
+Changed connection files are backed up beside the originals.
 
 A port change requires stopping a running Quarry container first with
 `qy local down --engine postgres`. A stopped container is recreated with its
@@ -340,6 +339,13 @@ qy local sync shop          # copy dev schema into local (staging db + rename sw
 qy local down               # stop, keep the data volume (data survives)
 qy local down --purge       # stop + delete the volume (next up is an empty DB)
 ```
+
+`qy local up <db>` stores a new local connection in the source database's
+workspace. Before creating it, Quarry checks every configured workspace and
+reuses the one existing local entry; multiple matches are reported as a config
+error instead of silently creating or choosing another connection. Managed
+local entries are reconciled to the configured port and localhost credentials
+when the shared container is recreated.
 
 The local Neptune service listens on `https://localhost:18182`, accepts both
 Quarry and AWS Neptune Data API openCypher requests, and always returns an empty

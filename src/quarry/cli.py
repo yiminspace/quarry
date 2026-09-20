@@ -1067,8 +1067,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
 # local — dev containers (qy local up/down/status)
 # ---------------------------------------------------------------------------
 
-def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local.EngineSpec, str | None]:
-    """Map an `up <key>` argument to (logical_db, EngineSpec, group).
+def _resolve_local_target(
+    arg: str, engine_flag: str | None,
+) -> tuple[str, local.EngineSpec, str | None, str | None]:
+    """Map an `up <key>` argument to logical db, engine, group, and source workspace.
 
     If the argument matches an existing connection (by key or logical db) the
     engine + group come from it; otherwise it is treated as a brand-new logical
@@ -1096,20 +1098,29 @@ def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local
             err(f"connection '{arg}' is engine {eng}, not {engine_flag}", exit_code=EXIT_USAGE)
         spec = local.configured_spec(eng)
         group = match.group
+        source = match.source
     else:
+        if arg.endswith(f"_{local.LOCAL_ENV}"):
+            base = arg.removesuffix(f"_{local.LOCAL_ENV}")
+            err(
+                f"unknown connection '{arg}'. Names ending in '_local' are reserved for "
+                f"generated local connections; use `qy local up {base}` instead.",
+                exit_code=EXIT_USAGE,
+            )
         logical = arg
         eng = engine_flag if engine_flag not in (None, "all") else "postgres"
         spec = local.configured_spec(eng)
         group = None
+        source = str(workspace.WS.home)
     if not local.SAFE_DB_RE.match(logical):
         err(f"'{logical}' is not a valid local db name (letters, digits, underscore; "
             "must start with a letter)", exit_code=EXIT_USAGE)
-    return logical, spec, group
+    return logical, spec, group, source
 
 
 def cmd_local_up(args: argparse.Namespace) -> int:
     if args.key:
-        logical, spec, group = _resolve_local_target(args.key, args.engine)
+        logical, spec, group, source = _resolve_local_target(args.key, args.engine)
         image = None if spec.engine == "neptune" else args.image or local.stored_local_image(logical)
         if getattr(args, "port", None) is not None:
             spec, state = local.start_on_port(spec, args.port, image=image)
@@ -1124,17 +1135,23 @@ def cmd_local_up(args: argparse.Namespace) -> int:
         # Register the connection right away so it reflects the container that
         # now exists even if the readiness wait below times out.
         redis_db = local.source_redis_db(logical) if spec.engine == "redis" else None
-        key, created = local.register_local_connection(
-            logical, spec, image=args.image, group=group, redis_db=redis_db)
-        if created:
-            print(f"✓ registered connection [{key}] (env=local) → {workspace.WS.connections_file}")
+        registration = local.register_local_connection(
+            logical, spec, image=args.image, group=group, redis_db=redis_db,
+            workspace_home=source)
+        if registration.created:
+            print(f"✓ registered connection [{registration.key}] (env=local) → "
+                  f"{registration.workspace / 'connections.toml'}")
+        elif registration.reconciled:
+            print(f"✓ reconciled connection [{registration.key}] (env=local) → "
+                  f"{registration.workspace / 'connections.toml'}")
         else:
-            print(f"· connection [{key}] (env=local) already registered — left unchanged")
+            print(f"· connection [{registration.key}] (env=local) already registered in "
+                  f"{registration.workspace / 'connections.toml'} — reused")
         if spec.engine == "postgres":
             if not local.wait_pg_ready(spec):
                 err("local postgres did not become ready in time", exit_code=EXIT_CONNECTION_ERROR)
             local.ensure_pg_database(spec, logical)
-            if created:
+            if registration.created:
                 print(f"· next: `qy local sync {logical}` copies the schema from the remote env")
         return EXIT_OK
 

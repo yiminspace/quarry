@@ -3,7 +3,8 @@
 Bring Postgres, Redis, and an empty Neptune-compatible endpoint up so a
 locally-running service talks only to `localhost` instead of shared dev data.
 Postgres and Redis use Docker; the Neptune endpoint is a small local process.
-`up <key>` auto-registers an `env=local` connection into `connections.toml`.
+`up <key>` auto-registers an `env=local` connection beside its source
+connection, reusing a matching local entry from any configured workspace.
 
 Shared-container model: ONE Postgres container hosts many logical databases
 (one per connection key); it is not a container-per-key. Data lives on a named
@@ -56,6 +57,14 @@ class EngineSpec:
         if self.engine == "redis":
             return f"redis://localhost:{self.port}/{redis_db if redis_db is not None else 0}"
         return f"https://localhost:{self.port}"
+
+
+@dataclass(frozen=True)
+class LocalRegistration:
+    key: str
+    created: bool
+    workspace: Path
+    reconciled: bool = False
 
 
 PG_SPEC = EngineSpec(
@@ -126,7 +135,7 @@ def _sync_managed_ports(spec: EngineSpec, old_port: int) -> None:
     """Update only registered Quarry-volume connections still on the old port."""
     from urllib.parse import urlsplit
 
-    for ws in workspace.WS_LIST:
+    for ws in _known_workspaces():
         path = ws.connections_file
         with core.connections_file_lock(path):
             header, data = core._read_connections_file_parts(path)
@@ -589,6 +598,96 @@ def existing_local_key(data: dict[str, dict[str, object]], logical: str) -> str 
     return None
 
 
+def _known_workspaces() -> list[workspace.Workspace]:
+    """Active workspaces plus configured workspaces hidden by --workspace."""
+    candidates = list(workspace.WS_LIST)
+    configured = workspace.config_workspaces()
+    if configured:
+        candidates.extend(workspace.build_workspaces(os.pathsep.join(configured)))
+    out: list[workspace.Workspace] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        path = candidate.connections_file.expanduser().resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(candidate)
+    return out
+
+
+def _workspace_for_home(home: str | Path | None) -> workspace.Workspace:
+    if home is None:
+        return workspace.WS
+    resolved = Path(home).expanduser().resolve()
+    for candidate in _known_workspaces():
+        if candidate.home.expanduser().resolve() == resolved:
+            return candidate
+    return workspace.Workspace(
+        home=resolved,
+        connections_file=resolved / "connections.toml",
+        queries_dir=resolved / "queries",
+        psql_bin=workspace.WS.psql_bin,
+    )
+
+
+def _local_registrations(
+    logical: str,
+) -> list[tuple[workspace.Workspace, str, dict[str, object]]]:
+    found: list[tuple[workspace.Workspace, str, dict[str, object]]] = []
+    for candidate in _known_workspaces():
+        _, data = core._read_connections_file_parts(candidate.connections_file)
+        key = existing_local_key(data, logical)
+        if key is not None:
+            found.append((candidate, key, data[key]))
+    return found
+
+
+def _one_local_registration(
+    logical: str,
+) -> tuple[workspace.Workspace, str, dict[str, object]] | None:
+    found = _local_registrations(logical)
+    if len(found) > 1:
+        locations = ", ".join(
+            f"[{key}] in {candidate.connections_file}" for candidate, key, _ in found)
+        raise QuarryError(
+            f"multiple env=local connections exist for '{logical}': {locations}. "
+            "Keep one canonical local connection before running `qy local up`.",
+            core.EXIT_USAGE,
+        )
+    return found[0] if found else None
+
+
+def _is_managed_local(fields: dict[str, object], spec: EngineSpec) -> bool:
+    if spec.engine == "neptune":
+        return fields.get("local_backend") == "empty"
+    return bool(spec.volume) and fields.get("local_volume") == spec.volume
+
+
+def _reconcile_managed_local(
+    fields: dict[str, object], logical: str, spec: EngineSpec, *, image: str | None,
+    group: str | None, redis_db: int | None,
+) -> bool:
+    if not _is_managed_local(fields, spec):
+        return False
+    desired: dict[str, object] = {
+        "url": spec.url(logical, redis_db=redis_db),
+        "engine": spec.engine,
+        "env": LOCAL_ENV,
+        "db": logical,
+    }
+    if group is not None:
+        desired["group"] = group
+    if image is not None:
+        desired["local_image"] = image
+    if spec.volume:
+        desired["local_volume"] = spec.volume
+    if spec.engine == "neptune":
+        desired["local_backend"] = "empty"
+    changed = any(fields.get(key) != value for key, value in desired.items())
+    fields.update(desired)
+    return changed
+
+
 def _pick_local_key(data: dict[str, dict[str, object]], logical: str) -> str:
     base = f"{logical}_{LOCAL_ENV}"
     if base not in data:
@@ -627,26 +726,34 @@ def source_redis_db(logical: str) -> int | None:
 
 
 def stored_local_image(logical: str) -> str | None:
-    _, data = core._read_connections_file_parts()
-    key = existing_local_key(data, logical)
-    img = data[key].get("local_image") if key else None
+    existing = _one_local_registration(logical)
+    img = existing[2].get("local_image") if existing else None
     return str(img) if img is not None else None
 
 
 def register_local_connection(
     logical: str, spec: EngineSpec, *, image: str | None = None, group: str | None = None,
-    redis_db: int | None = None,
-) -> tuple[str, bool]:
-    """Idempotently ensure an env=local connection for `logical` exists.
+    redis_db: int | None = None, workspace_home: str | Path | None = None,
+) -> LocalRegistration:
+    """Globally ensure one env=local connection for `logical` exists.
 
-    Returns (key, created). If a local connection already exists for this env-set
-    it is left untouched (never overwrite user-edited fields) and created=False.
+    Existing entries are reused across configured workspaces. Quarry-managed
+    entries are reconciled to the current shared-container contract; legacy
+    hand-written entries are left untouched. New entries are written beside the
+    source connection rather than whichever workspace happens to be primary.
     """
-    with core.connections_file_lock():
-        header, data = core._read_connections_file_parts()
+    registered = _one_local_registration(logical)
+    target = registered[0] if registered else _workspace_for_home(workspace_home)
+    path = target.connections_file
+    with core.connections_file_lock(path):
+        header, data = core._read_connections_file_parts(path)
         existing = existing_local_key(data, logical)
         if existing:
-            return existing, False
+            reconciled = _reconcile_managed_local(
+                data[existing], logical, spec, image=image, group=group, redis_db=redis_db)
+            if reconciled:
+                core._write_connections_file(header, data, path)
+            return LocalRegistration(existing, False, target.home, reconciled)
         key = _pick_local_key(data, logical)
         fields: dict[str, str] = {
             "url": spec.url(logical, redis_db=redis_db),
@@ -663,5 +770,5 @@ def register_local_connection(
         if spec.engine == "neptune":
             fields["local_backend"] = "empty"
         data[key] = fields
-        core._write_connections_file(header, data)
-        return key, True
+        core._write_connections_file(header, data, path)
+        return LocalRegistration(key, True, target.home)

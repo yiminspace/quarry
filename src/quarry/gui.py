@@ -581,9 +581,9 @@ def api_local_up(body: dict) -> dict:
     spec = local.configured_spec(engine)
     state = local.start_container(spec, image=local.stored_local_image(db))
     redis_db = local.source_redis_db(db) if engine == "redis" else None
-    key, created = local.register_local_connection(
-        db, spec, group=src.group, redis_db=redis_db)
-    out = {"key": key, "created": created, "engine": engine,
+    registration = local.register_local_connection(
+        db, spec, group=src.group, redis_db=redis_db, workspace_home=src.source)
+    out = {"key": registration.key, "created": registration.created, "engine": engine,
            "state": state, "port": spec.port}
     if engine == "postgres":
         if not local.wait_pg_ready(spec):
@@ -593,7 +593,7 @@ def api_local_up(body: dict) -> dict:
         # shell — fill it from the remote sibling right away. A sync failure
         # must not undo the successful `up`; it is reported alongside.
         src_env = (src.env or "").lower()
-        if created and src_env and src_env != local.LOCAL_ENV:
+        if registration.created and src_env and src_env != local.LOCAL_ENV:
             try:
                 res = api_local_sync({"db": db, "from": src.env})
                 out["synced_from"] = res["from"]
