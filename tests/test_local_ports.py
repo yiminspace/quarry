@@ -56,6 +56,48 @@ local_volume = "quarry-local-pgdata"
         assert list(ws.glob('connections.toml.before-port-*'))
 
 
+def test_port_sync_includes_configured_workspace_hidden_by_explicit_selection(setup):
+    workspaces = [setup / 'one', setup / 'two']
+    for ws in workspaces:
+        ws.mkdir()
+        ws.joinpath('connections.toml').write_text('''[managed]
+url = "postgresql://quarry:quarry@localhost:5433/shop"
+engine = "postgres"
+env = "local"
+db = "shop"
+local_volume = "quarry-local-pgdata"
+''')
+    (setup / 'config.toml').write_text(
+        'workspaces = ["' + str(workspaces[0]) + '", "' + str(workspaces[1]) + '"]\n')
+    workspace.configure_workspace(str(workspaces[0]))
+    local._sync_managed_ports(replace(local.PG_SPEC, port=55434), 5433)
+    for ws in workspaces:
+        _, data = core._read_connections_file_parts(ws / 'connections.toml')
+        assert ':55434/' in data['managed']['url']
+
+
+def test_port_sync_does_not_recreate_missing_configured_workspace(setup):
+    existing = setup / 'existing'
+    missing = setup / 'deleted'
+    existing.mkdir()
+    existing.joinpath('connections.toml').write_text('''[managed]
+url = "postgresql://quarry:quarry@localhost:5433/shop"
+engine = "postgres"
+env = "local"
+db = "shop"
+local_volume = "quarry-local-pgdata"
+''')
+    (setup / 'config.toml').write_text(
+        'workspaces = ["' + str(existing) + '", "' + str(missing) + '"]\n')
+    workspace.configure_workspace(str(existing))
+
+    local._sync_managed_ports(replace(local.PG_SPEC, port=55434), 5433)
+
+    assert not missing.exists()
+    _, data = core._read_connections_file_parts(existing / 'connections.toml')
+    assert ':55434/' in data['managed']['url']
+
+
 def fake_inspect(monkeypatch, state='stopped', mount=True):
     monkeypatch.setattr(local, 'container_state', lambda name: state)
     calls = []

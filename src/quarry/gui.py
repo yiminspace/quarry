@@ -579,21 +579,25 @@ def api_local_up(body: dict) -> dict:
     if not local.SAFE_DB_RE.match(db):
         raise QuarryError(f"'{db}' is not a valid local db name")
     spec = local.configured_spec(engine)
-    state = local.start_container(spec, image=local.stored_local_image(db))
-    redis_db = local.source_redis_db(db) if engine == "redis" else None
-    key, created = local.register_local_connection(
-        db, spec, group=src.group, redis_db=redis_db)
-    out = {"key": key, "created": created, "engine": engine,
+    state = local.start_container(
+        spec, image=local.stored_local_image(
+            db, group=src.group, workspace_home=src.source))
+    redis_db = (local.source_redis_db(
+        db, group=src.group, workspace_home=src.source)
+        if engine == "redis" else None)
+    registration = local.register_local_connection(
+        db, spec, group=src.group, redis_db=redis_db, workspace_home=src.source)
+    out = {"key": registration.key, "created": registration.created, "engine": engine,
            "state": state, "port": spec.port}
     if engine == "postgres":
         if not local.wait_pg_ready(spec):
             raise QuarryError("local postgres did not become ready in time")
-        local.ensure_pg_database(spec, db)
+        local.ensure_pg_database(spec, registration.database)
         # First-time convenience: a freshly registered local env is an empty
         # shell — fill it from the remote sibling right away. A sync failure
         # must not undo the successful `up`; it is reported alongside.
         src_env = (src.env or "").lower()
-        if created and src_env and src_env != local.LOCAL_ENV:
+        if registration.created and src_env and src_env != local.LOCAL_ENV:
             try:
                 res = api_local_sync({"db": db, "from": src.env})
                 out["synced_from"] = res["from"]

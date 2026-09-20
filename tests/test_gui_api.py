@@ -568,8 +568,51 @@ def test_api_local_up_orchestration(tmp_path, monkeypatch, port):
     assert out == {"key": "shop_local", "created": True, "engine": "postgres",
                    "state": "created", "port": port,
                    "synced_from": "dev"}      # fresh env auto-fills from the sibling
-    assert calls == ["start", "ensure:shop", "sync:shop<-dev"]
+    assert calls == ["start", "ensure:acme_shop", "sync:shop<-dev"]
     assert data["shop_local"]["env"] == "local" and data["shop_local"]["group"] == "acme"
+
+
+@pytest.mark.unit
+def test_api_local_up_routes_registration_to_source_workspace(tmp_path, monkeypatch):
+    import tomllib
+
+    from quarry import gui, local, workspace
+
+    primary = tmp_path / "primary"
+    source = tmp_path / "source"
+    for root in (primary, source):
+        root.mkdir()
+        (root / "queries").mkdir()
+        (root / "connections.toml").write_text("", encoding="utf-8")
+    (source / "connections.toml").write_text(
+        '[shop_dev]\nurl = "postgresql://dev-host/shop"\nengine = "postgres"\n'
+        'env = "dev"\ndb = "shop"\ngroup = "acme"\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'workspaces = ["{primary}", "{source}"]\n', encoding="utf-8")
+    monkeypatch.setenv("QUARRY_CONFIG", str(config))
+    workspace.configure_workspace(None)
+    monkeypatch.setattr(local, "start_container", lambda spec, image=None: "created")
+    monkeypatch.setattr(local, "wait_pg_ready", lambda spec, **kw: True)
+    monkeypatch.setattr(local, "ensure_pg_database", lambda spec, db: None)
+    monkeypatch.setattr(
+        gui, "api_local_sync",
+        lambda body: {"db": body["db"], "prev": None, "from": body["from"]})
+    try:
+        out = gui.api_local_up({"db": "shop"})
+        with (source / "connections.toml").open("rb") as f:
+            source_data = tomllib.load(f)
+        with (primary / "connections.toml").open("rb") as f:
+            primary_data = tomllib.load(f)
+    finally:
+        workspace.configure_workspace(None)
+
+    assert out["key"] == "shop_local" and out["created"] is True
+    assert source_data["shop_local"]["env"] == "local"
+    assert source_data["shop_local"]["url"].endswith("/acme_shop")
+    assert "shop_local" not in primary_data
 
 
 @pytest.mark.unit
