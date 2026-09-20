@@ -144,6 +144,20 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.4.1 (2026-09-20)
+
+### Bug Fixes
+
+- Reuse local connections across workspaces ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+- Scope local connections by project ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+- 修复 local 连接的跨 workspace 复用 ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+
 ## v1.4.0 (2026-09-12)
 
 ### Features
