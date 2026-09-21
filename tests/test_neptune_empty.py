@@ -3,8 +3,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import socket
+import ssl
+import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -14,7 +19,7 @@ from urllib.parse import urlencode
 import pytest
 
 from quarry import core, local, neptune_empty
-from quarry.neptune_empty import EmptyNeptuneHandler, parse_request
+from quarry.neptune_empty import EmptyNeptuneHandler, load_fixture, parse_request
 
 
 def test_parse_boto3_json_request() -> None:
@@ -54,6 +59,26 @@ def empty_endpoint():
         thread.join(timeout=2)
 
 
+@pytest.fixture()
+def mock_endpoint(tmp_path: Path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"responses": [
+        {"query_contains": "MATCH (n)", "parameters": {"user_id": "test-user"},
+         "results": [{"n": {"name": "test-memory"}}]},
+        {"query_contains": "RETURN 0", "results": []},
+    ]}), encoding="utf-8")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), EmptyNeptuneHandler)
+    server.mock_state = load_fixture(fixture)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", server.mock_state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_empty_endpoint_health_and_not_found(empty_endpoint: str) -> None:
     with urllib.request.urlopen(f"{empty_endpoint}/health") as response:
         assert json.loads(response.read()) == {"status": "ok", "backend": "empty"}
@@ -78,6 +103,100 @@ def test_empty_endpoint_accepts_both_paths_and_rejects_bad_requests(empty_endpoi
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(request)
         assert exc.value.code in {400, 404}
+
+
+def test_mock_endpoint_responses_and_call_cursor(mock_endpoint) -> None:
+    endpoint, state = mock_endpoint
+    with urllib.request.urlopen(f"{endpoint}/health") as response:
+        assert json.loads(response.read()) == {
+            "status": "ok", "backend": "mock", "fixture_sha256": state.fixture_sha256,
+        }
+    request = urllib.request.Request(
+        f"{endpoint}/openCypher",
+        data=json.dumps({"query": "MATCH (n) RETURN n", "parameters": '{"user_id":"test-user"}'}).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request) as response:
+        assert json.loads(response.read()) == {"results": [{"n": {"name": "test-memory"}}]}
+    with urllib.request.urlopen(f"{endpoint}/__mock__/calls?after=0") as response:
+        calls = json.loads(response.read())
+    assert calls == {"calls": [{"sequence": 1, "query": "MATCH (n) RETURN n",
+                                "parameters": {"user_id": "test-user"}, "matched": True}], "next": 1}
+    with urllib.request.urlopen(f"{endpoint}/__mock__/calls?after=1") as response:
+        assert json.loads(response.read()) == {"calls": [], "next": 1}
+
+
+def test_mock_endpoint_unmatched_is_recorded_and_fails(mock_endpoint) -> None:
+    endpoint, _ = mock_endpoint
+    request = urllib.request.Request(
+        f"{endpoint}/openCypher", data=urlencode({"query": "MATCH (n) RETURN n",
+            "parameters": '{"user_id":"another-user"}'}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request)
+    assert exc.value.code == 501
+    assert json.loads(exc.value.read()) == {"message": "no matching mock response"}
+    with urllib.request.urlopen(f"{endpoint}/__mock__/calls") as response:
+        assert json.loads(response.read())["calls"][0]["matched"] is False
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(f"{endpoint}/__mock__/calls?after=-1")
+    assert exc.value.code == 400
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl is unavailable")
+def test_mock_process_serves_https_and_exposes_calls(tmp_path: Path) -> None:
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    local._ensure_neptune_certificate(cert, key)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"responses":[{"query_contains":"RETURN 1","results":[{"n":1}]}]}',
+                       encoding="utf-8")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    process = subprocess.Popen([
+        sys.executable, "-m", "quarry.neptune_empty", "--port", str(port),
+        "--cert", str(cert), "--key", str(key), "--fixture", str(fixture),
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    context = ssl._create_unverified_context()
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                with urllib.request.urlopen(f"https://127.0.0.1:{port}/health", context=context,
+                                                timeout=0.2) as response:
+                    assert json.loads(response.read())["backend"] == "mock"
+                break
+            except urllib.error.URLError:
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    pytest.fail("local HTTPS mock did not become ready")
+                time.sleep(0.05)
+        request = urllib.request.Request(
+            f"https://127.0.0.1:{port}/openCypher", data=b'{"query":"RETURN 1"}',
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, context=context) as response:
+            assert json.loads(response.read()) == {"results": [{"n": 1}]}
+        assert local.neptune_mock_calls(local.EngineSpec("neptune", "empty", "", port, port, "empty")) == {
+            "calls": [{"sequence": 1, "query": "RETURN 1", "parameters": {}, "matched": True}], "next": 1,
+        }
+    finally:
+        process.terminate()
+        process.communicate(timeout=5)
+
+
+def test_fixture_validation_and_empty_mode_boundary(tmp_path: Path, empty_endpoint: str) -> None:
+    fixture = tmp_path / "fixture.json"
+    for invalid in ('{}', '{"responses":[{"query_contains":"x"}]}',
+                    '{"responses":[{"query_contains":"","results":[]}]}'):
+        fixture.write_text(invalid, encoding="utf-8")
+        with pytest.raises(ValueError):
+            load_fixture(fixture)
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(f"{empty_endpoint}/__mock__/calls")
+    assert exc.value.code == 404
+    with pytest.raises(ValueError, match="loopback"):
+        neptune_empty.serve("0.0.0.0", 8182, "cert", "key", fixture)
 
 
 def test_serve_wraps_socket_and_runs(monkeypatch) -> None:
@@ -114,6 +233,17 @@ def test_main_parses_arguments(monkeypatch) -> None:
     monkeypatch.setattr(neptune_empty, "serve", lambda *args: seen.append(args))
     neptune_empty.main()
     assert seen == [("127.0.0.1", 8182, "cert", "key")]
+
+
+def test_main_parses_mock_fixture(monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(sys, "argv", [
+        "neptune-empty", "--port", "8182", "--cert", "cert", "--key", "key",
+        "--fixture", "fixture.json",
+    ])
+    monkeypatch.setattr(neptune_empty, "serve", lambda *args: seen.append(args))
+    neptune_empty.main()
+    assert seen == [("127.0.0.1", 8182, "cert", "key", Path("fixture.json"))]
 
 
 def _state_at(monkeypatch, tmp_path: Path) -> None:
@@ -180,6 +310,52 @@ def test_neptune_health(monkeypatch) -> None:
         lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError("down")),
     )
     assert local._neptune_health(8182) is False
+
+
+def test_mock_lifecycle_requires_matching_fixture(monkeypatch, tmp_path: Path) -> None:
+    _state_at(monkeypatch, tmp_path)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"responses":[]}', encoding="utf-8")
+    spec = local.EngineSpec("neptune", "empty", "", 18183, 18183, "empty")
+    digest = load_fixture(fixture).fixture_sha256
+    monkeypatch.setattr(local, "_owned_neptune_pid", lambda _pid: True)
+    monkeypatch.setattr(local, "_neptune_health_payload", lambda _port: {
+        "backend": "mock", "fixture_sha256": digest,
+    })
+    local._neptune_paths()[0].parent.mkdir(parents=True)
+    local._neptune_paths()[0].write_text("41")
+    assert local.start_neptune_empty(spec, fixture=fixture) == "running"
+    assert local.neptune_empty_status(spec)["backend"] == "mock"
+
+    fixture.write_text('{"responses":[{"query_contains":"RETURN","results":[]}]}', encoding="utf-8")
+    monkeypatch.setattr(local, "port_in_use", lambda _port: True)
+    with pytest.raises(core.QuarryError, match="changing modes"):
+        local.start_neptune_empty(spec, fixture=fixture)
+
+
+def test_mock_lifecycle_starts_with_fixture_without_touching_another_endpoint(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _state_at(monkeypatch, tmp_path)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"responses":[]}', encoding="utf-8")
+    spec = local.EngineSpec("neptune", "empty", "", 18183, 18183, "empty")
+    monkeypatch.setattr(local, "_owned_neptune_pid", lambda _pid: False)
+    monkeypatch.setattr(local, "port_in_use", lambda _port: False)
+    monkeypatch.setattr(local, "_ensure_neptune_certificate", lambda *_args: None)
+    health = iter([None, {"backend": "mock", "fixture_sha256": load_fixture(fixture).fixture_sha256}])
+    monkeypatch.setattr(local, "_neptune_health_payload", lambda _port: next(health))
+
+    class Proc:
+        pid = 99
+
+        def poll(self):
+            return None
+
+    commands = []
+    monkeypatch.setattr(local.subprocess, "Popen", lambda argv, **_kwargs: (commands.append(argv), Proc())[1])
+    assert local.start_neptune_empty(spec, fixture=fixture) == "created"
+    assert commands[0][-2:] == ["--fixture", str(fixture)]
 
 
 def test_start_neptune_empty_lifecycle(monkeypatch, tmp_path: Path) -> None:

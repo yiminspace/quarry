@@ -1,8 +1,9 @@
 """Local development services — `qy local up/down/status`.
 
-Bring Postgres, Redis, and an empty Neptune-compatible endpoint up so a
+Bring Postgres, Redis, and a Neptune-compatible endpoint up so a
 locally-running service talks only to `localhost` instead of shared dev data.
-Postgres and Redis use Docker; the Neptune endpoint is a small local process.
+Postgres and Redis use Docker; the Neptune endpoint is a small local process
+that is empty by default and optionally serves deterministic mock responses.
 `up <key>` auto-registers an `env=local` connection beside its source
 connection, reusing a matching local entry from any configured workspace.
 
@@ -504,40 +505,64 @@ def _ensure_neptune_certificate(cert: Path, key: Path) -> None:
 
 
 def _neptune_health(port: int, *, timeout: float = 1.0) -> bool:
+    payload = _neptune_health_payload(port, timeout=timeout)
+    return payload is not None and payload.get("backend") == "empty"
+
+
+def _neptune_health_payload(port: int, *, timeout: float = 1.0) -> dict | None:
     context = ssl._create_unverified_context()
     try:
         with urllib.request.urlopen(
             f"https://127.0.0.1:{port}/health", timeout=timeout, context=context,
         ) as response:
             payload = json.loads(response.read())
-        return response.status == 200 and payload.get("backend") == "empty"
+        return payload if response.status == 200 and isinstance(payload, dict) else None
     except (OSError, ValueError, urllib.error.URLError):
-        return False
+        return None
 
 
-def start_neptune_empty(spec: EngineSpec = NEPTUNE_SPEC, *, timeout: float = 10.0) -> str:
+def start_neptune_empty(
+    spec: EngineSpec = NEPTUNE_SPEC, *, timeout: float = 10.0, fixture: Path | None = None,
+) -> str:
+    mock = None
+    if fixture is not None:
+        from .neptune_empty import load_fixture
+
+        try:
+            fixture = fixture.resolve(strict=True)
+            mock = load_fixture(fixture)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise QuarryError(f"invalid local Neptune fixture: {exc}", exit_code=EXIT_CONNECTION_ERROR) from exc
     pid_path, cert, key, log = _neptune_paths()
     pid = _read_neptune_pid()
-    if _owned_neptune_pid(pid) and _neptune_health(spec.port):
+    if _owned_neptune_pid(pid) and (
+        _neptune_health(spec.port) if mock is None else
+        (_neptune_health_payload(spec.port) or {}).get("fixture_sha256") == mock.fixture_sha256
+    ):
         return "running"
     if port_in_use(spec.port):
         raise QuarryError(
-            f"port {spec.port} is already in use — free it or stop the conflicting service",
+            f"port {spec.port} is already in use — stop the existing endpoint explicitly before changing modes",
             exit_code=EXIT_CONNECTION_ERROR,
         )
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_neptune_certificate(cert, key)
+    command = [sys.executable, "-m", "quarry.neptune_empty", "--port", str(spec.port),
+               "--cert", str(cert), "--key", str(key)]
+    if fixture is not None:
+        command.extend(["--fixture", str(fixture)])
     with log.open("ab") as output:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "quarry.neptune_empty", "--port", str(spec.port),
-             "--cert", str(cert), "--key", str(key)],
+            command,
             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _neptune_health(spec.port):
+        ready = (_neptune_health(spec.port) if mock is None else
+                 (_neptune_health_payload(spec.port) or {}).get("fixture_sha256") == mock.fixture_sha256)
+        if ready:
             return "created"
         if proc.poll() is not None:
             break
@@ -576,11 +601,29 @@ def down_neptune_empty(spec: EngineSpec = NEPTUNE_SPEC, *, purge: bool) -> dict:
 
 def neptune_empty_status(spec: EngineSpec = NEPTUNE_SPEC) -> dict:
     pid = _read_neptune_pid()
-    running = _owned_neptune_pid(pid) and _neptune_health(spec.port)
-    return {"engine": spec.engine, "backend": "empty", "docker": None,
+    owned = _owned_neptune_pid(pid)
+    mock_health = _neptune_health_payload(spec.port) if owned else None
+    backend = mock_health.get("backend", "empty") if mock_health else "empty"
+    running = owned and (_neptune_health(spec.port) if backend == "empty" else backend == "mock")
+    return {"engine": spec.engine, "backend": backend, "docker": None,
             "running": running, "state": "running" if running else "absent",
             "port": spec.port, "image": None, "volume": None,
             "volume_exists": False, "pid": pid if running else None}
+
+
+def neptune_mock_calls(spec: EngineSpec = NEPTUNE_SPEC, *, after: int = 0) -> dict:
+    health = _neptune_health_payload(spec.port)
+    if health is None or health.get("backend") != "mock":
+        raise QuarryError("local Neptune mock is not running", exit_code=EXIT_CONNECTION_ERROR)
+    context = ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(
+            f"https://127.0.0.1:{spec.port}/__mock__/calls?after={after}",
+            timeout=3, context=context,
+        ) as response:
+            return json.loads(response.read())
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise QuarryError(f"failed to read local Neptune calls: {exc}", exit_code=EXIT_CONNECTION_ERROR) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -721,13 +764,14 @@ def _local_identity(
 
 def _is_managed_local(fields: dict[str, object], spec: EngineSpec) -> bool:
     if spec.engine == "neptune":
-        return fields.get("local_backend") == "empty"
+        return fields.get("local_backend") in {"empty", "mock"}
     return bool(spec.volume) and fields.get("local_volume") == spec.volume
 
 
 def _reconcile_managed_local(
     fields: dict[str, object], logical: str, identity: LocalIdentity, spec: EngineSpec,
     *, image: str | None, group: str | None, redis_db: int | None,
+    neptune_backend: str = "empty",
 ) -> bool:
     if not _is_managed_local(fields, spec):
         return False
@@ -746,7 +790,7 @@ def _reconcile_managed_local(
     if spec.volume:
         desired["local_volume"] = spec.volume
     if spec.engine == "neptune":
-        desired["local_backend"] = "empty"
+        desired["local_backend"] = neptune_backend
     changed = any(fields.get(key) != value for key, value in desired.items())
     fields.update(desired)
     return changed
@@ -810,6 +854,7 @@ def stored_local_image(
 def register_local_connection(
     logical: str, spec: EngineSpec, *, image: str | None = None, group: str | None = None,
     redis_db: int | None = None, workspace_home: str | Path | None = None,
+    neptune_backend: str = "empty",
 ) -> LocalRegistration:
     """Ensure one scoped env=local connection for `logical` exists.
 
@@ -834,7 +879,8 @@ def register_local_connection(
             if existing:
                 reconciled = _reconcile_managed_local(
                     data[existing], logical, identity, spec,
-                    image=image, group=group, redis_db=redis_db)
+                    image=image, group=group, redis_db=redis_db,
+                    neptune_backend=neptune_backend)
                 if reconciled:
                     core._write_connections_file(header, data, path)
                 return LocalRegistration(
@@ -855,7 +901,7 @@ def register_local_connection(
             if spec.volume:
                 fields["local_volume"] = spec.volume
             if spec.engine == "neptune":
-                fields["local_backend"] = "empty"
+                fields["local_backend"] = neptune_backend
             data[key] = fields
             core._write_connections_file(header, data, path)
             return LocalRegistration(key, True, target.home, identity.database)

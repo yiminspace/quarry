@@ -1119,17 +1119,25 @@ def _resolve_local_target(
 
 
 def cmd_local_up(args: argparse.Namespace) -> int:
+    fixture = getattr(args, "fixture", None)
+    if fixture is not None and (args.engine not in (None, "neptune") or (args.key is None and args.engine != "neptune")):
+        err("--fixture requires a single local Neptune target (--engine neptune)", exit_code=EXIT_USAGE)
     if args.key:
         logical, spec, group, source = _resolve_local_target(args.key, args.engine)
+        if fixture is not None and spec.engine != "neptune":
+            err("--fixture requires a local Neptune target", exit_code=EXIT_USAGE)
         image = (None if spec.engine == "neptune" else args.image
                  or local.stored_local_image(
                      logical, group=group, workspace_home=source))
         if getattr(args, "port", None) is not None:
             spec, state = local.start_on_port(spec, args.port, image=image)
+        elif fixture is not None:
+            state = local.start_neptune_empty(spec, fixture=Path(fixture))
         else:
             state = local.start_container(spec, image=image)
         if spec.engine == "neptune":
-            print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
+            backend = "mock" if fixture is not None else "empty"
+            print(f"✓ local Neptune {backend} endpoint {_state_word(state)} (HTTPS port {spec.port})")
         else:
             actual_image = local.container_image(spec.container) or image or spec.default_image
             print(f"✓ local {spec.engine} container {_state_word(state)} "
@@ -1141,7 +1149,7 @@ def cmd_local_up(args: argparse.Namespace) -> int:
             if spec.engine == "redis" else None)
         registration = local.register_local_connection(
             logical, spec, image=args.image, group=group, redis_db=redis_db,
-            workspace_home=source)
+            workspace_home=source, neptune_backend="mock" if fixture is not None else "empty")
         if registration.created:
             print(f"✓ registered connection [{registration.key}] (env=local) → "
                   f"{registration.workspace / 'connections.toml'}")
@@ -1164,10 +1172,13 @@ def cmd_local_up(args: argparse.Namespace) -> int:
     for spec in local.specs_for(args.engine):
         if getattr(args, "port", None) is not None:
             spec, state = local.start_on_port(spec, args.port, image=args.image)
+        elif fixture is not None:
+            state = local.start_neptune_empty(spec, fixture=Path(fixture))
         else:
             state = local.start_container(spec, image=args.image)
         if spec.engine == "neptune":
-            print(f"✓ local Neptune empty endpoint {_state_word(state)} (HTTPS port {spec.port})")
+            backend = "mock" if fixture is not None else "empty"
+            print(f"✓ local Neptune {backend} endpoint {_state_word(state)} (HTTPS port {spec.port})")
         else:
             actual_image = local.container_image(spec.container) or args.image or spec.default_image
             print(f"✓ local {spec.engine} container {_state_word(state)} "
@@ -1222,7 +1233,7 @@ def cmd_local_status(args: argparse.Namespace) -> int:
     for st in statuses:
         if st["engine"] == "neptune":
             if st["running"]:
-                print(f"  ✓ {'neptune':<9} running  port {st['port']}  backend empty")
+                print(f"  ✓ {'neptune':<9} running  port {st['port']}  backend {st['backend']}")
             else:
                 print("  ✗ neptune   not running — run `qy local up neptune --engine neptune`")
             continue
@@ -1238,6 +1249,21 @@ def cmd_local_status(args: argparse.Namespace) -> int:
             data_note = " (data volume present)" if st["volume_exists"] else ""
             print(f"  ✗ {st['engine']:<9} not running{data_note} — "
                   f"run `qy local up --engine {st['engine']}`")
+    return EXIT_OK
+
+
+def cmd_local_neptune_calls(args: argparse.Namespace) -> int:
+    if args.after < 0:
+        err("--after must be a non-negative integer", exit_code=EXIT_USAGE)
+    result = local.neptune_mock_calls(local.configured_spec("neptune"), after=args.after)
+    if args.format == "json":
+        json.dump(result, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        for call in result["calls"]:
+            print(f"{call['sequence']} {'matched' if call['matched'] else 'unmatched'} "
+                  f"{call['query']}  parameters={json.dumps(call['parameters'], ensure_ascii=False)}")
+        print(f"cursor: {result['next']}")
     return EXIT_OK
 
 
@@ -1494,13 +1520,15 @@ def build_parser() -> argparse.ArgumentParser:
         "local", help="Manage local dev services for env=local connections")
     local_sub = p_local.add_subparsers(dest="local_cmd", metavar="<subcommand>", required=True)
     p_lu = local_sub.add_parser(
-        "up", help="Start local container(s); with a key, auto-register an env=local connection")
+        "up", help="Start local services; with a key, auto-register an env=local connection")
     p_lu.add_argument("key", nargs="?",
                       help="Connection key / logical db to bring up + auto-register (env=local)")
     p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_lu.add_argument("--image", default=None, help="Override the container image tag")
     p_lu.add_argument("--port", type=_positive_int, default=None,
                       help="Persist a local Docker port; update managed connections in loaded workspaces")
+    p_lu.add_argument("--fixture", type=Path,
+                      help="Start only Neptune in strict mock mode with JSON query responses")
     p_lu.set_defaults(func=cmd_local_up)
     p_ld = local_sub.add_parser(
         "down", help="Stop local container(s); --purge also deletes the data volume")
@@ -1512,6 +1540,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_ls.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_ls.add_argument("--format", choices=["text", "json"], default="text")
     p_ls.set_defaults(func=cmd_local_status)
+    p_lcalls = local_sub.add_parser(
+        "neptune-calls", help="Read the opt-in local Neptune mock's openCypher calls")
+    p_lcalls.add_argument("--after", type=int, default=0,
+                          help="Only show calls after this cursor (default: 0)")
+    p_lcalls.add_argument("--format", choices=["text", "json"], default="text")
+    p_lcalls.set_defaults(func=cmd_local_neptune_calls)
     p_lsync = local_sub.add_parser(
         "sync", help="Copy schema from a remote env into the local database via a "
                      "staging db + rename swap (postgres only)")

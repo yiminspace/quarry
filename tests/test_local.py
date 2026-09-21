@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import socket
 import tomllib
@@ -780,6 +781,51 @@ def test_cmd_local_up_neptune(monkeypatch, capsys, local_ws):
     out = capsys.readouterr().out
     assert "Neptune empty endpoint created" in out
     assert _read_conns(local_ws)["neptune_local"]["local_backend"] == "empty"
+
+
+def test_cmd_local_up_neptune_mock(monkeypatch, capsys, local_ws, tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text('{"responses":[]}', encoding="utf-8")
+    started = []
+    monkeypatch.setattr(local, "start_neptune_empty", lambda spec, fixture: (started.append(fixture), "created")[1])
+    args = argparse.Namespace(key="neptune", engine="neptune", image=None, fixture=fixture)
+    assert cli.cmd_local_up(args) == core.EXIT_OK
+    assert started == [fixture]
+    assert "Neptune mock endpoint created" in capsys.readouterr().out
+    assert _read_conns(local_ws)["neptune_local"]["local_backend"] == "mock"
+
+    args.fixture = None
+    monkeypatch.setattr(local, "start_container", lambda spec, image=None: "created")
+    assert cli.cmd_local_up(args) == core.EXIT_OK
+    assert _read_conns(local_ws)["neptune_local"]["local_backend"] == "empty"
+    assert len([key for key in _read_conns(local_ws) if key.startswith("neptune_local")]) == 1
+
+
+def test_local_neptune_calls_cli(monkeypatch, capsys):
+    monkeypatch.setattr(local, "neptune_mock_calls", lambda _spec, after: {
+        "calls": [{"sequence": 3, "matched": False, "query": "CREATE (n)", "parameters": {}}],
+        "next": 3,
+    })
+    args = argparse.Namespace(after=2, format="json")
+    assert cli.cmd_local_neptune_calls(args) == core.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["calls"][0]["query"] == "CREATE (n)"
+
+
+def test_local_mock_cli_arguments():
+    up = cli.build_parser().parse_args([
+        "local", "up", "neptune", "--engine", "neptune", "--fixture", "fixture.json",
+    ])
+    assert up.fixture == Path("fixture.json")
+    calls = cli.build_parser().parse_args([
+        "local", "neptune-calls", "--after", "12", "--format", "json",
+    ])
+    assert calls.after == 12 and calls.func is cli.cmd_local_neptune_calls
+
+
+def test_local_mock_cannot_start_all_engines(monkeypatch):
+    args = argparse.Namespace(key=None, engine="all", image=None, fixture=Path("mock.json"))
+    with pytest.raises(core.QuarryError, match="single local Neptune"):
+        cli.cmd_local_up(args)
 
 
 def test_cmd_local_up_with_key_postgres(monkeypatch, capsys, local_ws):
