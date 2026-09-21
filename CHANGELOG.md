@@ -148,6 +148,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.5.0 (2026-09-21)
+
+### Features
+
+- Add fixture-backed local Neptune mock ([#138](https://github.com/yiminspace/quarry/pull/138),
+  [`37823e9`](https://github.com/yiminspace/quarry/commit/37823e9b06e5c490999ca94609ebebd84ded9668))
+
+
 ## v1.4.1 (2026-09-20)
 
 ### Bug Fixes
