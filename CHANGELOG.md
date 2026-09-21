@@ -9,6 +9,10 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- Local Neptune can opt into a fixture-backed openCypher response mock with strict
+  unmatched-query errors and cursor-based call inspection; the default empty
+  endpoint remains unchanged.
+
 - Sidebar-wide search covers configured databases, saved query names/descriptions,
   and cached tables/Redis keys across environments without connecting on input.
   A sticky search bar shares its row with Collapse all; clearing search restores

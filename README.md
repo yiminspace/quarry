@@ -350,10 +350,28 @@ their physical Postgres databases are namespaced, for example
 reconciled to the configured port, namespace, and localhost credentials when
 the shared container is recreated.
 
-The local Neptune service listens on `https://localhost:18182`, accepts both
-Quarry and AWS Neptune Data API openCypher requests, and always returns an empty
-result. Writes are acknowledged but intentionally not persisted, so each local
-matrix-runtime run starts without Mind Graph memory.
+The local Neptune service listens on `https://localhost:18182` and accepts both
+Quarry and AWS Neptune Data API openCypher requests. Its default `empty` mode
+returns no rows and acknowledges writes without persisting them.
+
+For deterministic tests, start **only** Neptune with `qy local up neptune
+--engine neptune --fixture /path/to/responses.json`. A fixture contains an
+ordered `responses` array; the first rule whose `query_contains` substring and
+optional parameter subset match returns its `results` verbatim:
+
+```json
+{"responses": [{"query_contains": "MATCH (n)", "parameters": {"user_id": "test-user"}, "results": [{"n": {"name": "example"}}]}]}
+```
+
+Mock mode returns HTTP 501 for unmatched queries, including unconfigured writes,
+so tests cannot silently pass on an empty response. `qy local neptune-calls
+--format json` lists every openCypher call, its parameters, match status, and a
+monotonic `next` cursor; `--after <cursor>` isolates a subsequent test window.
+The fixture and calls live in process memory and reset when the endpoint stops.
+This is a protocol-level response mock, **not** a Cypher graph database. Mock
+mode binds to loopback only; changing between `empty` and `mock` (or changing
+fixtures) requires explicitly stopping the existing endpoint first. `qy local
+status --engine neptune` shows the active backend.
 
 One shared Postgres container hosts a namespaced physical database per scoped
 logical connection (fixed port `5433`; redis `6380`), and data lives on a named
