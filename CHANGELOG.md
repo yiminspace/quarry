@@ -29,6 +29,8 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- Successful GUI keep-alive status polls no longer flood the terminal log.
+
 - `qy local up <db>` writes new local connections beside their source database,
   reuses them across configured workspaces within the same project scope,
   rejects duplicate scoped identities and accidental `_local_local` names, and
