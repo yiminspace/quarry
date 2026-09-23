@@ -853,7 +853,8 @@ class Handler(BaseHTTPRequestHandler):
                 out = api_keepalive()
             else:
                 return self._send(404, {"error": "not found"})
-            log.info("GET %s (%d ms)", self.path, int((time.monotonic() - t0) * 1000))
+            request_log = log.debug if u.path == "/api/keepalive" else log.info
+            request_log("GET %s (%d ms)", self.path, int((time.monotonic() - t0) * 1000))
             self._send(200, out)
         except BaseException as e:  # noqa: BLE001  (catch SystemExit too)
             self._err(e, "GET " + self.path)
@@ -965,7 +966,7 @@ def serve(host="127.0.0.1", port=8765, ws_path=None, open_browser=True) -> int: 
     homes = ", ".join(str(w.home) for w in workspace.WS_LIST)
     print(f"Quarry GUI → {url}", flush=True)
     print(f"  workspace(s): {homes}", flush=True)
-    print("  requests + errors log below; Ctrl-C to stop.", flush=True)
+    print("  activity + errors log below; Ctrl-C to stop.", flush=True)
     if open_browser:
         try:
             webbrowser.open(f"{url}/app/")
