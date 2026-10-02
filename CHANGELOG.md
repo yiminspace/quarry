@@ -29,8 +29,12 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
-- Keeper and shared-tunnel process identities use a fixed locale, so the GUI
-  recognizes forwards started from a terminal with a different language setting.
+- Keeper and shared-tunnel process identities now use a versioned, fixed-locale
+  UTC start time, so GUI and CLI timezone or language settings cannot disagree.
+  A pre-v2 keeper record is recognized only when its PID-file timestamp also
+  verifies the process start; unverifiable records are never signalled. Pre-v2
+  tunnel registry entries are not reused until the keeper restarts and registers
+  new identities.
 
 - Successful GUI keep-alive status polls no longer flood the terminal log.
 

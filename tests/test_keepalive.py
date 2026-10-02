@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+from datetime import datetime, timezone
 import json
 import os
 import signal
@@ -205,6 +206,63 @@ def test_stop_checks_identity_and_preserves_successor(_ka_dir, monkeypatch, tmp_
     assert keepalive.stop(ws)
     assert signals == [(12345, signal.SIGTERM)]
     assert keepalive._read_record(ws) == successor
+
+
+@pytest.mark.unit
+def test_legacy_keeper_identity_needs_pid_file_start_time_proof(_ka_dir, monkeypatch, tmp_path):
+    ws = tmp_path / "ws"
+    pid = 12345
+    old_identity = "五 10月/ 2 22:24:07 2026 keeper"
+    current_identity = "v2:Fri Oct  2 14:24:07 2026 keeper"
+    start = datetime(2026, 10, 2, 14, 24, 7, tzinfo=timezone.utc).timestamp()
+    record = {"pid": pid, "identity": old_identity}
+    path = keepalive._pid_file(ws)
+    keepalive._write_text(path, json.dumps(record))
+    os.utime(path, (start + 1, start + 1))
+    current = {"identity": current_identity}
+    monkeypatch.setattr(keepalive.tunnel, "_process_identity", lambda _pid: current["identity"])
+    monkeypatch.setattr(keepalive.tunnel, "_legacy_process_identity", lambda _pid, _old: old_identity)
+    assert keepalive.keeper_running(ws) == (True, pid)
+
+    signals = []
+
+    def signal_keeper(signalled_pid, signum):
+        signals.append((signalled_pid, signum))
+        current["identity"] = None
+
+    monkeypatch.setattr(keepalive.os, "kill", signal_keeper)
+    assert keepalive.stop(ws) is True
+    assert signals == [(pid, signal.SIGTERM)]
+    assert not path.exists()
+
+
+@pytest.mark.unit
+def test_legacy_reused_pid_never_signalled_even_if_ps_text_matches(_ka_dir, monkeypatch, tmp_path):
+    ws = tmp_path / "ws"
+    pid = 12345
+    old_identity = "五 10月/ 2 22:24:07 2026 keeper"
+    old_start = datetime(2026, 10, 2, 14, 24, 7, tzinfo=timezone.utc).timestamp()
+    reused_start = datetime(2026, 10, 2, 22, 24, 7, tzinfo=timezone.utc).timestamp()
+    record = {"pid": pid, "identity": old_identity}
+    path = keepalive._pid_file(ws)
+    keepalive._write_text(path, json.dumps(record))
+    os.utime(path, (old_start + 1, old_start + 1))
+    monkeypatch.setattr(keepalive.tunnel, "_process_identity", lambda _pid:
+                        "v2:Fri Oct  2 22:24:07 2026 keeper")
+    monkeypatch.setattr(keepalive.tunnel, "_legacy_process_identity", lambda _pid, _old: old_identity)
+    monkeypatch.setattr(keepalive.os, "kill", lambda *args: pytest.fail("must not signal reused PID"))
+    assert reused_start - old_start == 8 * 3600
+    assert keepalive.keeper_running(ws) == (False, pid)
+
+    # The unverified record may belong to a still-running keeper. If its lock
+    # remains held, stop must report failure rather than claiming it stopped.
+    fd = keepalive._acquire_lock(ws)
+    assert fd is not None
+    try:
+        assert keepalive.stop(ws) is False
+        assert keepalive._read_record(ws) == record
+    finally:
+        os.close(fd)
 
 
 @pytest.mark.unit
