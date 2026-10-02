@@ -29,6 +29,9 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- Keeper and shared-tunnel process identities use a fixed locale, so the GUI
+  recognizes forwards started from a terminal with a different language setting.
+
 - Successful GUI keep-alive status polls no longer flood the terminal log.
 
 - `qy local up <db>` writes new local connections beside their source database,

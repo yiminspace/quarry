@@ -145,6 +145,9 @@ def _process_identity(pid) -> str | None:
         result = subprocess.run(
             ["ps", "-ww", "-p", str(int(pid)), "-o", "lstart=", "-o", "command="],
             capture_output=True, text=True, timeout=2,
+            # ps localizes lstart (for example, "Fri Oct" vs "五 10月").
+            # Identity records must compare equally across CLI/GUI locales.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         )
         return result.stdout.strip() or None if result.returncode == 0 else None
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
