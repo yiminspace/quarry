@@ -157,6 +157,21 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.5.1 (2026-10-03)
+
+### Bug Fixes
+
+- Keep tunnel identity stable across locales ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+- Preserve keeper identity safety across upgrades
+  ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+- 修复不同系统语言下 keeper 状态误报 ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+
 ## v1.5.0 (2026-09-21)
 
 ### Features
