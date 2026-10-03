@@ -21,9 +21,11 @@ from __future__ import annotations
 import atexit
 from collections import deque
 import contextlib
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -137,18 +139,73 @@ def _load_registry() -> dict:
         return {}
 
 
-def _process_identity(pid) -> str | None:
-    """Process start time and command, not merely a recyclable PID."""
+_IDENTITY_PREFIX = "v2:"
+_C_MONTHS = {month: number for number, month in enumerate(
+    ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+_C_START = re.compile(
+    r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) "
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +"
+    r"(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4}) +\S"
+)
+
+
+def _ps_identity(pid, *, locale: str, tz: str | None) -> str | None:
+    """Read the whole process start time and command in a controlled locale."""
     try:
         if int(pid) <= 0:
             return None
+        env = {**os.environ, "LC_ALL": locale, "LANG": locale}
+        if tz is None:
+            env.pop("TZ", None)
+        else:
+            env["TZ"] = tz
         result = subprocess.run(
             ["ps", "-ww", "-p", str(int(pid)), "-o", "lstart=", "-o", "command="],
             capture_output=True, text=True, timeout=2,
+            env=env,
         )
         return result.stdout.strip() or None if result.returncode == 0 else None
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
         return None
+
+
+def _process_identity(pid) -> str | None:
+    """Versioned start time and command, stable across caller locale and TZ."""
+    identity = _ps_identity(pid, locale="C", tz="UTC")
+    return f"{_IDENTITY_PREFIX}{identity}" if identity else None
+
+
+def _identity_start_epoch(identity: str | None) -> float | None:
+    """Extract the UTC start second without depending on the caller's locale."""
+    if not isinstance(identity, str) or not identity.startswith(_IDENTITY_PREFIX):
+        return None
+    match = _C_START.match(identity[len(_IDENTITY_PREFIX):])
+    if match is None:
+        return None
+    month, day, hour, minute, second, year = match.groups()
+    try:
+        return datetime(int(year), _C_MONTHS[month], int(day), int(hour), int(minute),
+                        int(second), tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _legacy_process_identity(pid, recorded: str) -> str | None:
+    """Replay a known old locale in the system TZ; unknown formats fail closed.
+
+    The caller must independently establish that the recorded PID started near
+    the record's creation. Old identities have no TZ field, so replaying them
+    alone cannot safely distinguish a reused PID across time zones.
+    """
+    if not isinstance(recorded, str) or recorded.startswith(_IDENTITY_PREFIX):
+        return None
+    if re.match(r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ", recorded):
+        locale = "C"
+    elif re.match(r"^[一二三四五六日] +\d{1,2}月", recorded):
+        locale = "zh_CN.UTF-8"
+    else:
+        return None
+    return _ps_identity(pid, locale=locale, tz=None)
 
 
 def _entry_alive(pid, entry: dict) -> bool:
@@ -159,6 +216,8 @@ def _entry_alive(pid, entry: dict) -> bool:
         type(port) is int and 0 < port < 65536
         and entry.get("owner_identity")
         and entry.get("ssh_identity")
+        # Pre-v2 registry records cannot prove their original TZ or write time.
+        # They are deliberately not reused until the owner re-registers them.
         and _process_identity(pid) == entry["owner_identity"]
         and _process_identity(entry.get("ssh_pid")) == entry["ssh_identity"]
         and _port_open("127.0.0.1", port)

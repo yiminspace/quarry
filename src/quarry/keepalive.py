@@ -72,13 +72,36 @@ def _read_pid(ws_home: "str | Path") -> int | None:
     return record["pid"] if record else None
 
 
-def _record_alive(record: dict[str, Any]) -> bool:
-    return tunnel._process_identity(record["pid"]) == record["identity"]
+def _record_alive(record: dict[str, Any], ws_home: "str | Path") -> bool:
+    current = tunnel._process_identity(record["pid"])
+    if current is None:
+        return False
+    if current == record["identity"]:
+        return True
+    if record["identity"].startswith(tunnel._IDENTITY_PREFIX):
+        return False
+
+    # A pre-v2 identity lacks a timezone. Its localized `ps` text alone could
+    # match an unrelated process that later reuses the same PID. The pid file
+    # is written once at keeper startup, so its mtime independently pins that
+    # process's start epoch before replaying the old locale.
+    start = tunnel._identity_start_epoch(current)
+    if start is None:
+        return False
+    try:
+        created = _pid_file(ws_home).stat().st_mtime
+    except OSError:
+        return False
+    if not 0 <= created - start <= 30:
+        return False
+    if _read_record(ws_home) != record:
+        return False
+    return tunnel._legacy_process_identity(record["pid"], record["identity"]) == record["identity"]
 
 
 def keeper_running(ws_home: "str | Path") -> tuple[bool, int | None]:
     record = _read_record(ws_home)
-    return (_record_alive(record), record["pid"]) if record else (False, None)
+    return (_record_alive(record, ws_home), record["pid"]) if record else (False, None)
 
 
 def _acquire_lock(ws_home: "str | Path") -> int | None:
@@ -190,15 +213,15 @@ def stop(ws_home: "str | Path") -> bool:
     record = _read_record(ws_home)
     if record is None:
         return False
-    if _record_alive(record):
+    if _record_alive(record, ws_home):
         try:
             os.kill(record["pid"], signal.SIGTERM)
         except ProcessLookupError:
             pass
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and _record_alive(record):
+        while time.monotonic() < deadline and _record_alive(record, ws_home):
             time.sleep(0.1)
-        if _record_alive(record):
+        if _record_alive(record, ws_home):
             return False  # Still running: preserve its ownership record.
     # Serialize stale cleanup against a new starter publishing its record.
     fd = _acquire_lock(ws_home)
@@ -207,7 +230,8 @@ def stop(ws_home: "str | Path") -> bool:
             _remove_record(ws_home, record)
         finally:
             os.close(fd)
-    return True
+        return True
+    return False  # Another process still holds the keeper lock.
 
 
 def _hint_key(conn: core.Connection) -> str:

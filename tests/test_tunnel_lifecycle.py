@@ -35,6 +35,18 @@ def test_failed_or_empty_ps_output_is_not_an_identity(monkeypatch, code, text):
     assert tunnel._process_identity(12345) is None
 
 
+@pytest.mark.unit
+def test_pre_v2_registry_identity_is_not_reused_even_with_open_port(monkeypatch):
+    monkeypatch.setattr(tunnel, "_port_open", lambda *args: True)
+    monkeypatch.setattr(tunnel, "_process_identity", lambda pid:
+                        f"v2:Fri Oct  2 14:24:07 2026 process-{pid}")
+    entry = {"local_port": 55123,
+             "owner_identity": "Fri Oct  2 22:24:07 2026 process-12345",
+             "ssh_pid": 12346,
+             "ssh_identity": "Fri Oct  2 22:24:07 2026 process-12346"}
+    assert not tunnel._entry_alive(12345, entry)
+
+
 @pytest.mark.integration
 def test_real_child_identity_disappears_after_reaping():
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
