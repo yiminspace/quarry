@@ -27,7 +27,18 @@ pre-1.0 history followed the earlier development policy.
   table previews; query counts are hidden and Collapse all preserves the active editor
   and result. A quieter All queries index keeps unassociated queries discoverable.
 
+### Changed
+
+- Production connections use muted theme accents across the header, active
+  connection and tab. A Production label sits in a reserved area at the right of
+  the connection heading, keeping controls in place when environments change.
+  Switching to production no longer shows a repeated warning toast and still
+  preserves SQL without executing it.
+
 ### Fixed
+
+- The result-limit selector now displays localized row-count labels with a
+  properly inset chevron, keeping the text and arrow clearly separated.
 
 - Keeper and shared-tunnel process identities now use a versioned, fixed-locale
   UTC start time, so GUI and CLI timezone or language settings cannot disagree.

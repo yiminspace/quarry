@@ -527,9 +527,14 @@ def test_history_nav_stashes_and_restores_draft(page):
 # ---------------------------------------------------------------------------
 
 def _relative_luminance(rgb: str) -> float:
-    match = re.fullmatch(r"rgba?\((\d+), (\d+), (\d+)(?:, [^)]+)?\)", rgb)
-    assert match, rgb
-    channels = [int(value) / 255 for value in match.groups()]
+    match = re.fullmatch(r"rgba?\(([\d.]+), ([\d.]+), ([\d.]+)(?:, [^)]+)?\)", rgb)
+    if match:
+        channels = [float(value) / 255 for value in match.groups()]
+    else:
+        # CSS color-mix() retains the modern color(srgb ...) serialization.
+        match = re.fullmatch(r"color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)(?: / [^)]+)?\)", rgb)
+        assert match, rgb
+        channels = [float(value) for value in match.groups()]
     linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
               for value in channels]
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
@@ -569,15 +574,21 @@ def test_selected_prod_pills_keep_accessible_contrast_in_light_themes(page_envse
     page.locator(".vg-switcher-mode").click()
     assert page.evaluate("document.documentElement.dataset.mode") == "light"
 
-    for theme, expected_bg in (("slate", "rgb(178, 59, 52)"),
-                               ("signal", "rgb(179, 45, 45)")):
+    for theme in ("slate", "signal"):
         if theme == "signal":
             page.locator(".vg-switcher-trigger").click()
             page.get_by_role("menuitemradio", name="Signal").click()
         assert page.evaluate("document.documentElement.dataset.theme") == theme
         fg, bg, ratio = _contrast_ratio(page.locator('#esw .ep[data-env="prod"]').first)
-        assert fg == "rgb(255, 255, 255)"
-        assert bg == expected_bg
+        assert page.locator('#esw .ep[data-env="prod"]').evaluate('''el => {
+            const probe = document.createElement('span');
+            probe.style.color = 'var(--production-fg)';
+            probe.style.backgroundColor = 'var(--production-selection)';
+            el.append(probe);
+            const actual = getComputedStyle(el), expected = getComputedStyle(probe);
+            const matches = actual.color === expected.color && actual.backgroundColor === expected.backgroundColor;
+            probe.remove(); return matches;
+        }''')
         assert ratio >= 4.5, (theme, fg, bg, ratio)
 
 
@@ -590,8 +601,8 @@ def test_prod_env_switch_does_not_autorun(page_envset):
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
     page.locator('#esw .ep[data-env="prod"]').click()
-    page.wait_for_selector("#toast", state="visible")     # notice instead of a run
-    assert "prod" in page.locator("#toast").inner_text().lower()
+    page.wait_for_selector("#prodBadge")                   # persistent connection context
+    assert page.locator("#toast").is_hidden()
     page.wait_for_timeout(700)
     assert queries == []                                   # no auto-run happened
     assert page.locator("#grid table").count() == 0        # new prod group is empty
@@ -604,7 +615,8 @@ def test_nonprod_env_switch_restores_without_autorun(page_envset):
     page.wait_for_selector("#esw .ep")
     _run_sql(page, "select 1 as a")
     page.locator('#esw .ep[data-env="prod"]').click()      # -> prod (no run)
-    page.wait_for_selector("#toast", state="visible")
+    page.wait_for_selector("#prodBadge")
+    assert page.locator("#toast").is_hidden()
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
     page.locator('#esw .ep[data-env="dev"]').click()       # -> dev restores
@@ -653,8 +665,8 @@ def test_neptune_connection_opens_starter_without_autorun(page_neptune):
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
 
     page.locator('#esw .ep[data-env="prod"]').click()
-    page.wait_for_selector("#toast", state="visible")
-    assert "prod" in page.locator("#toast").inner_text().lower()
+    page.wait_for_selector("#prodBadge")
+    assert page.locator("#toast").is_hidden()
     assert page.locator("#sql").input_value() == "MATCH (n) RETURN n LIMIT 25"
     page.wait_for_timeout(200)
     assert [(q["db"], q["env"]) for q in queries] == [("graph", "local"), ("graph", "dev")]
@@ -1614,6 +1626,33 @@ def test_max_rows_selector_caps_and_persists(page):
     assert page.locator("#maxRows").input_value() == "100"
 
 
+@pytest.mark.parametrize('lang', ['en', 'zh'])
+def test_row_limit_selector_has_readable_label_and_keyboard_control(page, lang):
+    from playwright.sync_api import expect
+
+    _select_testpg(page)
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+    limit = page.locator('#maxRows')
+    assert limit.get_attribute('aria-label') == limit.get_attribute('title')
+    assert limit.get_attribute('title')
+    page.select_option('#maxRows', '100')
+    assert limit.locator('option:checked').inner_text() == ('100 rows' if lang == 'en' else '100 行')
+    requests = []
+    page.on('request', lambda req: requests.append(req.url) if req.method == 'POST' and
+            (req.url.endswith('/api/query') or req.url.endswith('/api/run')) else None)
+    limit.focus()
+    # Native type-ahead works across platforms without depending on an OS
+    # popup, which headless Chromium on macOS does not expose to arrow keys.
+    limit.press_sequentially('5000')
+    limit.press('Enter')
+    expect(limit).to_have_value('5000')
+    assert limit.locator('option:checked').inner_text() == ('5000 rows' if lang == 'en' else '5000 行')
+    assert not requests
+    page.reload(wait_until='networkidle')
+    expect(page.locator('#maxRows')).to_have_value('5000')
+
+
 def test_network_error_shows_readable_message(page):
     _select_testpg(page)
     page.route("**/api/query", lambda route: route.abort())
@@ -1896,7 +1935,8 @@ def test_result_stays_in_dev_group_after_prod_reload(page_envset):
     _run_sql(page, "select 42 as dev_only")               # result produced on shop@dev
     page.wait_for_selector('#grid td[data-v="42"]')
     page.locator('#esw .ep[data-env="prod"]').click()     # switch to separate prod group
-    page.wait_for_selector("#toast", state="visible")
+    page.wait_for_selector("#prodBadge")
+    assert page.locator("#toast").is_hidden()
     # the persisted result is tagged with its PRODUCING connection (dev), not the
     # tab's current prod connection — so it can't masquerade as prod data
     saved = page.evaluate("JSON.parse(localStorage.getItem('qy_tabres'))")
@@ -1964,7 +2004,8 @@ def test_inflight_response_returns_to_origin_env_group(page_envset):
     page.locator("#runBtn").click()                       # slow query in flight on shop@dev
     page.wait_for_selector("#grid .spin")
     page.locator('#esw .ep[data-env="prod"]').click()     # separate prod tab (no autorun)
-    page.wait_for_selector("#toast", state="visible")
+    page.wait_for_selector("#prodBadge")
+    assert page.locator("#toast").is_hidden()
     page.wait_for_timeout(1600)                            # let the dev response land
     # the dev rows must never surface under the now-prod tab
     assert page.locator('#grid td[data-v="42"]').count() == 0
@@ -3211,6 +3252,143 @@ group = "acme"
             yield page
         finally:
             ctx.close()
+
+
+def test_production_context_follows_connection_without_toasts(page_explicit_production):
+    page = page_explicit_production
+    page.locator('.dbrow[data-db="shop"]').click()
+    _set_sql(page, 'select 42 as production_manual')
+    queries = []
+    page.on('request', lambda r: '/api/query' in r.url and queries.append(r.post_data_json))
+
+    def assert_context(production):
+        assert page.locator('.app-shell').get_attribute('data-production') == str(production).lower()
+        assert page.locator('header #prodBadge').count() == 0
+        assert page.locator('.qhead .production-status').count() == 1
+        assert page.locator('#productionHint').count() == 0
+        assert page.locator('#runBtn').get_attribute('aria-describedby') is None
+        assert page.locator('#toast').is_hidden()
+        if production:
+            assert page.locator('.qhead #prodBadge').inner_text().strip() == 'Production'
+            assert page.locator('.production-status #prodBadge').get_attribute('title') == 'Production connection — queries run manually'
+        else:
+            assert page.locator('#prodBadge').count() == 0
+
+    assert_context(False)
+    # Environment names are labels: jp is protected, while prod is not.
+    page.locator('#esw .ep[data-env="jp"]').click()
+    page.locator('#prodBadge').wait_for()
+    assert_context(True)
+    assert page.locator('#sql').input_value() == 'select 42 as production_manual'
+    page.wait_for_timeout(250)
+    assert queries == []
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(queries) == 1 and queries[0]['env'] == 'jp'
+    assert_context(True)  # the context remains after an explicit run
+
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(queries) == 2 and queries[-1]['env'] == 'prod'
+    assert_context(False)
+    page.locator('#esw .ep[data-env="jp"]').click()
+    assert_context(True)
+    page.reload(wait_until='networkidle')
+    page.locator('#prodBadge').wait_for()
+    assert_context(True)
+    assert len(queries) == 2
+
+    # Closing the final editor does not disguise the connection's production state.
+    page.locator('.tab.on .x').click()
+    page.wait_for_selector('#queryEmptyState')
+    assert page.locator('.app-shell').get_attribute('data-production') == 'true'
+    assert page.locator('.qhead #prodBadge').is_visible()
+    assert page.locator('#productionHint').count() == 0
+    page.reload(wait_until='networkidle')
+    page.wait_for_selector('#queryEmptyState')
+    assert page.locator('.app-shell').get_attribute('data-production') == 'true'
+    assert page.locator('.qhead #prodBadge').is_visible()
+    assert page.locator('#productionHint').count() == 0
+    assert page.locator('#toast').is_hidden()
+    assert len(queries) == 2
+    page.locator('#emptyNewTab').click()
+    assert_context(True)
+    _select_testpg(page)
+    assert_context(False)
+
+
+@pytest.mark.parametrize('width', [1280, 900])
+@pytest.mark.parametrize('lang', ['en', 'zh'])
+def test_production_context_has_stable_layout(page_envset, width, lang):
+    page = page_envset
+    page.set_viewport_size({'width': width, 'height': 900})
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.locator('#esw .ep').first.wait_for()
+
+    def geometry():
+        return page.evaluate('''() => Object.fromEntries([
+            '.qhead', '.connection-context', '#qtitle', '#esw', '#ciBtn',
+            '#esw [data-env="dev"]', '#esw [data-env="prod"]',
+            '.production-status', '#tabs', '#runBtn', '#maxRows'
+        ].map(selector => {
+            const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect();
+            return [selector, {x, y, width, height}];
+        }))''')
+
+    baseline = geometry()
+    for env in ('prod', 'dev', 'prod', 'dev'):
+        page.locator(f'#esw .ep[data-env="{env}"]').click()
+        page.wait_for_function('(production) => document.querySelector(".app-shell").dataset.production === production',
+                               arg=str(env == 'prod').lower())
+        current = geometry()
+        for selector, dimensions in baseline.items():
+            for dimension, value in dimensions.items():
+                assert current[selector][dimension] == pytest.approx(value, abs=0.5), (width, lang, env, selector, dimension)
+        if env == 'prod':
+            status = page.locator('.production-status').bounding_box()
+            label = page.locator('#prodBadge').bounding_box()
+            context = page.locator('.connection-context').bounding_box()
+            assert status['x'] >= context['x'] + context['width']
+            assert label['x'] + label['width'] <= status['x'] + status['width'] + 0.5
+    assert page.locator('.production-status').inner_text().strip() == ''
+
+
+def test_single_production_connection_context_is_localized(page):
+    def production_connections(route):
+        response = route.fetch()
+        data = response.json()
+        for group in data['groups']:
+            for item in group['items']:
+                for env in item['envs']:
+                    env['production'] = True
+        route.fulfill(response=response, json=data)
+
+    page.route('**/api/connections', production_connections)
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    assert page.locator('#esw .ep').count() == 0
+    assert page.locator('.qhead #prodBadge').inner_text().strip() == 'Production'
+    assert page.locator('#productionHint').count() == 0
+    page.locator('.vg-lang-switch').click()
+    page.wait_for_function("document.querySelector('#prodBadge')?.textContent.trim() === '生产环境'")
+    assert page.locator('#prodBadge').get_attribute('title') == '生产连接：需要手动运行查询'
+    assert page.locator('#runBtn').get_attribute('aria-describedby') is None
+    assert page.locator('.app-shell').get_attribute('data-production') == 'true'
+    assert page.locator('#toast').is_hidden()
+
+    def removed_connection(route):
+        response = route.fetch()
+        data = response.json()
+        data['groups'] = []
+        route.fulfill(response=response, json=data)
+
+    page.route('**/api/connections', removed_connection)
+    page.reload(wait_until='networkidle')
+    assert page.locator('.app-shell').get_attribute('data-production') == 'false'
+    assert page.locator('#prodBadge, #productionHint').count() == 0
+    assert page.locator('#runBtn').get_attribute('aria-describedby') is None
 
 
 def test_env_preview_autorun_uses_explicit_production(page_explicit_production):

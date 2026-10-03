@@ -8,8 +8,8 @@ import UpdatePanel from "./UpdatePanel";
 import WhatsNewPanel from "./WhatsNewPanel";
 import WorkspaceModal from "./WorkspaceModal";
 
-/** The header bar: brand, workspace label, workspace manager, production
- * warnings, health-check-all, language and theme toggles — the legacy GUI's
+/** The header bar: brand, workspace label, workspace manager,
+ * health-check-all, language and theme toggles — the legacy GUI's
  * `<header>` chrome, same DOM and icons. */
 export default function Header() {
   const headerRef = useRef<HTMLElement>(null);
@@ -32,7 +32,6 @@ export default function Header() {
   const workspace = useConnStore((s) => s.workspace);
   const workspaces = useConnStore((s) => s.workspaces);
   const groups = useConnStore((s) => s.groups);
-  const current = useConnStore((s) => s.current);
   const checking = useConnStore((s) => s.checking);
   const keepAlive = useConnStore((s) => s.keepAlive);
   const updateInfo = useUiStore((s) => s.updateInfo);
@@ -41,7 +40,6 @@ export default function Header() {
   const [wsOpen, setWsOpen] = useState(false);
   const [updOpen, setUpdOpen] = useState(false);
 
-  const isProd = current?.production === true;
   const multiWs = workspaces.length > 1;
   const kaState = (() => {
     if (!keepAlive?.keeper?.running) return "down";
@@ -99,14 +97,6 @@ export default function Header() {
         <i className="ti ti-settings" />
       </button>
       <span className="vg-sp sp" />
-      <span
-        className="vg-badge badge err prod"
-        id="prodBadge"
-        title={t("production_tip")}
-        style={{ display: isProd ? undefined : "none" }}
-      >
-        <i className="ti ti-alert-triangle" /> prod
-      </span>
       <span className={`vg-badge badge ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`} id="kaBadge" title={kaLabel}>
         <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
       </span>

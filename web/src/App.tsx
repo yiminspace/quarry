@@ -1,6 +1,7 @@
 import Header from "./Header";
 import ResultWorkbench from "./ResultWorkbench";
 import { t, tv } from "./i18n";
+import { useConnStore } from "./store/connStore";
 import { useToastStore } from "./store/toastStore";
 import { useUiStore } from "./store/uiStore";
 import { useEvents } from "./useEvents";
@@ -42,12 +43,13 @@ function UpgradeBanner() {
  * filling the rest — the legacy GUI's `<body>` layout. */
 export default function App() {
   useEvents();
+  const isProduction = useConnStore((s) => s.current?.production === true);
   return (
-    <>
+    <div className="app-shell" data-production={isProduction}>
       <UpgradeBanner />
       <Header />
       <ResultWorkbench />
       <Toast />
-    </>
+    </div>
   );
 }
