@@ -5,9 +5,16 @@
    overlay-textarea 双层技巧 —— 全部只消费 voyage 的 token 变量, 不再自己
    定义颜色字面量。 */
 *{box-sizing:border-box}
-#root{display:contents}
+#root,.app-shell{display:contents}
 /* a few inline styles (Modals.tsx) still reach for var(--mono) directly */
-.vg{--mono:var(--vg-mono)}
+.vg{
+  --mono:var(--vg-mono);
+  --production-accent:color-mix(in srgb,var(--accent) 65%,var(--fg2));
+  --production-fg:color-mix(in srgb,var(--accent) 25%,var(--fg2));
+  --production-surface:color-mix(in srgb,var(--production-accent) 6%,var(--surf-1));
+  --production-line:color-mix(in srgb,var(--production-accent) 40%,var(--line));
+  --production-selection:color-mix(in srgb,var(--production-accent) 10%,var(--surf-1));
+}
 
 /* ---- 侧栏里 voyage 组件层没有覆盖到的边角 ---- */
 .grp .ti{font-size:13px}
@@ -60,9 +67,6 @@
 .vg-qsrc{font-size:11px;color:var(--fg3);padding:8px 12px 2px 22px;font-family:var(--vg-mono)}
 .vg-qname-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .esw{display:flex;gap:5px}
-/* Voyage 0.15 的浅色 --on-fg 是黑色, 放在 header prod 红底上不足 4.5:1；
-   复用各主题已有的实色控件 ink token，保持生产环境安全提示可读。 */
-.vg[data-mode='light'] .vg-ep.on.prod{color:var(--accent-ink)}
 
 /* ---- SQL 编辑器: 高亮 <pre> 叠在透明 <textarea> 上的经典双层技巧 ---- */
 .edwrap{position:relative;background:var(--surf-2);overflow:hidden}
@@ -155,22 +159,39 @@
 /* Keep the active document prominent; environment and Run are quieter context/actions. */
 #esw .vg-ep{padding:4px 10px;border-color:var(--line);color:var(--fg3);background:var(--surf-1);box-shadow:none}
 #esw .vg-ep.on:not(.prod){background:color-mix(in srgb,var(--acc) 20%,var(--surf-1));border-color:var(--acc);color:var(--fg);font-weight:600;box-shadow:none}
-#esw .vg-ep.prod{color:var(--red-fg)}
-#esw .vg-ep.on.prod{background:var(--red);border-color:var(--red);color:var(--on-fg)}
-.vg[data-mode='light'] #esw .vg-ep.on.prod{color:var(--accent-ink)}
+#esw .vg-ep.prod{color:var(--production-fg)}
+#esw .vg-ep.on.prod{background:var(--production-selection);border-color:var(--production-line);color:var(--production-fg);font-weight:600}
 #runBtn{background:var(--surf-1);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 55%,var(--line));box-shadow:none;font-weight:500}
 #runBtn:hover{background:var(--acc);color:var(--accent-ink);border-color:var(--acc);filter:none}
 #runBtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 
+/* Production is persistent connection context, carried by the workbench chrome. */
+.app-shell[data-production='true'] .vg-header{background:var(--production-surface);box-shadow:inset 0 2px 0 0 var(--production-accent)}
+.app-shell[data-production='true'] .qhead{background:var(--production-surface);border-bottom-color:var(--production-line)}
+.app-shell[data-production='true'] .dbrow.on{background:var(--production-selection);color:var(--fg)}
+.app-shell[data-production='true'] .dbrow.on::before{background:var(--production-accent)}
+.app-shell[data-production='true'] .tab-navigation .vg-tab.on::after{background:var(--production-accent)}
+.production-status{display:flex;align-items:center;justify-content:flex-end;width:104px;min-height:20px;flex:none}
+.production-context{display:inline-flex;align-items:center;gap:6px;color:var(--production-fg);font-size:11px;font-weight:500;white-space:nowrap}
+.production-dot{width:5px;height:5px;flex:none;border-radius:50%;background:var(--production-accent)}
+.app-shell[data-production='true'] #runBtn{background:var(--production-surface);border-color:var(--production-line);color:var(--production-fg)}
+.app-shell[data-production='true'] #runBtn:hover{background:var(--production-selection);border-color:var(--production-fg)}
+.app-shell[data-production='true'] #runBtn:focus-visible{outline-color:var(--production-fg)}
+
 /* Shared workbench rhythm: one inset, compact context and equal action heights. */
-.vg-qhead.qhead{min-height:46px;padding:8px 14px;gap:10px;flex-wrap:wrap}
-.vg-qhead .qtitle{font-size:13px;line-height:20px}
+.vg-qhead.qhead{min-height:46px;padding:8px 14px;gap:10px;flex-wrap:nowrap}
+.connection-context{display:flex;align-items:center;gap:10px;flex:1;min-width:0;flex-wrap:wrap}
+.vg-qhead .qtitle{font-size:13px;line-height:20px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vg-qhead .runon{font-size:12px;line-height:20px}
 #esw{gap:6px;flex-wrap:wrap}
-#esw .vg-ep{display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;font-size:12px;line-height:20px;border-radius:6px}
+#esw .vg-ep{display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;font-size:12px;font-weight:600;line-height:20px;border-radius:6px}
 .vg-toolbar.toolbar{padding:8px 14px;gap:8px;flex-wrap:wrap}
 .vg-toolbar.toolbar .vg-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;font-size:12px;line-height:20px;border-radius:6px}
 .vg-toolbar.toolbar .vg-btn .ti{font-size:15px}
+.row-limit{position:relative;flex:none;width:112px}
+.row-limit #maxRows{display:block;appearance:none;-webkit-appearance:none;width:100%;padding:0 32px 0 10px;background-image:none}
+.row-limit>.ti{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:14px;line-height:1;color:var(--fg2);pointer-events:none}
+.row-limit #maxRows:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 /* Saved-query disclosure is independent from table preview. */
 .table-query-group { display: block; }
 .table-query-group > .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

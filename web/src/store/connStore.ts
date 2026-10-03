@@ -43,8 +43,8 @@ type ConnState = {
   setKeepAlive: (keepAlive: KeepAliveResponse | null) => void;
 };
 
-/** Connection-tree state shared by the header (workspace label, prod badge,
- * conn-info button, health button) and the sidebar (rows, dots, pills). */
+/** Connection-tree state shared by the shell (production context), header
+ * (workspace/health), workbench and sidebar (connections and tables). */
 export const useConnStore = create<ConnState>((set) => ({
   loaded: false,
   loadSeq: 0,

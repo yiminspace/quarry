@@ -140,7 +140,8 @@ each — the invariant first landed on 4 of the 5 editor-overwrite sites; the 5t
 (closing a tab) shipped unprotected.
 
 Status: ✅ covered · 🟡 partial · ❌ uncovered. Tests live in
-`tests/test_gui_browser.py` (B) and `tests/test_gui_browser_features.py` (F).
+`tests/test_gui_browser.py` (B), `tests/test_gui_browser_features.py` (F), and
+`tests/test_gui_visual.py` (V).
 Pure frontend logic that doesn't need a browser also gets a `web/src/**/*.test.ts`
 vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 
@@ -148,7 +149,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 |---|------|---------|------------|---|
 | 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_without_readonly_badge (single-ws only) | 🟡 |
 | 2 | header | no permanent read-only / auto LIMIT badge; query safety is unchanged | B:test_load_shows_brand_without_readonly_badge, F:test_icon_hover_hints_cover_header_workbench_and_modals | ✅ |
-| 3 | header | production badge follows explicit configuration, independent of env name | F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production | ✅ |
+| 3 | app shell/workbench | explicit production configuration drives muted theme-accent header/connection/tab/Run chrome; a localized Production label occupies a permanently reserved 104px slot at the right of the connection heading, including when no query tab is open; env switching keeps the title, pills and toolbar in place; follows the current connection independently of env name, without a connection-switch toast | F:test_production_context_follows_connection_without_toasts, F:test_single_production_connection_context_is_localized, F:test_production_context_has_stable_layout, F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production, V:test_production_context_tokens | ✅ |
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
@@ -156,7 +157,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 8 | sidebar | group collapse/expand + persistence | F:test_group_collapse_persists_after_reload | ✅ |
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
-| 11 | header | env switcher lists every env of the selected connection; explicit production styling + ≥4.5:1 contrast is pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
+| 11 | header | env switcher lists every env of the selected connection; pill font weight stays constant when selection changes; selected production uses a muted theme-accent tint and readable text, with ≥4.5:1 contrast pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_production_context_has_stable_layout, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
 | 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
 | 13 | sidebar | explicit env switch restores destination SQL or copies source SQL into an empty editor, then executes only if no saved result exists; returning restores SQL and result without a request; production retains SQL without executing; closed groups remain closed | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
 | 14 | sidebar | row click selects + opens table panel; re-click toggles panel | F:test_reclick_connection_toggles_panel | ✅ |
@@ -211,7 +212,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 62 | global | zero console errors as an invariant | F autouse `_console_clean`; B:test_no_console_errors_after_normal_flow | 🟡 |
 | 63 | sidebar | redis key list cap notice ("showing first N keys") | F:test_redis_capped_key_list_shows_notice | ✅ |
 | 64 | sidebar | generated table SQL quotes mixed-case/reserved identifiers | F:test_mixed_case_table_click_is_quoted | ✅ |
-| 65 | toolbar | max-rows selector: caps results, persisted across reloads | F:test_max_rows_selector_caps_and_persists | ✅ |
+| 65 | toolbar | max-rows selector: localized row-count labels, a decorative inset chevron with clear text separation, native keyboard operation, and 100/500/2000/5000 result caps persisted across reloads | F:test_max_rows_selector_caps_and_persists, F:test_row_limit_selector_has_readable_label_and_keyboard_control, V:test_row_limit_selector_geometry | ✅ |
 | 66 | header / controls | native hover hints for header, tabs, toolbar, sidebar folds and modal actions; Voyage hints follow locale and mode | F:test_icon_hover_hints_cover_header_workbench_and_modals (en/zh, mode and reveal state), F:test_cell_json_opens_tree_modal, F:test_redis_key_tree_badges_filter_and_inspect; overflow arrows audited in source only | 🟡 |
 | 67 | tabs | per-tab result isolation: grid / status / export always reflect the active tab | F:test_tab_switch_isolates_results | ✅ |
 | 68 | tabs | closing a tab pushes its SQL to History (active + inactive close) | F:test_close_tab_preserves_sql_in_history | ✅ |
@@ -253,7 +254,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
-| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit non-production environment switches execute SQL; configured production shows the no-auto-run notice; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
+| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit non-production environment switches execute SQL; configured production shows a Production label in the connection heading; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
 | 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; Escape clears global search, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
@@ -322,6 +323,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | sidebar | complete SQL/Cypher parsing and live Neptune schema navigation | query associations are hints from saved query text; complex/ambiguous references may remain under Other; labels shown here are not a complete live inventory |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
+| toolbar | arbitrary result-cap values beyond 100/500/2000/5000 | deferred; the row-limit selector deliberately retains its existing presets |
 
 Safety/performance-relevant UX invariants that must never regress (rows 13,
 27–28, 37, 47, 102):
@@ -564,3 +566,66 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   sections use distinct keys, so tab switching expands only the connection group. Connection, editor, draft, request and result
   write sites are unchanged; saved selection/modal now carry the file identity.
   Collapse/reload and selected-file execution are covered together by browser tests.
+
+### Integrated production context and row-limit audit (2026-10-03)
+
+- Existence: row 3 covers the shell treatment and the permanently reserved
+  104px `.production-status` region at the right of the connection heading;
+  row 107 covers the same context for Neptune. Its conditional `#prodBadge`
+  shows localized Production text and retains the `production_tip` native
+  hover hint, while the slot remains present in non-production. The left
+  `.connection-context` contains the title, environment pills and connection
+  information control. Run retains its existing interaction and loading state
+  (row 36), with no extra guidance label or accessible-description link.
+  Row 11 covers the environment pills' constant font weight and production text
+  contrast. These are presentation elements with no new interaction binding,
+  API consumer or persistence key. The sole `prod_no_autorun` toast in
+  `ResultWorkbench.selectDb` is removed; other toast producers are unchanged.
+  Existing environment, Neptune, result-restoration and in-flight browser tests
+  assert persistent context instead of the removed toast. Row 65 covers the
+  existing `#maxRows` select's `onChange`, localized option labels and decorative
+  Tabler chevron; the chevron is hidden from assistive technology and ignores
+  pointer events. The select keeps native keyboard behavior, numeric option
+  values, `qy_maxrows` storage and existing API request fields.
+- Capability: the header supplies a muted peripheral cue using the current
+  theme's accent blended with secondary text; no error-red token seeds production
+  styling. The sidebar and active tab identify the selected target. The heading
+  displays the production label, including with no query tabs open; its native
+  hover hint explains the execution policy. Permanently reserved space and constant pill weights keep connection
+  switching from shifting controls. The toolbar offers readable row-count units,
+  an inset chevron and keyboard selection. The editor, grid and exports retain
+  their existing behavior. Visible localized text complements color; dark/light
+  token and geometry tests cover the changed chrome. Arbitrary row limits remain
+  unavailable and are recorded in Design gaps; existing header-width and
+  connection-configuration limitations remain unchanged.
+- Shared-state: `.app-shell[data-production=true]` is derived directly from
+  `connStore.current?.production === true`; the wrapper uses `display: contents`
+  to retain the app layout. Production is neither inferred from an environment
+  name nor copied into a second state/persistence field. The complete existing
+  current-connection write inventory is the store's initial `null` and
+  `setCurrent` setter; `selectDb` supplies non-null metadata; `unbindActiveTab`,
+  the missing-connection query-link path, `revalidateTab`'s unbound-tab path and
+  `WorkspaceModal.doRemove` clear it. Connection-tree reload revalidates through
+  `selectDb`. No write site changes. Readers include the new shell, workbench
+  connection heading/toolbar, sidebar selection, navigation/preview and saved
+  query guards, editor context, query/EXPLAIN targets, URL/title and result/export
+  connection checks. The global Header no longer reads the production flag.
+  `test_production_context_follows_connection_without_toasts` checks the new
+  state-to-chrome interaction; existing explicit-production tests retain
+  `jp=true`/`prod=false`, draft/result preservation and execution coverage.
+  `test_production_context_tokens` pins the coordinated chrome in both modes.
+  `test_single_production_connection_context_is_localized` checks single-env
+  connections, English/Chinese labels and clearing the context after removal.
+  `test_production_context_has_stable_layout` checks title, environment and toolbar
+  geometry when production context appears/disappears, plus context without tabs.
+  The complete max-rows write inventory remains `uiStore` initialization through
+  `readMaxRows()` and `setMaxRows()`, whose sole UI caller is the selector's
+  `onChange`; the setter also writes `qy_maxrows`. Readers are the controlled
+  select and the request caps for regular SQL, query-link execution, saved query
+  execution, EXPLAIN and Load more in `ResultWorkbench`; `api.runSaved` passes the
+  cap to `/api/run`, while `api.runQuery` passes it to `/api/query`. All paths keep
+  the existing numeric value and preset options. The existing cap/reload browser
+  test checks persistence and actual result limiting; the new keyboard/label and
+  geometry tests cover the presentation change. No max-rows writer or consumer
+  changed semantics.
+  Query execution, request guards and per-tab result writers are unchanged.

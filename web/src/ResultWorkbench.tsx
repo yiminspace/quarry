@@ -300,7 +300,6 @@ export default function ResultWorkbench() {
       setFilter("");
       setPanelOpen(true);
       loadTables(db, realEnv, false);
-      if (!opts?.force && production === true) toast(t("prod_no_autorun"), false);
     },
     [findItem, loadTables],
   );
@@ -1096,6 +1095,7 @@ export default function ResultWorkbench() {
   const item = current ? findItem(current.db) : undefined;
   const envs = item?.envs ?? [];
   const multiEnv = envs.length > 1;
+  const isProduction = current?.production === true;
   const showStatus = !!result && !gridError;
   const resultWillPersist = activeSnapshot ? isResultSnapshotPersistable(activeSnapshot) : true;
 
@@ -1137,6 +1137,7 @@ export default function ResultWorkbench() {
       <div className="vg-resizer resizer" id="resizer" onMouseDown={startSidebarResize} />
       <section className="vg-section">
         <div className="vg-qhead qhead">
+          <div className="connection-context">
           <span className="vg-qtitle qtitle" id="qtitle">
             {current?.db ?? t("no_conn")}
           </span>
@@ -1178,7 +1179,14 @@ export default function ResultWorkbench() {
           >
             <i className="ti ti-info-circle" />
           </button>
-          <span className="vg-sp sp" />
+          </div>
+          <div className="production-status">
+            {isProduction && (
+              <span className="production-context" id="prodBadge" title={t("production_tip")}>
+                <span className="production-dot" aria-hidden="true" /> {t("production")}
+              </span>
+            )}
+          </div>
         </div>
         <TabBar onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
@@ -1222,21 +1230,23 @@ export default function ResultWorkbench() {
           <button className="vg-btn btn" id="jsonBtn" title={t("export_json")} onClick={exportJson}>
             <i className="ti ti-braces" /> JSON
           </button>
-          <select
-            id="maxRows"
-            className="vg-btn btn"
-            title={t("max_rows")}
-            aria-label={t("max_rows")}
-            style={{ padding: "5px 7px" }}
-            value={String(maxRows)}
-            onChange={(e) => setMaxRows(Number(e.target.value))}
-          >
-            {MAX_ROWS_OPTIONS.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
+          <div className="row-limit">
+            <select
+              id="maxRows"
+              className="vg-btn btn"
+              title={t("max_rows")}
+              aria-label={t("max_rows")}
+              value={String(maxRows)}
+              onChange={(e) => setMaxRows(Number(e.target.value))}
+            >
+              {MAX_ROWS_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n} {t("rows")}
+                </option>
+              ))}
+            </select>
+            <i className="ti ti-chevron-down" aria-hidden="true" />
+          </div>
           <span className="vg-sp sp" />
           <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>

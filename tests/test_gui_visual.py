@@ -319,6 +319,130 @@ def _token_bg(page, name: str) -> str:
     )
 
 
+@pytest.mark.parametrize('theme', ['slate', 'signal'])
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_production_context_tokens(page, theme, mode):
+    def production_connections(route):
+        response = route.fetch()
+        data = response.json()
+        for group in data['groups']:
+            for item in group['items']:
+                for env in item['envs']:
+                    env['production'] = True
+        route.fulfill(response=response, json=data)
+
+    page.route('**/api/connections', production_connections)
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    page.evaluate('''([theme, mode]) => {
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.mode = mode;
+    }''', [theme, mode])
+    page.mouse.move(1000, 800)
+    assert page.locator('.app-shell').get_attribute('data-production') == 'true'
+    # Production borrows the existing copper and muted text tones, rather than
+    # the destructive-action red. Pin the resolved blends in every theme.
+    for token, blend in [
+        ('--production-accent', 'color-mix(in srgb,var(--accent) 65%,var(--fg2))'),
+        ('--production-fg', 'color-mix(in srgb,var(--accent) 25%,var(--fg2))'),
+    ]:
+        assert page.evaluate('''([token, blend]) => {
+            const expected = document.createElement('span');
+            const actual = document.createElement('span');
+            expected.style.color = blend;
+            actual.style.color = `var(${token})`;
+            document.body.append(expected, actual);
+            const equal = getComputedStyle(expected).color === getComputedStyle(actual).color;
+            expected.remove(); actual.remove(); return equal;
+        }''', [token, blend])
+    for selector, prop, token in [
+        ('header', 'backgroundColor', '--production-surface'),
+        ('.qhead', 'backgroundColor', '--production-surface'),
+        ('.qhead', 'borderBottomColor', '--production-line'),
+        ('.dbrow.on', 'backgroundColor', '--production-selection'),
+        ('.dbrow.on', 'color', '--fg'),
+        ('#prodBadge', 'color', '--production-fg'),
+        ('.production-dot', 'backgroundColor', '--production-accent'),
+        ('#runBtn', 'color', '--production-fg'),
+        ('#runBtn', 'backgroundColor', '--production-surface'),
+        ('#runBtn', 'borderTopColor', '--production-line'),
+    ]:
+        assert _style(page, selector, prop) == _token_color(page, token), (theme, mode, selector, prop)
+    for selector, pseudo in [('.dbrow.on', '::before'), ('#tabs .on', '::after')]:
+        assert page.evaluate('''([selector, pseudo]) =>
+            getComputedStyle(document.querySelector(selector), pseudo).backgroundColor
+        ''', [selector, pseudo]) == _token_color(page, '--production-accent')
+    assert page.locator('header').evaluate('''el => {
+        const probe = document.createElement('span');
+        probe.style.boxShadow = 'inset 0 2px 0 0 var(--production-accent)';
+        el.append(probe);
+        const matches = getComputedStyle(el).boxShadow === getComputedStyle(probe).boxShadow;
+        probe.remove(); return matches;
+    }''')
+    assert _style(page, '#prodBadge', 'borderTopWidth') == '0px'
+    assert _style(page, '#prodBadge', 'backgroundColor') == 'rgba(0, 0, 0, 0)'
+
+    # Resolve mixed CSS colors through the browser's sRGB canvas and compare
+    # text against its actual opaque ancestor surface, including unboxed labels.
+    for selector in ('#prodBadge', '#runBtn'):
+        contrast = page.locator(selector).evaluate('''el => {
+            const ctx = document.createElement('canvas').getContext('2d');
+            function rgba(color) {
+                ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color;
+                ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data];
+            }
+            function luminance(color) {
+                const c = color.slice(0, 3).map(v => v / 255).map(v =>
+                    v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+                return c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+            }
+            const fg = rgba(getComputedStyle(el).color);
+            let ancestor = el, bg;
+            do { bg = rgba(getComputedStyle(ancestor).backgroundColor); ancestor = ancestor.parentElement; }
+            while (bg[3] === 0 && ancestor);
+            if (fg[3] !== 255 || bg[3] !== 255) throw new Error('Expected opaque text and surface');
+            const a = luminance(fg), b = luminance(bg);
+            return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+        }''')
+        assert contrast >= 4.5, (theme, mode, selector, contrast)
+
+
+@pytest.mark.parametrize('lang', ['en', 'zh'])
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_row_limit_selector_geometry(page, lang, mode):
+    _select_testpg(page)
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+    page.evaluate('(mode) => document.documentElement.dataset.mode = mode', mode)
+    arrow = page.locator('.row-limit > .ti-chevron-down')
+    assert arrow.count() == 1
+    assert arrow.get_attribute('aria-hidden') == 'true'
+    assert _style(page, '#maxRows', 'appearance') == 'none'
+    assert _style(page, '.row-limit > .ti-chevron-down', 'pointerEvents') == 'none'
+    assert _style(page, '.row-limit > .ti-chevron-down', 'color') == _token_color(page, '--fg2')
+    width = page.locator('#maxRows').bounding_box()['width']
+    for value in ('100', '5000'):
+        page.select_option('#maxRows', value)
+        layout = page.locator('.row-limit').evaluate('''el => {
+            const select = el.querySelector('select');
+            const arrow = el.querySelector('.ti-chevron-down');
+            const rect = select.getBoundingClientRect();
+            const icon = arrow.getBoundingClientRect();
+            const style = getComputedStyle(select);
+            const ctx = document.createElement('canvas').getContext('2d');
+            ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+            const text = ctx.measureText(select.selectedOptions[0].textContent.trim()).width;
+            const textRight = rect.x + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft) + text;
+            return {width: rect.width, gap: icon.x - textRight,
+                    rightInset: rect.right - icon.right,
+                    centerOffset: Math.abs((rect.top + rect.bottom - icon.top - icon.bottom) / 2)};
+        }''')
+        assert layout['width'] == width
+        assert layout['gap'] >= 4, (lang, mode, value, layout)
+        assert layout['rightInset'] >= 8, (lang, mode, value, layout)
+        assert layout['centerOffset'] <= 0.5, (lang, mode, value, layout)
+
+
 def test_engine_tag_differs_from_workspace_origin(page):
     _select_testpg(page)
     page.locator(".dbrow small.vg-engine-tag").wait_for()
