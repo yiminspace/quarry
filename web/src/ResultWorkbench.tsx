@@ -26,6 +26,7 @@ import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
 import { groupKey, groupsWithQueries } from "./sidebarLayout";
 import SqlEditor from "./SqlEditor";
+import RunControls from "./RunControls";
 import { useConnStore } from "./store/connStore";
 import {
   isResultSnapshotPersistable,
@@ -38,7 +39,7 @@ import {
   type TabResultSnapshot,
 } from "./store/tabsStore";
 import { toast } from "./store/toastStore";
-import { MAX_ROWS_OPTIONS, useUiStore } from "./store/uiStore";
+import { autoRunEnabled, MAX_ROWS_OPTIONS, useUiStore } from "./store/uiStore";
 import TabBar from "./TabBar";
 import { useSqlHistory } from "./useSqlHistory";
 
@@ -55,6 +56,12 @@ type ModalState =
  * response back to its issuing tab and drop it if that tab was re-pointed to
  * another connection while the request was in flight. */
 type ReqCtx = { tabId: TabId; seq: number; db: string; env: string | null };
+
+function canAutoRun(): boolean {
+  const current = useConnStore.getState().current;
+  return autoRunEnabled(current ? { ...current, workspace: workspaceFor(current.db) } : null,
+    useUiStore.getState().autoRunPreferences);
+}
 
 const EMPTY_PANEL: PanelData = {
   loading: false,
@@ -128,6 +135,8 @@ export default function ResultWorkbench() {
   const reloadToken = useConnStore((s) => s.reloadToken);
   const maxRows = useUiStore((s) => s.maxRows);
   const setMaxRows = useUiStore((s) => s.setMaxRows);
+  const autoRun = useUiStore((s) => autoRunEnabled(
+    current ? { ...current, workspace: workspaceFor(current.db) } : null, s.autoRunPreferences));
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
 
@@ -566,6 +575,7 @@ export default function ResultWorkbench() {
         toast(t("share_link_env_missing"), false);
         return;
       }
+      if (!canAutoRun()) return;
       const currentSql = payload.sql.trim();
       if (!currentSql) return;
       pushHist(currentSql, payload.db, normalized.env);
@@ -610,7 +620,7 @@ export default function ResultWorkbench() {
     const navigation = previewNavigationRef.current;
     if (!navigation) return;
     const { tabId, environmentSwitch } = navigation;
-    if (activeTabId !== tabId || current?.production !== false) {
+    if (activeTabId !== tabId || !current || !canAutoRun()) {
       previewNavigationRef.current = null;
       return;
     }
@@ -661,7 +671,7 @@ export default function ResultWorkbench() {
         revalidateTab(tab);
       }
       useConnStore.getState().setCurrentTable(table);
-      if (cur.production !== true && !pendingByTab[plan.tabId] && !useTabsStore.getState().results[plan.tabId]?.result) {
+      if (canAutoRun() && !pendingByTab[plan.tabId] && !useTabsStore.getState().results[plan.tabId]?.result) {
         void run({ db: cur.db, env: cur.env }, next);
       }
       return;
@@ -671,7 +681,7 @@ export default function ResultWorkbench() {
     }
     useTabsStore.getState().updateActiveTab({ db: cur.db, env: cur.env, sql: next });
     useConnStore.getState().setCurrentTable(table);
-    if (cur.production !== true) void run({ db: cur.db, env: cur.env }, next);
+    if (canAutoRun()) void run({ db: cur.db, env: cur.env }, next);
   };
 
   const handleInspectKey = async (key: string): Promise<void> => {
@@ -710,7 +720,7 @@ export default function ResultWorkbench() {
     const created = state.openSavedTab({ ...q, sql: nv }, item.db, env);
     selectDb(item.db, env, { force: true });
     if (!created) return;
-    if (item.envs.find((e) => e.env === env)?.production === true) return;
+    if (!canAutoRun()) return;
     if (preview && !q.params.length) return;
     if (!q.params.length) {
       void runSavedQuery(name, {});
@@ -1180,20 +1190,17 @@ export default function ResultWorkbench() {
             <i className="ti ti-info-circle" />
           </button>
           </div>
-          <div className="production-status">
-            {isProduction && (
-              <span className="production-context" id="prodBadge" title={t("production_tip")}>
-                <span className="production-dot" aria-hidden="true" /> {t("production")}
-              </span>
-            )}
-          </div>
         </div>
-        <TabBar onSwitch={handleTabSwitch} onClose={handleTabClose} />
+        <TabBar isProduction={isProduction} onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
         <SqlEditor
+          isProduction={isProduction}
           readOnly={!!activeTab.savedQueryId}
           value={sql}
-          onChange={setSql}
+          onChange={(next) => {
+            previewNavigationRef.current = null;
+            setSql(next);
+          }}
           onRun={() => void run()}
           db={current?.db ?? null}
           env={current?.env ?? null}
@@ -1203,9 +1210,20 @@ export default function ResultWorkbench() {
           navigateHistory={navigateHistory}
         />
         <div className="vg-toolbar toolbar">
-          <button className="vg-btn btn primary" id="runBtn" title={t("run")} onClick={() => void run()}>
-            <i className="ti ti-player-play" /> <span id="runLbl">{t("run")}</span>
-          </button>
+          <RunControls
+            key={JSON.stringify([current ? workspaceFor(current.db) : null, current?.db, current?.env, current?.production, activeTabId])}
+            autoRun={autoRun}
+            disabled={!current || typeof current.production !== "boolean"}
+            scope={[current?.db, current?.env].filter(Boolean).join(" / ")}
+            onRun={() => void run()}
+            onModeChange={(enabled) => {
+              const target = useConnStore.getState().current;
+              if (!target || typeof target.production !== "boolean") return;
+              // Changing a preference never executes an earlier navigation.
+              previewNavigationRef.current = null;
+              useUiStore.getState().setAutoRun({ ...target, workspace: workspaceFor(target.db) }, enabled);
+            }}
+          />
           {activeTab.savedQueryId && <button className="vg-btn btn" id="copySavedBtn"
             title={t("copy_as_query")} onClick={() => {
               useTabsStore.getState().addTab({ db: activeTab.db, env: activeTab.env });

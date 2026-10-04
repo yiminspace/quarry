@@ -3,6 +3,7 @@ import { t } from "./i18n";
 import { sameTabGroup, tabTitle, useTabsStore, type Tab } from "./store/tabsStore";
 
 export type TabBarProps = {
+  isProduction?: boolean;
   /** Called instead of the store's own switch so the caller can re-point the
    * connection/editor to the target tab's db/env first. */
   onSwitch: (tab: Tab) => void;
@@ -14,7 +15,7 @@ export type TabBarProps = {
 /** The editor tab bar — legacy DOM: `.tabs > .tab[data-i] > .lbl/.x` plus the
  * dashed `#tabAdd` button; double-click renames in place, drag reorders,
  * middle-click closes. */
-export default function TabBar({ onSwitch, onClose }: TabBarProps) {
+export default function TabBar({ onSwitch, onClose, isProduction = false }: TabBarProps) {
   const allTabs = useTabsStore((s) => s.tabs);
   const activeId = useTabsStore((s) => s.activeId);
   const active = allTabs.find((tab) => tab.id === activeId);
@@ -197,6 +198,9 @@ export default function TabBar({ onSwitch, onClose }: TabBarProps) {
           )}
         </span>
       ))}
+    </div>
+    <div className="tab-context">
+      {isProduction && <span className="production-tag" id="prodBadge" title={t("production_tip")}>{t("production")}</span>}
     </div>
     <div className="tab-controls">
       {(overflow.left || overflow.right) && <div className="tab-scroll-controls">

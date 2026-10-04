@@ -112,9 +112,9 @@ tab-switching silently kept — and exported — another tab's result set.)
 1. **Existence audit** (code → matrix). Every interaction binding in
    `web/src/*.tsx` (`grep 'onClick\|onKeyDown\|onChange\|onMouseDown\|onDoubleClick'`),
    every `localStorage` key (`qy_lang qy_theme qy_sw qy_edh qy_tabs qy_ati
-   qy_tabres qy_ui qy_maxrows qy_collapsed qy_hist qy_result` — same keys and
-   value formats as the retired embedded GUI, so existing users' state carries
-   over), and every `/api/*` endpoint the frontend fetches must map to a row.
+   qy_tabres qy_ui qy_maxrows qy_collapsed qy_hist qy_result qy_auto_run` — legacy keys
+   retain their value formats; `qy_auto_run` adds scoped execution preferences),
+   and every `/api/*` endpoint the frontend fetches must map to a row.
    *Catches:* implemented-but-untested behavior. *Blind to:* features that
    should exist but don't, and cross-feature state bugs.
 2. **Capability audit** (design → matrix). For each UI region (header, sidebar,
@@ -149,7 +149,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 |---|------|---------|------------|---|
 | 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_without_readonly_badge (single-ws only) | 🟡 |
 | 2 | header | no permanent read-only / auto LIMIT badge; query safety is unchanged | B:test_load_shows_brand_without_readonly_badge, F:test_icon_hover_hints_cover_header_workbench_and_modals | ✅ |
-| 3 | app shell/workbench | explicit production configuration drives muted theme-accent header/connection/tab/Run chrome; a localized Production label occupies a permanently reserved 104px slot at the right of the connection heading, including when no query tab is open; env switching keeps the title, pills and toolbar in place; follows the current connection independently of env name, without a connection-switch toast | F:test_production_context_follows_connection_without_toasts, F:test_single_production_connection_context_is_localized, F:test_production_context_has_stable_layout, F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production, V:test_production_context_tokens | ✅ |
+| 3 | app shell/workbench | explicit production configuration drives muted SQL-editor/connection/tab/Run chrome; selected tabs retain one short underline, editor has no extra accent line; localized Production label occupies a fixed slot at the end of the tab bar, outside the editor; stays visible during SQL scrolling/resizing and in the zero-tab state; header stays neutral without a production label and env switching keeps controls in place | F:test_production_context_follows_connection_without_toasts, F:test_single_production_connection_context_is_localized, F:test_production_context_has_stable_layout, F:test_production_tab_context_leaves_sql_unobstructed_when_scrolled_or_resized, F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production, V:test_production_context_tokens | ✅ |
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
@@ -158,8 +158,8 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 9 | sidebar | health dot states (ok/down; dimmed row; error tooltip) | F:test_health_button_paints_ok_and_down_dots | ✅ |
 | 10 | sidebar | instant dot paint from backend cache (`cached=1`) | F:test_health_dots_repaint_from_cache_after_reload | ✅ |
 | 11 | header | env switcher lists every env of the selected connection; pill font weight stays constant when selection changes; selected production uses a muted theme-accent tint and readable text, with ≥4.5:1 contrast pinned under Slate/Signal light themes; the sidebar never renders env pills | F:test_env_pills_default_dev_and_prod_badge, F:test_production_context_has_stable_layout, F:test_selected_prod_pills_keep_accessible_contrast_in_light_themes | ✅ |
-| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
-| 13 | sidebar | explicit env switch restores destination SQL or copies source SQL into an empty editor, then executes only if no saved result exists; returning restores SQL and result without a request; production retains SQL without executing; closed groups remain closed | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production | ✅ |
+| 12 | header | env switcher click switches env | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production, F:test_auto_run_preferences_follow_connection_environment_and_reload | ✅ |
+| 13 | sidebar | explicit env switch restores destination SQL or copies source SQL into an empty editor, then executes only if Auto-run is enabled and no saved result exists; returning restores SQL and result without a request; production defaults to retaining SQL without executing and allows explicit scoped opt-in; closed groups remain closed | F:test_prod_env_switch_does_not_autorun, F:test_nonprod_env_switch_restores_without_autorun, F:test_env_preview_autorun_uses_explicit_production, F:test_env_manual_sql_carries_and_autoruns_except_production, F:test_auto_run_preferences_follow_connection_environment_and_reload, F:test_auto_run_preference_or_edit_cancels_navigation_waiting_for_tables | ✅ |
 | 14 | sidebar | row click selects + opens table panel; re-click toggles panel | F:test_reclick_connection_toggles_panel | ✅ |
 | 15 | sidebar | sticky global search + Collapse all; searches all database names and query names/descriptions plus cached tables/keys; no fetch on typing; empty state, Escape restoration, cross-connection result navigation and draft preservation | F:test_sidebar_search_is_global_restores_tree_and_does_not_fetch, F:test_table_filter_box, V:test_table_filter_uses_surface_tokens | ✅ |
 | 16 | sidebar | table panel connection-error state / `no tables` empty state | F:test_dead_connection_click_shows_error_panel (error only) | 🟡 |
@@ -167,7 +167,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 18 | sidebar | redis key tree: `:` hierarchy, fold, count badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 19 | sidebar | redis type + TTL badges | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
 | 20 | sidebar | global search includes cached Redis keys; key click → inspect grid | F:test_redis_key_tree_badges_filter_and_inspect | ✅ |
-| 21 | sidebar | All queries index inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database; initial paramless index selection runs, repeated selection restores the fixed tab; explicit Run retains parameter confirmation | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, F:test_param_modal_enter_submits_and_clickout_closes, sidebarLayout.test.ts | ✅ |
+| 21 | sidebar | All queries index inside its owning workspace (including query-only workspaces), collapses with the workspace and independently per query section; duplicate names open the selected file; grouped by logical database; initial paramless index selection runs when Auto-run is enabled, repeated selection restores the fixed tab; explicit Run retains parameter confirmation | F:test_saved_query_without_params_runs_directly, F:test_saved_queries_group_by_logical_db, F:test_saved_queries_stay_in_owning_workspace, F:test_param_modal_enter_submits_and_clickout_closes, sidebarLayout.test.ts, F:test_auto_run_saved_query_off_allows_manual_run_and_on_runs_new_query | ✅ |
 | 22 | sidebar | saved-query param modal (required/default, Enter submits, click-out closes) | B:test_saved_query_param_modal…, F:test_param_modal_enter_submits_and_clickout_closes | ✅ |
 | 21a | sidebar/editor | no query counts; whole table rows expand children and open/reuse previews; indented All queries index; two-line titles and selected wrapped descriptions; saved queries reuse read-only tabs per file/environment, Copy as new query creates editable SQL; table-linked paramless queries do not auto-run; Collapse all shares the sticky sidebar search row and preserves active SQL/results; stable scrollbar gutters; Neptune label grouping; unassociated queries remain in All queries | F:test_table_query_disclosure_preserves_draft_and_does_not_execute, F:test_fixed_query_history_shortcuts_restore_editable_tab, F:test_graph_query_discovery_rows, F:test_query_titles_expand_description_without_counts, tabsStore.test.ts, tablePreview.test.ts, V:test_query_sidebar_tokens, V:test_sidebar_compact_collapse_indent_and_stable_gutter, F:test_saved_query_waits_for_tables_before_anchoring | ✅ |
 | 23 | sidebar | sidebar width drag + persistence | F:test_sidebar_width_drag_persists | ✅ |
@@ -241,7 +241,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 91 | tabs | Cmd/Ctrl+Shift+W closes the active tab (Cmd+W-style; real Ctrl/Cmd+W can't be intercepted from a page); the last tab closes to the empty workbench | F:test_tab_keyboard_shortcut_closes_active_tab | ✅ |
 | 92 | header | env-set ordering: `local` always sorts first regardless of connection-registration order (header switcher); with no `local` env, registration order is unchanged; default-selected env is `dev` if present, else `local`, else the first registered env | F:test_local_env_sorts_first_and_is_default_without_dev, A:test_local_env_always_sorts_first, A:test_group_structure (registration order preserved without local) | ✅ |
 | 93 | sidebar | clicking a table generates+runs `select * from <table>` (no baked-in LIMIT); the toolbar max-rows cap (default 500) plus "load more" bound the result | B:test_click_table_renders_grid_with_types_and_status | ✅ |
-| 94 | toolbar/tabs | query deep links: copy current `db/env/sql` as a shareable URL; opening it reuses an identical tab or creates one, restores SQL/connection, auto-runs, and guards invalid link targets with an explicit toast (no silent auto-run failure) | F:test_copy_query_link_copies_db_env_sql, F:test_query_deeplink_opens_existing_tab_and_autoruns, F:test_query_deeplink_invalid_env_shows_notice_and_skips_autorun | ✅ |
+| 94 | toolbar/tabs | query deep links: copy current `db/env/sql` as a shareable URL; opening it reuses an identical tab or creates one, restores SQL/connection, runs only when the destination Auto-run preference is enabled, and guards invalid link targets with an explicit toast (no silent auto-run failure) | F:test_copy_query_link_copies_db_env_sql, F:test_query_deeplink_opens_existing_tab_and_autoruns, F:test_query_deeplink_invalid_env_shows_notice_and_skips_autorun, F:test_query_deeplink_respects_auto_run_preference_and_production_default | ✅ |
 | 95 | app shell | live workspace refresh: `/api/events` SSE + backend file watcher — editing `connections.toml` / `queries/**/*.sql` on disk refreshes the sidebar without a manual reload (+ confirmation toast) | F:test_workspace_file_change_refreshes_sidebar_live (toast unasserted; watcher + SSE framing unit-covered in test_gui_backend.py) | ✅ |
 | 96 | app shell | upgrade-reload banner: after the backend restarts with a new version, the EventSource reconnect re-checks `/api/version` and shows a persistent "reload page" banner | F:test_server_upgrade_prompts_reload_banner | ✅ |
 | 97 | header | update-check badge: `GET /api/update` (backed by a throttled PyPI-polling thread — 24h interval, `QUARRY_UPDATE_CHECK=0` disables it, editable installs skip it, network failures stay silent) drives a header badge only when a newer release exists; its panel shows current/latest version, the `pipx upgrade quarry-db` command, and a GitHub release-notes link | F:test_update_badge_hidden_when_no_new_version, F:test_update_badge_visible_and_dot_uses_accent_token_in_both_themes, F:test_update_panel_shows_versions_and_upgrade_command; backend throttle/semver/disable/editable/silent-failure unit-covered in test_gui_backend.py, `/api/update` HTTP-covered in test_gui_api.py | ✅ |
@@ -252,9 +252,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 102 | grid/tabs | multi-megabyte cells never enter grid/row-detail DOM attributes or text in full; grid preview is 512 chars, inspector text grows in 20k chunks, JSON children mount lazily, and >512 KiB results skip synchronous persistence while remaining fully copyable/exportable in the current session | F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview, test_gui_visual:test_large_result_session_badge_inherits_status_token; cellValue.test.ts, tabsStore.test.ts | ✅ |
 | 103 | sidebar/editor | PostgreSQL table browser includes non-system schemas as `schema.table`; qualified tables can be clicked to run a preview, double-clicked for columns, and used for qualified column completion; public-table short names remain compatible | F:test_non_public_schema_table_is_visible_and_clickable, A:test_list_and_describe_non_public_postgres_table, A:test_list_tables_postgres | ✅ |
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
-| 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts | ✅ |
+| 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts, F:test_auto_run_mode_controls_new_and_reused_table_previews | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
-| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit non-production environment switches execute SQL; configured production shows a Production label in the connection heading; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
+| 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit environment switches execute SQL only with Auto-run enabled (non-production defaults on); configured production shows a Production label at the end of the tab bar; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
 | 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; Escape clears global search, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
@@ -262,6 +262,8 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 111 | tabs | active close selects same-group MRU; last close leaves a zero-tab empty workbench; close all/others/right stays in group and saves every closed draft in History | F:test_tab_close_uses_mru_and_keeps_last_close_in_same_group, F:test_tab_overflow_search_keyboard_and_scoped_bulk_close, F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_closed_query_response_cannot_resurrect_tab | ✅ |
 
 | 112 | tabs | zero-tab workbench hides editor/results, keeps connection and sidebar, offers New tab and History; new/recall/table/saved/key entry points create an editor on demand | F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_saved_query_opens_from_empty_group, F:test_alt_table_opens_editor_from_empty_without_running, F:test_redis_key_opens_editor_from_empty_group; test_gui_visual:test_empty_workbench_uses_tokens | ✅ |
+
+| 113 | toolbar/editor | Split Run button with a fixed-width Manual/Auto mode menu controls new/reused table previews, environment navigation, query links and opening saved queries; persisted per workspace/db/env/production flag, production defaults off with explicit opt-in, unknown metadata stays off; changing the preference or typing never executes SQL or replays pending navigation; explicit Run remains available | F:test_auto_run_mode_controls_new_and_reused_table_previews, F:test_auto_run_preferences_follow_connection_environment_and_reload, F:test_query_deeplink_respects_auto_run_preference_and_production_default, F:test_auto_run_saved_query_off_allows_manual_run_and_on_runs_new_query, F:test_auto_run_preference_or_edit_cancels_navigation_waiting_for_tables, F:test_auto_run_is_disabled_when_production_metadata_is_unknown, V:test_run_mode_menu_tokens_and_geometry, F:test_auto_run_opt_in_does_not_cross_connection_identity_change, F:test_run_mode_menu_keyboard_dismissal_and_selection_never_execute, F:test_run_mode_menu_closes_when_connection_or_tab_context_changes | ✅ |
 
 ### Tab navigation audit (2026-09-10)
 
@@ -327,7 +329,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 
 Safety/performance-relevant UX invariants that must never regress (rows 13,
 27–28, 37, 47, 102):
-draft SQL is never silently lost; switching to a configured production connection never auto-runs; stale
+draft SQL is never silently lost; configured production connections default to Auto-run off and require scoped opt-in; toggling Auto-run never executes SQL; stale
 responses never overwrite newer results; sort is numeric-aware and restorable;
 large raw values stay copyable/exportable but never materialize in full in the
 grid DOM or synchronous result persistence.
@@ -569,6 +571,10 @@ actually loads. This closed the long-open jsdelivr gap (#14).
 
 ### Integrated production context and row-limit audit (2026-10-03)
 
+The tab-bar production label and execution preference in the 2026-10-04 audit below
+supersede the header tint, heading label and unconditional production auto-run
+guard described here.
+
 - Existence: row 3 covers the shell treatment and the permanently reserved
   104px `.production-status` region at the right of the connection heading;
   row 107 covers the same context for Neptune. Its conditional `#prodBadge`
@@ -629,3 +635,61 @@ actually loads. This closed the long-open jsdelivr gap (#14).
   geometry tests cover the presentation change. No max-rows writer or consumer
   changed semantics.
   Query execution, request guards and per-tab result writers are unchanged.
+
+
+### SQL-editor production context and execution-mode audit (2026-10-04)
+
+- Existence: row 3 covers the muted `.edwrap` surface and localized
+  `#prodBadge.production-tag` in the fixed 104px `.tab-context` slot. `TabBar`
+  and `SqlEditor.isProduction` read the current connection flag; the textarea
+  references the badge through `aria-describedby`. The tab bar keeps the label
+  visible with no editor, and the header stays neutral. The active tab retains
+  one short underline. Row 113 covers `RunControls`: `#runBtn` executes once;
+  `#runModeBtn` opens/closes the menu, exposes its expanded state and always
+  displays Manual/Auto; `#runModeManual` and `#runModeAuto` are checked radio menu
+  items with descriptions and a scoped connection footer. Arrow/Home/End move
+  focus, Enter/Space select, Escape returns focus, Tab exits and outside click
+  dismisses. Connection/tab identity changes remount the control and close it.
+  `qy_auto_run` stores a boolean map keyed by workspace, database, environment
+  and production flag. No endpoint is added: table/navigation/deep-link execution
+  uses `/api/query`, saved-query execution uses `/api/run`, and metadata still
+  uses `/api/tables`. A changed production classification or replacement workspace
+  has its own default.
+- Capability: the header identifies the connection; sidebar and tabs identify
+  the selected object/draft; the editor uses a restrained production tint, with
+  its label alongside the tabs. The toolbar exposes explicit Run and a readable
+  mode in one group, whose width stays fixed during mode changes. Grid and export
+  retain the active tab's cached result. Production defaults to Manual and can be
+  explicitly changed to Auto; non-production defaults to Auto; missing metadata
+  disables the mode control and automatic execution. Selecting either mode never
+  executes current SQL or replays pending navigation; typing never auto-runs.
+  Table-linked paramless saved queries retain preview-only behavior. Explicit Run,
+  keyboard Run, parameter submission, EXPLAIN, Load more and Redis key inspection
+  remain deliberate actions. No new capability gaps; existing gaps remain deferred.
+- Shared-state and complete write inventory: preference initialization is solely
+  `readAutoRunPreferences`; the sole mutation/persistence writer remains
+  `uiStore.setAutoRun`, called by `RunControls.onModeChange` in `ResultWorkbench`.
+  Readers are the controlled mode label/menu and `canAutoRun` at query-link
+  restoration, deferred environment/navigation execution, both reused/new
+  table-preview paths and newly opened saved queries. Each reads the live
+  destination connection after `selectDb`, including workspace identity; a source
+  environment's preference cannot authorize another. `previewNavigationRef`
+  writers are initialization, `selectDb` clear/stage, navigation-effect
+  consumption, and mode/editor-change clears. Clearing before writing preferences
+  prevents delayed metadata from executing a previously selected or edited query.
+  Menu `open` is local to `RunControls`: trigger/arrow-open write true; trigger,
+  outside pointer, focus exit, Escape/Tab, selection and explicit Run close it;
+  context-key remount resets it. Run-control key events do not propagate to grid
+  shortcuts, so a selected cell cannot intercept Enter on Run or the mode trigger.
+  No result/request-guard writer changes: pending requests retain origin-tab and
+  latest-wins routing, and cached results suppress navigation execution.
+  Interaction tests cover all automatic entry points, explicit execution,
+  persistence/scope isolation, delayed navigation, mode selection without SQL,
+  keyboard/outside dismissal, selected-cell shortcut isolation and connection/tab
+  context changes.
+  `test_production_context_tokens` and `test_run_mode_menu_tokens_and_geometry`
+  cover Slate/Signal, dark/light and EN/ZH, including label contrast, the single
+  selected-tab underline, the split button/menu and stable mode geometry.
+  Production browser tests cover unobstructed editing/execution, scrolling,
+  resizing, context changes and closing the final tab. This refinement adds no
+  store, persistence or query-result write sites.

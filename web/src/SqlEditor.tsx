@@ -9,6 +9,7 @@ type AcRange = { from: number; to: number };
 
 type SqlEditorProps = {
   readOnly?: boolean;
+  isProduction?: boolean;
   value: string;
   onChange: (next: string) => void;
   onRun: () => void;
@@ -109,7 +110,7 @@ function dedupCap(items: AcItem[], cap: number): AcItem[] {
  * the drag-to-resize bar under it, and the caret-anchored autocomplete box —
  * legacy DOM, ids and token classes throughout. */
 export default function SqlEditor({
-  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory, readOnly = false,
+  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory, readOnly = false, isProduction = false,
 }: SqlEditorProps) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const hlRef = useRef<HTMLPreElement | null>(null);
@@ -311,6 +312,7 @@ export default function SqlEditor({
         />
         <textarea
           id="sql"
+          aria-describedby={isProduction ? "prodBadge" : undefined}
           readOnly={readOnly}
           title={readOnly ? t("saved_readonly") : undefined}
           ref={taRef}
