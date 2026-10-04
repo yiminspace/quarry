@@ -93,7 +93,8 @@ def test_default_theme_is_dark_with_legacy_palette(page):
     assert _style(page, "body", "color") == DARK["fg"]
     assert _style(page, "header", "backgroundColor") == DARK["bg1"]
     # Run stays quieter than the active document until hover.
-    assert _style(page, "#runBtn", "backgroundColor") == DARK["bg1"]
+    assert _style(page, ".run-split", "backgroundColor") == DARK["bg1"]
+    assert _style(page, "#runBtn", "backgroundColor") == "rgba(0, 0, 0, 0)"
     assert _style(page, "#runBtn", "color") == DARK["accent"]
 
 
@@ -103,7 +104,8 @@ def test_light_theme_matches_legacy_palette(page):
     assert _style(page, "body", "backgroundColor") == LIGHT["bg0"]
     assert _style(page, "body", "color") == LIGHT["fg"]
     assert _style(page, "header", "backgroundColor") == LIGHT["bg1"]
-    assert _style(page, "#runBtn", "backgroundColor") == LIGHT["bg1"]
+    assert _style(page, ".run-split", "backgroundColor") == LIGHT["bg1"]
+    assert _style(page, "#runBtn", "backgroundColor") == "rgba(0, 0, 0, 0)"
     assert _style(page, "#runBtn", "color") == LIGHT["accent"]
 
 
@@ -321,7 +323,8 @@ def _token_bg(page, name: str) -> str:
 
 @pytest.mark.parametrize('theme', ['slate', 'signal'])
 @pytest.mark.parametrize('mode', ['dark', 'light'])
-def test_production_context_tokens(page, theme, mode):
+@pytest.mark.parametrize('lang', ['en', 'zh'])
+def test_production_context_tokens(page, theme, mode, lang):
     def production_connections(route):
         response = route.fetch()
         data = response.json()
@@ -334,6 +337,10 @@ def test_production_context_tokens(page, theme, mode):
     page.route('**/api/connections', production_connections)
     page.reload(wait_until='networkidle')
     _select_testpg(page)
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+        page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
+        page.wait_for_function("document.querySelector('#runModeBtn')?.disabled === false")
     page.evaluate('''([theme, mode]) => {
         document.documentElement.dataset.theme = theme;
         document.documentElement.dataset.mode = mode;
@@ -356,34 +363,48 @@ def test_production_context_tokens(page, theme, mode):
             expected.remove(); actual.remove(); return equal;
         }''', [token, blend])
     for selector, prop, token in [
-        ('header', 'backgroundColor', '--production-surface'),
-        ('.qhead', 'backgroundColor', '--production-surface'),
-        ('.qhead', 'borderBottomColor', '--production-line'),
+        ('header', 'backgroundColor', '--surf-1'),
+        ('.qhead', 'backgroundColor', '--surf-1'),
+        ('.qhead', 'borderBottomColor', '--line'),
+        ('.edwrap', 'backgroundColor', '--production-surface'),
         ('.dbrow.on', 'backgroundColor', '--production-selection'),
         ('.dbrow.on', 'color', '--fg'),
         ('#prodBadge', 'color', '--production-fg'),
-        ('.production-dot', 'backgroundColor', '--production-accent'),
+        ('#prodBadge', 'backgroundColor', '--production-selection'),
         ('#runBtn', 'color', '--production-fg'),
-        ('#runBtn', 'backgroundColor', '--production-surface'),
-        ('#runBtn', 'borderTopColor', '--production-line'),
+        ('.run-split', 'backgroundColor', '--surf-1'),
+        ('.run-split', 'borderTopColor', '--line'),
     ]:
         assert _style(page, selector, prop) == _token_color(page, token), (theme, mode, selector, prop)
-    for selector, pseudo in [('.dbrow.on', '::before'), ('#tabs .on', '::after')]:
-        assert page.evaluate('''([selector, pseudo]) =>
-            getComputedStyle(document.querySelector(selector), pseudo).backgroundColor
-        ''', [selector, pseudo]) == _token_color(page, '--production-accent')
-    assert page.locator('header').evaluate('''el => {
-        const probe = document.createElement('span');
-        probe.style.boxShadow = 'inset 0 2px 0 0 var(--production-accent)';
-        el.append(probe);
-        const matches = getComputedStyle(el).boxShadow === getComputedStyle(probe).boxShadow;
-        probe.remove(); return matches;
-    }''')
+    assert page.locator('.dbrow.on').evaluate('''el =>
+        getComputedStyle(el, '::before').backgroundColor
+    ''') == _token_color(page, '--production-accent')
+    assert _style(page, 'header', 'boxShadow') == 'none'
+    assert _style(page, '.edwrap', 'boxShadow') == 'none'
+    assert page.locator('#tabs .on').evaluate('''el =>
+        getComputedStyle(el, '::after').display
+    ''') != 'none'
+    assert page.locator('#tabs .on').evaluate('''el =>
+        getComputedStyle(el, '::after').backgroundColor
+    ''') == _token_color(page, '--production-accent')
+    assert page.locator('#tabs .on').evaluate('''el =>
+        getComputedStyle(el, '::after').height
+    ''') == '2px'
+    assert page.locator('.tab-navigation .tab-context #prodBadge').count() == 1
+    assert page.locator('header #prodBadge, .qhead #prodBadge, .edwrap #prodBadge').count() == 0
+    assert _style(page, '.tab-context', 'width') == '104px'
     assert _style(page, '#prodBadge', 'borderTopWidth') == '0px'
-    assert _style(page, '#prodBadge', 'backgroundColor') == 'rgba(0, 0, 0, 0)'
+    assert _style(page, '#prodBadge', 'fontSize') == '11px'
+    assert _style(page, '#prodBadge', 'fontWeight') == '500'
+    assert _style(page, '#runBtn', 'borderTopWidth') == '0px'
+    assert _style(page, '#runBtn', 'backgroundColor') == 'rgba(0, 0, 0, 0)'
+    slot = page.locator('.tab-context').bounding_box()
+    badge = page.locator('#prodBadge').bounding_box()
+    assert slot['x'] <= badge['x'] and badge['x'] + badge['width'] <= slot['x'] + slot['width']
+    assert slot['y'] <= badge['y'] and badge['y'] + badge['height'] <= slot['y'] + slot['height']
 
     # Resolve mixed CSS colors through the browser's sRGB canvas and compare
-    # text against its actual opaque ancestor surface, including unboxed labels.
+    # text against its actual opaque surface, including the compact context label.
     for selector in ('#prodBadge', '#runBtn'):
         contrast = page.locator(selector).evaluate('''el => {
             const ctx = document.createElement('canvas').getContext('2d');
@@ -405,6 +426,81 @@ def test_production_context_tokens(page, theme, mode):
             return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
         }''')
         assert contrast >= 4.5, (theme, mode, selector, contrast)
+
+
+@pytest.mark.parametrize('theme', ['slate', 'signal'])
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+@pytest.mark.parametrize('lang', ['en', 'zh'])
+def test_run_mode_menu_tokens_and_geometry(page, theme, mode, lang):
+    _select_testpg(page)
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+        page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
+        page.wait_for_function("document.querySelector('#runModeBtn')?.disabled === false")
+    page.evaluate('''([theme, mode]) => {
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.mode = mode;
+    }''', [theme, mode])
+    mode_button = page.locator('#runModeBtn')
+    assert mode_button.is_enabled()
+    assert page.locator('#autoRunToggle').count() == 0
+    assert page.locator('.run-controls > .run-split #runBtn').count() == 1
+    assert page.locator('.run-controls > .run-split #runModeBtn').count() == 1
+    assert _style(page, '.run-controls', 'position') == 'relative'
+    assert _style(page, '.run-split', 'height') == '30px'
+    assert _style(page, '.run-split', 'borderTopWidth') == '1px'
+    assert _style(page, '.run-split', 'borderRadius') == '6px'
+    assert _style(page, '#runBtn', 'borderTopWidth') == '0px'
+    assert _style(page, '#runBtn', 'backgroundColor') == 'rgba(0, 0, 0, 0)'
+    assert _style(page, '#runModeBtn', 'borderLeftWidth') == '1px'
+    assert _style(page, '#runModeBtn', 'width') == '86px'
+    assert _style(page, '.tab-context', 'width') == '104px'
+    assert page.locator('.tab-context').inner_text() == ''
+    geometry = None
+    for enabled in (False, True):
+        selected_id = '#runModeAuto' if enabled else '#runModeManual'
+        other_id = '#runModeManual' if enabled else '#runModeAuto'
+        mode_button.click()
+        page.locator(selected_id).click()
+        assert page.locator('#runModeMenu').is_hidden()
+        page.mouse.move(1000, 800)
+        current_geometry = {
+            'group': page.locator('.run-split').bounding_box(),
+            'run': page.locator('#runBtn').bounding_box(),
+            'mode': mode_button.bounding_box(),
+            'format': page.locator('#fmtBtn').bounding_box(),
+        }
+        if geometry is None:
+            geometry = current_geometry
+        else:
+            assert current_geometry == geometry, (theme, mode, lang, current_geometry, geometry)
+        for selector, prop, token in [
+            ('.run-split', 'backgroundColor', '--surf-1'),
+            ('.run-split', 'borderTopColor', '--line'),
+            ('#runBtn', 'color', '--acc'),
+            ('#runModeBtn', 'color', '--acc' if enabled else '--fg2'),
+            ('#runModeBtn', 'borderLeftColor', '--line'),
+        ]:
+            assert _style(page, selector, prop) == _token_color(page, token), (
+                theme, mode, enabled, selector, prop,
+            )
+        mode_button.click()
+        page.mouse.move(1000, 800)
+        assert page.locator(selected_id).get_attribute('role') == 'menuitemradio'
+        assert page.locator(other_id).get_attribute('role') == 'menuitemradio'
+        assert page.locator(selected_id).get_attribute('aria-checked') == 'true'
+        assert page.locator(other_id).get_attribute('aria-checked') == 'false'
+        for selector, prop, token in [
+            ('#runModeMenu', 'backgroundColor', '--surf-1'),
+            ('#runModeMenu', 'borderTopColor', '--line'),
+            (selected_id, 'backgroundColor', '--surf-2'),
+            (selected_id, 'color', '--fg'),
+            (selected_id + ' .ti-check', 'color', '--acc'),
+        ]:
+            assert _style(page, selector, prop) == _token_color(page, token), (
+                theme, mode, enabled, selector, prop,
+            )
+        mode_button.click()
 
 
 @pytest.mark.parametrize('lang', ['en', 'zh'])
@@ -545,7 +641,9 @@ def test_workbench_compact_spacing(page, mode):
     page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
     assert _style(page, '.qhead', 'padding') == '8px 14px'
     assert _style(page, '.tab-navigation', 'height') == '36px'
-    for selector in ['#runBtn', '#fmtBtn', '#expBtn', '#csvBtn', '#jsonBtn', '#histBtn', '#linkBtn']:
+    assert _style(page, '.run-split', 'height') == '30px'
+    assert _style(page, '#runBtn', 'fontSize') == '12px'
+    for selector in ['#fmtBtn', '#expBtn', '#csvBtn', '#jsonBtn', '#histBtn', '#linkBtn']:
         assert _style(page, selector, 'height') == '30px'
         assert _style(page, selector, 'fontSize') == '12px'
     assert _style(page, '#sql', 'paddingLeft') == '14px'

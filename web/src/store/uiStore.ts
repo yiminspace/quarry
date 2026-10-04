@@ -1,14 +1,38 @@
 import { create } from "zustand";
 import type { ChangelogVersion, UpdateInfo } from "../api";
 
-// Same localStorage keys (and value formats) as the legacy GUI, so an existing
-// user's preferences carry over unchanged — no migration layer needed.
+// Legacy localStorage keys retain their value formats, so existing preferences
+// carry over unchanged. Auto-run adds a separate connection-scoped preference.
 // Theme is no longer tracked here — it's voyage's four-axis `vg_prefs`
 // (see index.html's bootstrap script and <VoyageProvider>).
 const SIDEBAR_WIDTH_KEY = "qy_sw";
 const MAX_ROWS_KEY = "qy_maxrows";
 const EDITOR_HEIGHT_KEY = "qy_edh";
 const COLLAPSED_KEY = "qy_collapsed";
+const AUTO_RUN_KEY = "qy_auto_run";
+
+type AutoRunTarget = { workspace: string | null; db: string; env: string | null; production?: boolean };
+type AutoRunPreferences = Record<string, boolean>;
+
+function autoRunKey(target: AutoRunTarget): string {
+  // Reclassifying an environment as production must reset its default.
+  return JSON.stringify([target.workspace, target.db, target.env, target.production]);
+}
+
+function readAutoRunPreferences(): AutoRunPreferences {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(AUTO_RUN_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "boolean"));
+  } catch {
+    return {};
+  }
+}
+
+export function autoRunEnabled(target: AutoRunTarget | null, preferences: AutoRunPreferences): boolean {
+  if (!target || typeof target.production !== "boolean") return false;
+  return preferences[autoRunKey(target)] ?? !target.production;
+}
 
 export const SIDEBAR_MIN = 150;
 export const SIDEBAR_MAX = 480;
@@ -39,6 +63,7 @@ type UiState = {
   maxRows: number;
   editorHeight: number;
   collapsedGroups: Set<string>;
+  autoRunPreferences: AutoRunPreferences;
   /** Set when the backend restarted with a different version than the one
    * this page was loaded against — drives the "reload to upgrade" banner. */
   upgradedTo: string | null;
@@ -56,14 +81,15 @@ type UiState = {
   setSidebarWidth: (n: number) => void;
   setMaxRows: (n: number) => void;
   setEditorHeight: (n: number) => void;
+  setAutoRun: (target: AutoRunTarget, enabled: boolean) => void;
   toggleCollapsedGroup: (key: string) => void;
   setUpgradedTo: (v: string | null) => void;
   setUpdateInfo: (v: UpdateInfo | null) => void;
   setWhatsNew: (v: ChangelogVersion[] | null) => void;
 };
 
-/** Simple UI preferences (panel sizes, max-rows cap, collapsed sidebar
- * groups), each persisted under its legacy key. Language is NOT here — it is
+/** UI preferences (panel sizes, max-rows cap, collapsed sidebar groups and
+ * automatic execution), persisted independently. Language is NOT here — it is
  * fixed per page load (see i18n.ts), exactly like the legacy GUI. */
 export const useUiStore = create<UiState>((set, get) => {
   return {
@@ -71,6 +97,12 @@ export const useUiStore = create<UiState>((set, get) => {
     maxRows: readMaxRows(),
     editorHeight: readNumber(EDITOR_HEIGHT_KEY, 154),
     collapsedGroups: readCollapsedGroups(),
+    autoRunPreferences: readAutoRunPreferences(),
+    setAutoRun: (target, enabled) => {
+      const next = { ...get().autoRunPreferences, [autoRunKey(target)]: enabled };
+      localStorage.setItem(AUTO_RUN_KEY, JSON.stringify(next));
+      set({ autoRunPreferences: next });
+    },
     upgradedTo: null,
     updateInfo: null,
     whatsNew: null,

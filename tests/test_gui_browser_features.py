@@ -2513,6 +2513,353 @@ def test_tab_keyboard_shortcut_closes_active_tab(page):
 # 94. Query deep link: copy/open, auto-run, tab reuse, invalid target guard
 # ---------------------------------------------------------------------------
 
+def _capture_query_requests(page):
+    requests = []
+    page.on('request', lambda request: requests.append({
+        'path': urlparse(request.url).path, 'body': request.post_data_json,
+    }) if request.method == 'POST' and
+        urlparse(request.url).path in ('/api/query', '/api/run') else None)
+    return requests
+
+
+def _auto_run_preference_key(page, db, env, production):
+    groups = page.request.get(page.url.split('/app/')[0] + '/api/connections').json()['groups']
+    group = next(group for group in groups if any(item['db'] == db for item in group['items']))
+    return json.dumps([group.get('ws'), db, env, production], separators=(',', ':'))
+
+
+def _assert_run_mode(page, enabled):
+    assert page.locator('#runModeBtn').inner_text().strip() == ('Auto' if enabled else 'Manual')
+
+
+def _choose_run_mode(page, enabled):
+    button = page.locator('#runModeBtn')
+    assert button.get_attribute('aria-haspopup') == 'menu'
+    button.click()
+    assert button.get_attribute('aria-expanded') == 'true'
+    option = page.locator('#runModeAuto' if enabled else '#runModeManual')
+    assert option.get_attribute('role') == 'menuitemradio'
+    option.click()
+    assert button.get_attribute('aria-expanded') == 'false'
+    assert page.locator('#runModeMenu').count() == 0
+    _assert_run_mode(page, enabled)
+
+
+@pytest.mark.parametrize(('lang', 'manual', 'auto'), [('en', 'Manual', 'Auto'), ('zh', '手动', '自动')])
+def test_run_mode_menu_keyboard_dismissal_and_selection_never_execute(page, lang, manual, auto):
+    _select_testpg(page)
+    if lang == 'zh':
+        page.locator('.vg-lang-switch').click()
+        page.wait_for_function('''() => document.querySelector('#runLbl')?.textContent === '运行'
+            && document.querySelector('#sql') && !document.querySelector('#runModeBtn')?.disabled''')
+    _run_sql(page, 'select 1 as previous_result')
+    page.locator('#grid td[data-v="1"]').click()
+    assert page.locator('#grid td.sel').count() == 1
+    _set_sql(page, 'select 42 as mode_menu_draft')
+    requests = _capture_query_requests(page)
+    button = page.locator('#runModeBtn')
+    assert button.inner_text().strip() == auto
+    assert button.get_attribute('aria-haspopup') == 'menu'
+    assert button.get_attribute('aria-expanded') == 'false'
+    button.focus()
+    page.keyboard.press('Enter')
+    assert button.get_attribute('aria-expanded') == 'true'
+    assert page.locator('.modal').count() == 0
+    assert page.locator('#grid td.sel[data-v="1"]').count() == 1
+    assert page.locator('#runModeMenu').get_attribute('role') == 'menu'
+    assert page.locator('#runModeManual').get_attribute('role') == 'menuitemradio'
+    assert page.locator('#runModeManual').get_attribute('aria-checked') == 'false'
+    assert page.locator('#runModeAuto').get_attribute('aria-checked') == 'true'
+    page.keyboard.press('Home')
+    assert page.locator('#runModeManual').evaluate('el => el === document.activeElement')
+    page.keyboard.press('End')
+    assert page.locator('#runModeAuto').evaluate('el => el === document.activeElement')
+    page.keyboard.press('Escape')
+    assert page.locator('#runModeMenu').count() == 0
+    assert button.get_attribute('aria-expanded') == 'false'
+    assert button.evaluate('el => el === document.activeElement')
+
+    page.keyboard.press('Enter')
+    page.locator('#runModeAuto').focus()
+    page.keyboard.press('ArrowUp')
+    assert page.locator('#runModeManual').evaluate('el => el === document.activeElement')
+    page.keyboard.press('Enter')
+    assert page.locator('#runModeMenu').count() == 0
+    assert button.inner_text().strip() == manual
+    button.click()
+    assert page.locator('#runModeManual').get_attribute('aria-checked') == 'true'
+    assert page.locator('#runModeAuto').get_attribute('aria-checked') == 'false'
+    page.locator('#runModeManual').focus()
+    page.keyboard.press('ArrowDown')
+    assert page.locator('#runModeAuto').evaluate('el => el === document.activeElement')
+    page.keyboard.press('Enter')
+    assert button.inner_text().strip() == auto
+    assert button.get_attribute('aria-expanded') == 'false'
+
+    button.click()
+    page.locator('#sql').click()
+    assert page.locator('#runModeMenu').count() == 0
+    assert button.get_attribute('aria-expanded') == 'false'
+    assert page.locator('#sql').evaluate('el => el === document.activeElement')
+    button.click()
+    page.keyboard.press('Tab')
+    assert page.locator('#runModeMenu').count() == 0
+    assert button.get_attribute('aria-expanded') == 'false'
+    assert page.locator('#fmtBtn').evaluate('el => el === document.activeElement')
+    assert page.locator('#sql').input_value() == 'select 42 as mode_menu_draft'
+    page.wait_for_timeout(200)
+    assert requests == []
+    assert page.locator('.modal').count() == 0
+    assert page.locator('#grid td.sel[data-v="1"]').count() == 1
+    page.locator('#runBtn').focus()
+    page.keyboard.press('Enter')
+    page.wait_for_selector('#grid td[data-v="42"]')
+    assert len(requests) == 1 and requests[0]['body']['sql'] == 'select 42 as mode_menu_draft'
+    assert page.locator('.modal').count() == 0
+    button.focus()
+    page.keyboard.press('Control+Shift+W')
+    page.wait_for_selector('#queryEmptyState')
+    assert page.locator('#runModeMenu').count() == 0
+    assert len(requests) == 1
+
+
+def test_run_mode_menu_closes_when_connection_or_tab_context_changes(page_envset):
+    page = page_envset
+    page.locator('.dbrow[data-db="shop"]').click()
+    _choose_run_mode(page, False)
+    _set_sql(page, 'select 42 as context_change_draft')
+    requests = _capture_query_requests(page)
+    page.locator('#runModeBtn').click()
+    page.locator('#esw .ep[data-env="prod"]').click()
+    assert page.locator('#runModeMenu').count() == 0
+    assert page.locator('#runModeBtn').get_attribute('aria-expanded') == 'false'
+    _assert_run_mode(page, False)
+    page.locator('#runModeBtn').click()
+    page.locator('#tabAdd').click()
+    assert page.locator('#runModeMenu').count() == 0
+    assert page.locator('#runModeBtn').get_attribute('aria-expanded') == 'false'
+    page.locator('#runModeBtn').click()
+    page.locator('#tabs .tab[data-i]').first.click()
+    assert page.locator('#runModeMenu').count() == 0
+    page.wait_for_timeout(200)
+    assert requests == []
+
+
+def test_auto_run_mode_controls_new_and_reused_table_previews(page):
+    _select_testpg(page)
+    _assert_run_mode(page, True)
+    requests = _capture_query_requests(page)
+    _choose_run_mode(page, False)
+    for table in ('customers', 'orders', 'customers'):
+        page.locator(f'#tbl-panel .tname[data-t="{table}"]').click()
+        assert page.locator('#sql').input_value() == f'select * from {table}'
+    page.wait_for_timeout(200)
+    assert requests == []
+    assert page.locator('#tabs .tab[data-i]').count() == 2
+    assert page.locator('#grid table').count() == 0
+
+    # Explicit keyboard Run still works while automatic execution is disabled.
+    page.locator('#sql').focus()
+    page.keyboard.press('ControlOrMeta+Enter')
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 1
+    assert requests[0]['body']['sql'] == 'select * from customers'
+    _set_sql(page, 'select 17 as unsent_draft')
+    _choose_run_mode(page, True)
+    _set_sql(page, 'select 18 as still_unsent_draft')
+    page.wait_for_timeout(200)
+    assert len(requests) == 1  # Neither choosing Auto nor typing executes SQL.
+    page.locator('#tbl-panel .tname[data-t="orders"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 2
+    assert requests[-1]['body']['sql'] == 'select * from orders'
+    assert page.locator('#tabs .tab[data-i]').count() == 2
+
+
+def test_auto_run_preferences_follow_connection_environment_and_reload(page_explicit_production):
+    page = page_explicit_production
+    _select_testpg(page)
+    _choose_run_mode(page, False)
+    page.locator('.dbrow[data-db="shop"]').click()
+    _assert_run_mode(page, True)
+    _choose_run_mode(page, False)
+    _set_sql(page, 'select 42 as environment_preference')
+    requests = _capture_query_requests(page)
+
+    # Explicit production metadata matters: jp starts off even though its name is not prod.
+    page.locator('#esw .ep[data-env="jp"]').click()
+    _assert_run_mode(page, False)
+    assert page.locator('#sql').input_value() == 'select 42 as environment_preference'
+    _choose_run_mode(page, True)
+    page.wait_for_timeout(200)
+    assert requests == []
+    page.locator('#esw .ep[data-env="dev"]').click()
+    _assert_run_mode(page, False)
+    page.wait_for_timeout(200)
+    assert requests == []
+    page.locator('#esw .ep[data-env="jp"]').click()
+    page.wait_for_selector('#grid td[data-v="42"]')
+    assert len(requests) == 1 and requests[0]['body']['env'] == 'jp'
+
+    preferences = page.evaluate('JSON.parse(localStorage.qy_auto_run)')
+    for db, env, production, enabled in (
+        ('testpg', 'test', False, False), ('shop', 'dev', False, False),
+        ('shop', 'jp', True, True),
+    ):
+        assert preferences[_auto_run_preference_key(page, db, env, production)] is enabled
+    page.reload(wait_until='networkidle')
+    _assert_run_mode(page, True)
+    assert len(requests) == 1
+    page.locator('#esw .ep[data-env="dev"]').click()
+    _assert_run_mode(page, False)
+    _select_testpg(page)
+    _assert_run_mode(page, False)
+    page.locator('.dbrow[data-db="shop"]').click()
+    _assert_run_mode(page, False)
+    page.locator('#esw .ep[data-env="prod"]').click()
+    _assert_run_mode(page, True)  # This environment is not production.
+    page.wait_for_selector('#grid td[data-v="42"]')
+    assert len(requests) == 2 and requests[-1]['body']['env'] == 'prod'
+
+
+@pytest.mark.parametrize(('db', 'env', 'preference'), [
+    ('testpg', 'test', False), ('shop', 'prod', None), ('shop', 'prod', True),
+])
+def test_query_deeplink_respects_auto_run_preference_and_production_default(page_envset, db, env, preference):
+    page = page_envset
+    if preference is not None:
+        key = _auto_run_preference_key(page, db, env, db == 'shop')
+        page.evaluate('([key, enabled]) => localStorage.setItem("qy_auto_run", JSON.stringify({[key]: enabled}))',
+                      [key, preference])
+    requests = _capture_query_requests(page)
+    sql = 'select 42 as shared_auto_run'
+    base = page.url.split('/app/')[0]
+    page.goto(f'{base}/app/?{urlencode({"db": db, "env": env, "sql": sql})}', wait_until='networkidle')
+    assert page.locator('#sql').input_value() == sql
+    _assert_run_mode(page, preference is True)
+    if preference is True:
+        page.wait_for_selector('#grid td[data-v="42"]')
+        assert len(requests) == 1 and requests[0]['body']['env'] == env
+    else:
+        assert requests == []
+        assert page.locator('#grid table').count() == 0
+
+
+def test_auto_run_saved_query_off_allows_manual_run_and_on_runs_new_query(page_noparam):
+    page = page_noparam
+    _select_testpg(page)
+    _choose_run_mode(page, False)
+    requests = _capture_query_requests(page)
+    page.locator('.query-index-children [data-q="all-cust"]').click()
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    page.wait_for_timeout(200)
+    assert requests == []
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 1 and requests[0]['path'] == '/api/run'
+    assert page.locator('#grid tbody tr').count() == 3
+    _choose_run_mode(page, True)
+    page.wait_for_timeout(200)
+    assert len(requests) == 1
+    # Reopening the same saved query after closing its tab creates a fresh run.
+    page.locator('#tabs .tab.on .x').click()
+    page.locator('.query-index-children [data-q="all-cust"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 2 and requests[-1]['path'] == '/api/run'
+
+
+@pytest.mark.parametrize('action', ['mode', 'type'])
+def test_auto_run_preference_or_edit_cancels_navigation_waiting_for_tables(page_explicit_production, action):
+    page = page_explicit_production
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.locator('#tbl-panel .tname[data-t="customers"]').wait_for()
+    _set_sql(page, 'select 42 as delayed_navigation')
+    requests = _capture_query_requests(page)
+    pending = []
+    page.route('**/api/tables?*', lambda route: pending.append(route))
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.wait_for_timeout(100)
+    assert pending
+    _assert_run_mode(page, True)
+    if action == 'mode':
+        _choose_run_mode(page, False)
+        _choose_run_mode(page, True)
+    else:
+        _set_sql(page, 'select 43 as edited_during_navigation')
+    for route in pending:
+        route.fulfill(json={'engine': 'postgres', 'tables': ['customers', 'orders'], 'capped': False})
+    page.locator('#tbl-panel .tname[data-t="customers"]').wait_for()
+    page.wait_for_timeout(200)
+    assert requests == []
+    expected = 'select 42 as delayed_navigation' if action == 'mode' else 'select 43 as edited_during_navigation'
+    assert page.locator('#sql').input_value() == expected
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 1 and requests[0]['body']['env'] == 'prod'
+
+
+def test_auto_run_is_disabled_when_production_metadata_is_unknown(page):
+    def omit_production(route):
+        response = route.fetch()
+        data = response.json()
+        for group in data['groups']:
+            for item in group['items']:
+                for env in item['envs']:
+                    env.pop('production', None)
+        route.fulfill(response=response, json=data)
+
+    page.route('**/api/connections', omit_production)
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    assert page.locator('#runModeBtn').is_disabled()
+    _assert_run_mode(page, False)
+    requests = _capture_query_requests(page)
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_timeout(200)
+    assert requests == []
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid table tbody tr')
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize('change', ['production', 'workspace'])
+def test_auto_run_opt_in_does_not_cross_connection_identity_change(page_envset, change):
+    page = page_envset
+    if change == 'production':
+        _select_testpg(page)
+        _choose_run_mode(page, False)  # Persist an explicit nonproduction opt-in.
+    else:
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.locator('#esw .ep[data-env="prod"]').click()
+    _choose_run_mode(page, True)
+    requests = _capture_query_requests(page)
+
+    def changed_connection(route):
+        response = route.fetch()
+        data = response.json()
+        for group in data['groups']:
+            if change == 'workspace':
+                group['ws'] = '/replacement-workspace'
+            for item in group['items']:
+                if change == 'production' and item['db'] == 'testpg':
+                    for env in item['envs']:
+                        env['production'] = True
+        route.fulfill(response=response, json=data)
+
+    page.route('**/api/connections', changed_connection)
+    page.reload(wait_until='networkidle')
+    if change == 'production':
+        # A restored tab already selects testpg; its first row click only collapses the panel.
+        page.locator('#prodBadge').wait_for()
+    else:
+        page.locator('.dbrow[data-db="shop"]').click()
+        page.locator('#esw .ep[data-env="prod"]').click()
+    _assert_run_mode(page, False)
+    page.locator('#tbl-panel .tname[data-t="customers"]').click()
+    page.wait_for_timeout(200)
+    assert requests == []
+
+
 def test_copy_query_link_copies_db_env_sql(page_clip):
     page = page_clip
     _select_testpg(page)
@@ -3263,16 +3610,19 @@ def test_production_context_follows_connection_without_toasts(page_explicit_prod
 
     def assert_context(production):
         assert page.locator('.app-shell').get_attribute('data-production') == str(production).lower()
-        assert page.locator('header #prodBadge').count() == 0
-        assert page.locator('.qhead .production-status').count() == 1
+        assert page.locator('header #prodBadge, .qhead #prodBadge, .qhead .production-status').count() == 0
         assert page.locator('#productionHint').count() == 0
         assert page.locator('#runBtn').get_attribute('aria-describedby') is None
         assert page.locator('#toast').is_hidden()
         if production:
-            assert page.locator('.qhead #prodBadge').inner_text().strip() == 'Production'
-            assert page.locator('.production-status #prodBadge').get_attribute('title') == 'Production connection — queries run manually'
+            assert page.locator('.tab-navigation .tab-context #prodBadge').inner_text().strip() == 'Production'
+            assert page.locator('#prodBadge').get_attribute('title') == 'Production connection — Auto-run is off by default'
+            assert page.locator('#sql').get_attribute('aria-describedby') == 'prodBadge'
         else:
             assert page.locator('#prodBadge').count() == 0
+            assert page.locator('#sql').get_attribute('aria-describedby') is None
+        assert page.locator('.tab-navigation .tab-context').count() == 1
+        assert page.locator('.edwrap #prodBadge, .production-watermark').count() == 0
 
     assert_context(False)
     # Environment names are labels: jp is protected, while prod is not.
@@ -3302,12 +3652,14 @@ def test_production_context_follows_connection_without_toasts(page_explicit_prod
     page.locator('.tab.on .x').click()
     page.wait_for_selector('#queryEmptyState')
     assert page.locator('.app-shell').get_attribute('data-production') == 'true'
-    assert page.locator('.qhead #prodBadge').is_visible()
+    assert page.locator('.tab-navigation .tab-context #prodBadge').is_visible()
+    assert page.locator('header #prodBadge, .qhead #prodBadge').count() == 0
     assert page.locator('#productionHint').count() == 0
     page.reload(wait_until='networkidle')
     page.wait_for_selector('#queryEmptyState')
     assert page.locator('.app-shell').get_attribute('data-production') == 'true'
-    assert page.locator('.qhead #prodBadge').is_visible()
+    assert page.locator('.tab-navigation .tab-context #prodBadge').is_visible()
+    assert page.locator('header #prodBadge, .qhead #prodBadge').count() == 0
     assert page.locator('#productionHint').count() == 0
     assert page.locator('#toast').is_hidden()
     assert len(queries) == 2
@@ -3331,7 +3683,7 @@ def test_production_context_has_stable_layout(page_envset, width, lang):
         return page.evaluate('''() => Object.fromEntries([
             '.qhead', '.connection-context', '#qtitle', '#esw', '#ciBtn',
             '#esw [data-env="dev"]', '#esw [data-env="prod"]',
-            '.production-status', '#tabs', '#runBtn', '#maxRows'
+            '#tabs', '.tab-context', '.edwrap', '#runBtn', '#runModeBtn', '#maxRows'
         ].map(selector => {
             const {x, y, width, height} = document.querySelector(selector).getBoundingClientRect();
             return [selector, {x, y, width, height}];
@@ -3347,12 +3699,68 @@ def test_production_context_has_stable_layout(page_envset, width, lang):
             for dimension, value in dimensions.items():
                 assert current[selector][dimension] == pytest.approx(value, abs=0.5), (width, lang, env, selector, dimension)
         if env == 'prod':
-            status = page.locator('.production-status').bounding_box()
             label = page.locator('#prodBadge').bounding_box()
-            context = page.locator('.connection-context').bounding_box()
-            assert status['x'] >= context['x'] + context['width']
-            assert label['x'] + label['width'] <= status['x'] + status['width'] + 0.5
-    assert page.locator('.production-status').inner_text().strip() == ''
+            editor = page.locator('.edwrap').bounding_box()
+            context = page.locator('.tab-context').bounding_box()
+            assert label['x'] >= context['x']
+            assert label['x'] + label['width'] <= context['x'] + context['width']
+            assert label['y'] >= context['y']
+            assert label['y'] + label['height'] <= context['y'] + context['height']
+            assert label['y'] + label['height'] <= editor['y']
+            assert page.locator('#prodBadge').inner_text().strip() == ('生产环境' if lang == 'zh' else 'Production')
+            assert page.locator('header #prodBadge, .qhead #prodBadge').count() == 0
+    assert page.locator('#prodBadge, .production-status, .production-watermark').count() == 0
+    assert page.locator('.tab-navigation .tab-context').count() == 1
+
+
+def test_production_tab_context_leaves_sql_unobstructed_when_scrolled_or_resized(page_envset):
+    page = page_envset
+    page.locator('.dbrow[data-db="shop"]').click()
+    page.locator('#esw .ep[data-env="prod"]').click()
+    badge = page.locator('.tab-navigation .tab-context #prodBadge')
+    badge.wait_for()
+    assert page.locator('.edwrap #prodBadge, .production-watermark').count() == 0
+    assert page.locator('#sql').get_attribute('aria-describedby') == 'prodBadge'
+    requests = _capture_query_requests(page)
+
+    # Connection context stays outside the editable SQL surface.
+    box = page.locator('.edwrap').bounding_box()
+    badge_before = badge.bounding_box()
+    assert badge_before['y'] + badge_before['height'] <= box['y']
+    x, y = box['x'] + box['width'] - 24, box['y'] + box['height'] - 24
+    assert page.evaluate('([x, y]) => document.elementFromPoint(x, y)?.id', [x, y]) == 'sql'
+    page.mouse.click(x, y)
+    assert page.locator('#sql').evaluate('el => el === document.activeElement')
+    sql = 'select 42 as context_probe'
+    page.keyboard.insert_text(sql)
+    assert page.locator('#sql').input_value() == sql
+    page.keyboard.press('ControlOrMeta+Enter')
+    page.wait_for_selector('#grid td[data-v="42"]')
+    assert len(requests) == 1 and requests[0]['body']['sql'] == sql
+    assert badge.is_visible()
+
+    long_sql = '\n'.join(f'-- scroll line {index}' for index in range(60)) + '\n' + sql
+    _set_sql(page, long_sql)
+    page.locator('#sql').evaluate('el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); }')
+    before_scroll = badge.bounding_box()
+    page.locator('#sql').hover(position={'x': 20, 'y': 20})
+    page.mouse.wheel(0, 600)
+    page.wait_for_function('document.querySelector("#sql").scrollTop > 0')
+    after_scroll = badge.bounding_box()
+    for dimension in ('x', 'y', 'width', 'height'):
+        assert after_scroll[dimension] == pytest.approx(before_scroll[dimension], abs=0.5)
+
+    editor_before = page.locator('.edwrap').bounding_box()
+    _drag(page, '#edresizer', 0, 70)
+    editor_after = page.locator('.edwrap').bounding_box()
+    assert editor_after['height'] >= editor_before['height'] + 50
+    for dimension in ('x', 'y', 'width', 'height'):
+        assert badge.bounding_box()[dimension] == pytest.approx(before_scroll[dimension], abs=0.5)
+    assert page.locator('#sql').input_value() == long_sql
+    assert len(requests) == 1  # Scrolling and resizing never execute the edited SQL.
+    page.locator('#esw .ep[data-env="dev"]').click()
+    assert page.locator('#prodBadge').count() == 0
+    assert page.locator('#sql').get_attribute('aria-describedby') is None
 
 
 def test_single_production_connection_context_is_localized(page):
@@ -3369,12 +3777,14 @@ def test_single_production_connection_context_is_localized(page):
     page.reload(wait_until='networkidle')
     _select_testpg(page)
     assert page.locator('#esw .ep').count() == 0
-    assert page.locator('.qhead #prodBadge').inner_text().strip() == 'Production'
+    assert page.locator('.tab-navigation .tab-context #prodBadge').inner_text().strip() == 'Production'
+    assert page.locator('header #prodBadge, .qhead #prodBadge').count() == 0
     assert page.locator('#productionHint').count() == 0
     page.locator('.vg-lang-switch').click()
     page.wait_for_function("document.querySelector('#prodBadge')?.textContent.trim() === '生产环境'")
-    assert page.locator('#prodBadge').get_attribute('title') == '生产连接：需要手动运行查询'
+    assert page.locator('#prodBadge').get_attribute('title') == '生产连接：自动运行默认关闭'
     assert page.locator('#runBtn').get_attribute('aria-describedby') is None
+    assert page.locator('#sql').get_attribute('aria-describedby') == 'prodBadge'
     assert page.locator('.app-shell').get_attribute('data-production') == 'true'
     assert page.locator('#toast').is_hidden()
 
@@ -3389,6 +3799,7 @@ def test_single_production_connection_context_is_localized(page):
     assert page.locator('.app-shell').get_attribute('data-production') == 'false'
     assert page.locator('#prodBadge, #productionHint').count() == 0
     assert page.locator('#runBtn').get_attribute('aria-describedby') is None
+    assert page.locator('#sql').get_attribute('aria-describedby') is None
 
 
 def test_env_preview_autorun_uses_explicit_production(page_explicit_production):
@@ -3471,11 +3882,12 @@ def test_workbench_visual_hierarchy(page_envset, mode):
     assert matches('#esw .on', 'borderTopColor', 'var(--acc)')
     assert page.eval_on_selector('#esw .on', 'e => getComputedStyle(e).fontWeight') == '600'
     assert matches('#esw .on', 'color', 'var(--fg)')
-    assert matches('#runBtn', 'backgroundColor', 'var(--surf-1)')
+    assert matches('.run-split', 'backgroundColor', 'var(--surf-1)')
+    assert matches('#runBtn', 'backgroundColor', 'transparent')
     assert matches('#runBtn', 'color', 'var(--acc)')
     page.locator('#runBtn').hover()
-    assert matches('#runBtn', 'backgroundColor', 'var(--acc)')
-    assert matches('#runBtn', 'color', 'var(--accent-ink)')
+    assert matches('#runBtn', 'backgroundColor', 'var(--surf-2)')
+    assert matches('#runBtn', 'color', 'var(--acc)')
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])

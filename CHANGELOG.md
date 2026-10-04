@@ -9,6 +9,11 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- A split Run button exposes the current Manual/Auto execution mode. Its mode
+  menu controls table previews, environment switches and opened queries.
+  Preferences are remembered separately per workspace, database and environment. Production defaults to off and supports explicit
+  opt-in; typing SQL or changing the mode never executes a query.
+
 - Local Neptune can opt into a fixture-backed openCypher response mock with strict
   unmatched-query errors and cursor-based call inspection; the default empty
   endpoint remains unchanged.
@@ -29,11 +34,12 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
-- Production connections use muted theme accents across the header, active
-  connection and tab. A Production label sits in a reserved area at the right of
-  the connection heading, keeping controls in place when environments change.
+- Production connections tint the SQL editor with muted theme accents and show
+  a compact Production label at the end of the query tab bar. The selected tab
+  keeps its original short underline, without an additional line across the editor.
   Switching to production no longer shows a repeated warning toast and still
-  preserves SQL without executing it.
+  preserves SQL without executing it unless Auto-run has been explicitly enabled
+  for that production connection.
 
 ### Fixed
 
