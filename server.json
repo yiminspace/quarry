@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.Wangggym/quarry",
+  "name": "io.github.yiminspace/quarry",
   "description": "Safety-railed database access for agents: Postgres, MySQL, Redis. Read-only by default.",
   "repository": {
     "url": "https://github.com/yiminspace/quarry",

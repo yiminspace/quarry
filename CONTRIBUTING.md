@@ -15,7 +15,7 @@ Quarry has a few invariants that PRs must not break. If your change needs to ben
 ## Development setup
 
 ```bash
-git clone https://github.com/Wangggym/quarry && cd quarry
+git clone https://github.com/yiminspace/quarry && cd quarry
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```

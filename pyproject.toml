@@ -9,7 +9,7 @@ description = "AI-native database workbench: one safety-railed query kernel, man
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Wangggym" }]
+authors = [{ name = "yiminlab" }]
 keywords = ["database", "sql", "postgres", "mysql", "redis", "ai", "agent", "mcp", "cli", "workbench"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
