@@ -181,6 +181,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.5.2 (2026-10-06)
+
+### Bug Fixes
+
+- 更新 GitHub 身份并发布组织 MCP 条目 ([#143](https://github.com/yiminspace/quarry/pull/143),
+  [`a0e822b`](https://github.com/yiminspace/quarry/commit/a0e822b8ca347c7c281cf8c5ab60ff6d5881c5c8))
+
+
 ## v1.5.1 (2026-10-03)
 
 ### Bug Fixes
