@@ -181,6 +181,14 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.5.3 (2026-10-06)
+
+### Bug Fixes
+
+- 标记 MCP 组织条目已发布 ([#144](https://github.com/yiminspace/quarry/pull/144),
+  [`1be8022`](https://github.com/yiminspace/quarry/commit/1be8022e912977557dd7b778113c3e20de8a8124))
+
+
 ## v1.5.2 (2026-10-06)
 
 ### Bug Fixes
