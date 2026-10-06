@@ -1381,26 +1381,26 @@ _SAMPLE_CHANGELOG = """\
 ### Features
 
 - **gui**: What's New panel shows changelog entries after an upgrade
-  ([#80](https://github.com/Wangggym/quarry/pull/80), [`abc1234`](https://github.com/Wangggym/quarry/commit/abc1234))
+  ([#80](https://github.com/yiminspace/quarry/pull/80), [`abc1234`](https://github.com/yiminspace/quarry/commit/abc1234))
 
 ### Bug Fixes
 
-- Fix a thing (#48 note) ([#81](https://github.com/Wangggym/quarry/pull/81),
-  [`def5678`](https://github.com/Wangggym/quarry/commit/def5678))
+- Fix a thing (#48 note) ([#81](https://github.com/yiminspace/quarry/pull/81),
+  [`def5678`](https://github.com/yiminspace/quarry/commit/def5678))
 
 ## v0.5.1 (2026-07-15)
 
 ### Bug Fixes
 
 - **release**: __version__ 常量纳入 semantic-release 同步
-  ([`89d330b`](https://github.com/Wangggym/quarry/commit/89d330bb2aaf25640d678145e412217259f95ee6))
+  ([`89d330b`](https://github.com/yiminspace/quarry/commit/89d330bb2aaf25640d678145e412217259f95ee6))
 
 ## [0.2.2] — 2026-07-02
 
 ### Fixed
 
 - Legacy hand-written heading format still parses
-  ([`aaaaaaa`](https://github.com/Wangggym/quarry/commit/aaaaaaa))
+  ([`aaaaaaa`](https://github.com/yiminspace/quarry/commit/aaaaaaa))
 """
 
 

@@ -3144,6 +3144,10 @@ def test_update_panel_shows_versions_and_upgrade_command(_pw_browser, gui_url):
         text = page.locator("#updbox").inner_text()
         assert "0.5.1" in text and "9.9.9" in text
         assert page.locator("#updCmd").inner_text() == "pipx upgrade quarry-db"
+        release_link = page.locator("#updbox a")
+        assert release_link.get_attribute("href") == (
+            "https://github.com/yiminspace/quarry/releases/tag/v9.9.9")
+        assert release_link.get_attribute("target") == "_blank"
     finally:
         ctx.close()
 

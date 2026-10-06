@@ -34,6 +34,11 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
+- Publish MCP Registry releases under `io.github.yiminspace/quarry` after verifying
+  the matching PyPI distribution and ownership marker. Retiring the former
+  personal listing remains a separate migration step.
+- Update contributor links and package author metadata after the GitHub account rename.
+
 - Production connections tint the SQL editor with muted theme accents and show
   a compact Production label at the end of the query tab bar. The selected tab
   keeps its original short underline, without an additional line across the editor.
@@ -42,6 +47,8 @@ pre-1.0 history followed the earlier development policy.
   for that production connection.
 
 ### Fixed
+
+- The update panel opens release notes in the canonical `yiminspace/quarry` repository.
 
 - The result-limit selector now displays localized row-count labels with a
   properly inset chevron, keeping the text and arrow clearly separated.

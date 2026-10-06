@@ -12,7 +12,7 @@ type Props = { info: UpdateInfo; onClose: () => void };
 export default function UpdatePanel({ info, onClose }: Props) {
   useModalEscape(onClose);
   const releaseUrl = info.latest
-    ? `https://github.com/Wangggym/quarry/releases/tag/v${info.latest}`
+    ? `https://github.com/yiminspace/quarry/releases/tag/v${info.latest}`
     : null;
 
   return (
