@@ -4077,7 +4077,7 @@ def test_row_record_link_ordinary_string_key_omits_escape_prefix(page_clip, pg_e
     assert rc == 0, err
     try:
         _select_testpg(page)
-        _run_sql(page, 'select * from qy_record_link_strings')
+        _run_sql(page, "select * from qy_record_link_strings where 'union,a;(select)' = 'union,a;(select)'")
         page.locator('#grid tbody tr').first.locator('td').first.click()
         from playwright.sync_api import expect
         expect(page.locator('#recordLinkBtn')).to_be_enabled()

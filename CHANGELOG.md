@@ -13,7 +13,10 @@ pre-1.0 history followed the earlier development policy.
   based on verified primary/unique keys and the result's database/environment.
   Ambiguous queries or unavailable keys show a disabled reason; copying preserves
   the editor and does not execute SQL. PostgreSQL strings use ordinary quotes;
-  escape-string prefixes are only added for values containing backslashes.
+  escape-string prefixes are only added for values containing backslashes. Quoted
+  SQL values do not trigger complex-query detection; MySQL keys match column names
+  regardless of casing, and binary keys remain unavailable rather than copying
+  a query that compares serialized display text.
 
 - A split Run button exposes the current Manual/Auto execution mode. Its mode
   menu controls table previews, environment switches and opened queries.

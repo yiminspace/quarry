@@ -716,7 +716,10 @@ guard described here.
 - Capability: row details retain full field inspection and offer a uniquely
   keyed single-record query link; unsupported query shapes are listed in Design
   gaps. Primary keys precede unique keys; composite keys include every column.
-  Null/missing/unsafe numeric keys and unavailable metadata disable copying.
+  Null/missing/unsafe numeric keys, MySQL binary/bit keys and unavailable metadata
+  disable copying. Query-tail checks ignore quoted string contents; MySQL key
+  projection and row names are matched without case sensitivity. Typed binary
+  metadata permits a text unique-key fallback without interpreting display markers.
 - Shared-state: no store writes added. The row-opening write to local `modal`
   snapshots `queryDb`, `queryEnv`, `result.sql`, columns and the clicked row from
   the active result, rather than editor SQL/current table. Async metadata writes
