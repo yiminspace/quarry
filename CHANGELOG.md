@@ -200,6 +200,24 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.7.0 (2026-10-10)
+
+### Bug Fixes
+
+- Preserve JSON value types in exact fixture matching
+  ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+### Features
+
+- Add exact matching options for Neptune fixtures
+  ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+- Neptune fixture 支持完整查询与参数匹配 ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+
 ## v1.6.0 (2026-10-10)
 
 ### Bug Fixes
