@@ -199,7 +199,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 49 | grid | column width drag | F:test_column_width_drag | ✅ |
 | 50 | grid | cell select; bounded preview for large values; dblclick long→chunked modal / short→copy; explicit copy always uses the full raw value (honest toast) | B:test_cell_doubleclick_no_error, F:test_cell_copy_via_keyboard_and_dblclick, F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview; cellValue.test.ts | ✅ |
 | 51 | grid | JSON tree modal + copy; branches start collapsed and mount children only when expanded | F:test_cell_json_opens_tree_modal | ✅ |
-| 52 | grid | row-detail modal (rownum click), with the same bounded large-cell previews as the grid | B:test_rownum_click_opens_row_detail_modal, F:test_large_cell_is_bounded_in_dom_and_kept_session_only | ✅ |
+| 52 | grid | row-detail modal (rownum click), bounded large-cell previews; Copy record link uses the producing result connection/SQL and verified primary or unique key, copies encoded db/env/table/sql without editing or executing; ordinary PostgreSQL string literals omit E unless backslashes require escaping; loading and disabled reasons for ambiguous queries, missing keys or metadata failure | B:test_rownum_click_opens_row_detail_modal, F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_row_record_link_uses_result_context_and_does_not_execute, F:test_row_record_link_disabled_reason_and_metadata_failure, V:test_record_link_chrome_uses_theme_tokens, F:test_row_record_link_ordinary_string_key_omits_escape_prefix, test_row_link.py | ✅ |
 | 53 | grid | keyboard nav: arrows move selection, Enter opens, Cmd+C copies | F:test_grid_keyboard_nav_and_enter_opens_modal, F:test_cell_copy_via_keyboard_and_dblclick | ✅ |
 | 54 | grid | status bar: rows / elapsed / download size / avg speed (≈ + tooltip when estimated) / truncated / target; each metric (and Load more / max-rows) has a hover explanation; large results keep the session-only notice | B:test_click_table…, F:test_truncated_badge_shows, F:test_status_bar_shows_download_size_and_speed, F:test_status_bar_metric_tooltips, F:test_load_more_accumulates_download_size_and_speed | ✅ |
 | 55 | grid | 0-row empty state retains available column headers | F:test_zero_rows_empty_state, F:test_empty_columns_and_duplicate_names_export | ✅ |
@@ -248,7 +248,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 98 | header | What's New panel: `GET /api/changelog` serves CHANGELOG.md (shipped in the wheel) parsed into version sections; a `__version__` change from the `qy_last_seen_version` recorded in localStorage auto-shows the panel with the entries for the new version(s), marks it seen immediately, and never reappears on a plain reload (a first-ever load with no recorded version just sets the baseline silently) | F:test_whats_new_hidden_on_first_ever_load, F:test_whats_new_shows_entries_after_upgrade_then_stays_hidden_on_reload, F:test_whats_new_background_uses_bg1_token_in_both_themes; CHANGELOG parsing unit-covered in test_gui_backend.py, `/api/changelog` HTTP-covered in test_gui_api.py, wheel packaging covered by test_wheel_includes_changelog | ✅ |
 | 99 | header | env switcher shows a proxy badge (`data-testid="proxy-badge"`) only for connections with a currently-live SSH tunnel that's actually routed through the proxy right now (an observed tunnel-pool fact, not a prediction) — server-computed, not guessed client-side; hidden when the workspace toggle is off, nothing was discovered, or no tunnel has been established for that connection yet | F:test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active, F:test_proxy_badge_hidden_when_workspace_toggle_off, F:test_proxy_badge_hidden_when_nothing_discovered, F:test_proxy_badge_follows_server_state_across_reload; `/api/connections`'s `proxied` field unit-covered in test_gui_api.py | ✅ |
 | 100 | header | workspace manager shows each registered workspace's proxy toggle state and the currently discovered proxy address (`data-testid="ws-proxy-status"`) | F:test_workspace_manager_shows_proxy_status_per_workspace, F:test_workspace_manager_shows_proxy_off_when_toggle_disabled; `/api/workspaces`'s `proxyEnabled`/`proxyDiscovered` fields unit-covered in test_gui_api.py | ✅ |
-| 101 | header | compact tunnel keep-alive control: live status badge (`down`/`up`/`reconnecting`) + start/stop button backed by `/api/keepalive*`, matching `qy status` semantics across GUI/keeper locale and timezone differences; unverifiable legacy PID and tunnel records fail closed | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state; U:test_process_identity_is_independent_of_caller_locale_and_timezone, test_legacy_keeper_identity_needs_pid_file_start_time_proof, test_legacy_reused_pid_never_signalled_even_if_ps_text_matches, test_pre_v2_registry_identity_is_not_reused_even_with_open_port; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
+| 101 | header | compact tunnel keep-alive control: single clickable status badge (`down`/`up`/`reconnecting`) toggles start/stop with mouse, Enter or Space; action tooltip and pressed state; no separate play/stop icon backed by `/api/keepalive*`, matching `qy status` semantics across GUI/keeper locale and timezone differences; unverifiable legacy PID and tunnel records fail closed | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state, V:test_keeper_control_tokens; U:test_process_identity_is_independent_of_caller_locale_and_timezone, test_legacy_keeper_identity_needs_pid_file_start_time_proof, test_legacy_reused_pid_never_signalled_even_if_ps_text_matches, test_pre_v2_registry_identity_is_not_reused_even_with_open_port; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
 | 102 | grid/tabs | multi-megabyte cells never enter grid/row-detail DOM attributes or text in full; grid preview is 512 chars, inspector text grows in 20k chunks, JSON children mount lazily, and >512 KiB results skip synchronous persistence while remaining fully copyable/exportable in the current session | F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview, test_gui_visual:test_large_result_session_badge_inherits_status_token; cellValue.test.ts, tabsStore.test.ts | ✅ |
 | 103 | sidebar/editor | PostgreSQL table browser includes non-system schemas as `schema.table`; qualified tables can be clicked to run a preview, double-clicked for columns, and used for qualified column completion; public-table short names remain compatible | F:test_non_public_schema_table_is_visible_and_clickable, A:test_list_and_describe_non_public_postgres_table, A:test_list_tables_postgres | ✅ |
 | 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
@@ -258,7 +258,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
 | 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; Escape clears global search, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
-| 110 | tabs | no automatic tab-count cap; single-row horizontal scroll with minimum width, active-tab reveal, fixed add/list controls; searchable list, no-match state, outside/Escape dismissal, Arrow/Home/End navigation | F:test_tab_overflow_search_keyboard_and_scoped_bulk_close; test_gui_visual:test_tab_menu_uses_surface_tokens_and_fixed_controls | ✅ |
+| 110 | tabs | no automatic tab-count cap; single-row horizontal scroll with minimum width, active-tab reveal, fixed add/list controls with matching 26px heights, icon sizes and vertical centers; searchable list, no-match state, outside/Escape dismissal, Arrow/Home/End navigation | F:test_tab_overflow_search_keyboard_and_scoped_bulk_close; test_gui_visual:test_tab_menu_uses_surface_tokens_and_fixed_controls | ✅ |
 | 111 | tabs | active close selects same-group MRU; last close leaves a zero-tab empty workbench; close all/others/right stays in group and saves every closed draft in History | F:test_tab_close_uses_mru_and_keeps_last_close_in_same_group, F:test_tab_overflow_search_keyboard_and_scoped_bulk_close, F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_closed_query_response_cannot_resurrect_tab | ✅ |
 
 | 112 | tabs | zero-tab workbench hides editor/results, keeps connection and sidebar, offers New tab and History; new/recall/table/saved/key entry points create an editor on demand | F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_saved_query_opens_from_empty_group, F:test_alt_table_opens_editor_from_empty_without_running, F:test_redis_key_opens_editor_from_empty_group; test_gui_visual:test_empty_workbench_uses_tokens | ✅ |
@@ -323,6 +323,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | header | per-tunnel permanent failure details (`blocked`) are available in CLI/API but not expanded in the keeper badge | badge reports daemon state; a running keeper does not prove database reachability |
 | sidebar | row-count / size hints next to tables | backlog (low) |
 | sidebar | complete SQL/Cypher parsing and live Neptune schema navigation | query associations are hints from saved query text; complex/ambiguous references may remain under Other; labels shown here are not a complete live inventory |
+| grid | record links for JOINs, computed/aliased projections, aggregates, nullable or absent unique keys | disabled with an explanation; conservative original-column single-table SELECT support |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
 | toolbar | arbitrary result-cap values beyond 100/500/2000/5000 | deferred; the row-limit selector deliberately retains its existing presets |
@@ -706,3 +707,48 @@ guard described here.
   `uiStore.setUpdateInfo`; `Header` reads that state and passes it to the panel.
   The panel derives its URL from `info.latest` without writing shared state.
   Badge/panel visibility, query drafts, results and persistence are unchanged.
+
+### Record-link audits (2026-10-10)
+
+- Existence: row 52 maps `#recordLinkBtn`, its clipboard action, loading/error
+  status, and POST `/api/record-link`. No localStorage key is added. Existing
+  query-link navigation and Auto-run remain in rows 113 and the link rows.
+- Capability: row details retain full field inspection and offer a uniquely
+  keyed single-record query link; unsupported query shapes are listed in Design
+  gaps. Primary keys precede unique keys; composite keys include every column.
+  Null/missing/unsafe numeric keys and unavailable metadata disable copying.
+- Shared-state: no store writes added. The row-opening write to local `modal`
+  snapshots `queryDb`, `queryEnv`, `result.sql`, columns and the clicked row from
+  the active result, rather than editor SQL/current table. Async metadata writes
+  only local RowDetailModal state; its effect cleanup ignores closed/replaced
+  requests. Existing clipboard success/failure feedback is reused. The browser
+  test changes the editor after execution, runs another tab, restores the original
+  tab and verifies the link still identifies
+  the displayed row, preserves the draft, makes no query request, and round-trips
+  to one record. New chrome reuses button tokens and `--fg2`; no colors added.
+
+### Merged keeper-control audits (2026-10-10)
+
+- Existence: row 101 owns the single `#kaBadge` click binding, native keyboard
+  activation, action hover hint and `aria-pressed`; the former `#kaBtn` is removed.
+  No API or storage keys change. Row 66 hover-hint coverage uses the merged badge.
+- Capability: the header retains status visibility, start/stop and reconnection
+  updates in one control. Detailed per-tunnel failures stay in the Design gaps.
+  Sidebar, editor, tabs, toolbar and grid capabilities are unaffected.
+- Shared-state: all `keepAlive` write sites remain `connStore.setKeepAlive`,
+  Header's start/stop response and ResultWorkbench's background polling. Header
+  remains the only reader. Tests cover click and keyboard state transitions plus
+  polling-driven reconnection labels on the same button. No query or draft state
+  writes change. Both themes pin badge colors and keyboard focus to existing tokens.
+
+### Tab-control alignment audits (2026-10-10)
+
+- Existence: row 110 covers existing add/list/scroll bindings and their shared
+  geometry. The text plus becomes the existing icon font's plus glyph; no new
+  binding, API or storage key is introduced.
+- Capability: tab creation and list discovery retain the same accessible labels,
+  keyboard navigation and menu actions; the two fixed controls now share height,
+  icon size and vertical center. Existing Design gaps remain unchanged.
+- Shared-state: markup/CSS only; no state writers or readers change. The existing
+  overflow/browser interaction test covers fixed controls and list navigation;
+  the dark/light geometry pin checks both icons and the count against their controls.

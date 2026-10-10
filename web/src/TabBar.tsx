@@ -207,7 +207,7 @@ export default function TabBar({ onSwitch, onClose, isProduction = false }: TabB
         <button className="vg-iconbtn" id="tabScrollLeft" title={t("scroll_tabs_left")} aria-label={t("scroll_tabs_left")} disabled={!overflow.left} onClick={() => scrollTabs(-1)}><i className="ti ti-chevron-left" /></button>
         <button className="vg-iconbtn" id="tabScrollRight" title={t("scroll_tabs_right")} aria-label={t("scroll_tabs_right")} disabled={!overflow.right} onClick={() => scrollTabs(1)}><i className="ti ti-chevron-right" /></button>
       </div>}
-      <button className="vg-iconbtn" id="tabAdd" title={t("new_tab")} aria-label={t("new_tab")} onClick={() => addTab()}>+</button>
+      <button className="vg-iconbtn" id="tabAdd" title={t("new_tab")} aria-label={t("new_tab")} onClick={() => addTab()}><i className="ti ti-plus" /></button>
       <details ref={menuRef} className="tab-menu" onToggle={(e) => { if (e.currentTarget.open) e.currentTarget.querySelector("input")?.focus(); }}>
         <summary id="tabList" onClick={() => { if (!menuRef.current?.open) setSearch(""); }} title={t("all_tabs")} aria-label={t("all_tabs")}><i className="ti ti-chevron-down" /><span>{tabs.length}</span></summary>
         <div className="tab-menu-panel">

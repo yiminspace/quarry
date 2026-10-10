@@ -9,6 +9,12 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- Row detail offers Copy record link: a Quarry URL with a single-record SELECT
+  based on verified primary/unique keys and the result's database/environment.
+  Ambiguous queries or unavailable keys show a disabled reason; copying preserves
+  the editor and does not execute SQL. PostgreSQL strings use ordinary quotes;
+  escape-string prefixes are only added for values containing backslashes.
+
 - A split Run button exposes the current Manual/Auto execution mode. Its mode
   menu controls table previews, environment switches and opened queries.
   Preferences are remembered separately per workspace, database and environment. Production defaults to off and supports explicit
@@ -33,6 +39,12 @@ pre-1.0 history followed the earlier development policy.
   and result. A quieter All queries index keeps unassociated queries discoverable.
 
 ### Changed
+
+- Align the tab bar's add icon, list chevron and tab count with consistent
+  control heights and icon sizing.
+
+- The header tunnel-keeper status is now a single clickable badge for start/stop,
+  replacing the separate action icon and retaining keyboard controls and hover hints.
 
 - Publish MCP Registry releases under `io.github.yiminspace/quarry` after verifying
   the matching PyPI distribution and ownership marker. Retiring the former

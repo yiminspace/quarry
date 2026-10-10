@@ -612,6 +612,13 @@ def test_tab_menu_uses_surface_tokens_and_fixed_controls(page, mode):
     }""")
     assert page.locator('#tabScrollLeft').count() == 0
     assert page.locator('#tabAdd').bounding_box()['width'] >= 24
+    controls = ['#tabAdd', '#tabAdd .ti', '#tabList', '#tabList .ti', '#tabList span']
+    boxes = [page.locator(selector).bounding_box() for selector in controls]
+    centers = [box['y'] + box['height'] / 2 for box in boxes]
+    assert max(centers) - min(centers) <= 1
+    assert boxes[0]['height'] == boxes[2]['height'] == 26
+    assert _style(page, '#tabAdd .ti', 'fontSize') == _style(page, '#tabList .ti', 'fontSize') == '14px'
+    assert page.locator('#tabAdd .ti-plus').count() == 1
 
 
 @pytest.mark.parametrize('mode', ['dark', 'light'])
@@ -648,3 +655,43 @@ def test_workbench_compact_spacing(page, mode):
         assert _style(page, selector, 'fontSize') == '12px'
     assert _style(page, '#sql', 'paddingLeft') == '14px'
     assert _style(page, '.toolbar', 'paddingLeft') == '14px'
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_record_link_chrome_uses_theme_tokens(page, mode):
+    _select_testpg(page)
+    _set_sql(page, 'select * from customers')
+    page.locator('#runBtn').click()
+    _run_result(page)
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    from playwright.sync_api import expect
+    expect(page.locator('#recordLinkBtn')).to_be_enabled()
+    page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
+    page.mouse.move(0, 0)
+    assert _style(page, '#recordLinkBtn', 'color') == _token_color(page, '--fg')
+    header = page.locator('.modal .mh').bounding_box()
+    button = page.locator('#recordLinkBtn').bounding_box()
+    assert button['x'] > header['x'] + header['width'] / 2
+    assert button['x'] + button['width'] <= header['x'] + header['width'] + 1
+    page.keyboard.press('Escape')
+    _set_sql(page, 'select count(*) as total from customers')
+    page.locator('#runBtn').click()
+    _run_result(page)
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    expect(page.locator('.modal [role="status"]')).to_be_visible()
+    assert _style(page, '.modal [role="status"]', 'color') == _token_color(page, '--fg2')
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_keeper_control_tokens(page, mode):
+    page.evaluate("mode => document.documentElement.dataset.mode = mode", mode)
+    for state, token_fg, token_bg in [('ok', '--ok', '--ok-bg'), ('err', '--red-fg', '--red-bg'), ('', '--fg2', '--bg1')]:
+        page.locator('#kaBadge').evaluate('''(el, state) => {
+            el.classList.remove('ok', 'err'); if (state) el.classList.add(state);
+        }''', state)
+        page.mouse.move(0, 500)
+        assert _style(page, '#kaBadge', 'color') == _token_color(page, token_fg)
+        assert _style(page, '#kaBadge', 'backgroundColor') == _token_bg(page, token_bg)
+    page.locator('#kaBadge').focus()
+    assert _style(page, '#kaBadge', 'outlineColor') == _token_color(page, '--accent')
+    assert _style(page, '#kaBadge', 'outlineStyle') == 'solid'

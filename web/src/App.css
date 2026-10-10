@@ -139,7 +139,8 @@
 .tab-controls{display:flex;flex:none;align-items:center;gap:4px;padding:0 8px;border-left:1px solid var(--line)}
 .tab-scroll-controls{display:flex;gap:0;padding-right:4px;border-right:1px solid var(--line)}
 .tab-scroll-controls button:disabled{opacity:.3;cursor:default}
-.tab-menu summary{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--fg2);padding:5px;list-style:none;font-size:12px}
+.tab-menu summary{display:flex;align-items:center;justify-content:center;height:26px;gap:4px;cursor:pointer;color:var(--fg2);padding:0 4px;list-style:none;font-size:12px;line-height:20px}
+.tab-controls .ti{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;font-size:14px;line-height:1}
 .tab-menu summary::-webkit-details-marker{display:none}
 .tab-menu-panel{position:absolute;right:8px;top:100%;z-index:30;width:300px;max-width:calc(100vw - 32px);padding:8px;background:var(--surf-1);border:1px solid var(--line2);border-radius:6px;box-shadow:0 8px 24px var(--bg0)}
 .tab-menu-panel input{box-sizing:border-box;width:100%;padding:8px;color:var(--fg);background:var(--surf-2);border:1px solid var(--line2);border-radius:4px}
@@ -247,3 +248,8 @@
 #side .query-index-children { padding-left: 24px; }
 #side .query-index-children .query-item { padding-left: 24px; }
 .other-query-heading { display: block; width: 100%; border: 0; background: transparent; color: var(--fg3); font: inherit; padding: 6px 0; text-align: left; cursor: pointer; }
+
+/* Keep-alive status and start/stop action share one header control. */
+.keeper-control{display:inline-flex;align-items:center;gap:6px;font-family:inherit;background:var(--bg1);color:var(--fg2);cursor:pointer}
+.keeper-control:hover{opacity:.85}
+.keeper-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
