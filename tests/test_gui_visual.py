@@ -508,7 +508,9 @@ def test_run_mode_menu_tokens_and_geometry(page, theme, mode, lang):
 def test_row_limit_selector_geometry(page, lang, mode):
     _select_testpg(page)
     if lang == 'zh':
-        page.locator('.vg-lang-switch').click()
+        with page.expect_navigation(wait_until='networkidle'):
+            page.locator('.vg-lang-switch').click()
+        page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
     page.evaluate('(mode) => document.documentElement.dataset.mode = mode', mode)
     arrow = page.locator('.row-limit > .ti-chevron-down')
     assert arrow.count() == 1
