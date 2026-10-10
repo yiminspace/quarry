@@ -368,6 +368,11 @@ optional parameter subset match returns its `results` verbatim:
 {"responses": [{"query_contains": "MATCH (n)", "parameters": {"user_id": "test-user"}, "results": [{"n": {"name": "example"}}]}]}
 ```
 
+Set `query_exact: true` to require the whole query to equal `query_contains`,
+and `parameters_exact: true` to require the complete parameter dictionary.
+Both flags default to false for existing substring/subset fixtures.
+Exact parameters compare JSON types recursively, keeping booleans distinct from numbers.
+
 Mock mode returns HTTP 501 for unmatched queries, including unconfigured writes,
 so tests cannot silently pass on an empty response. `qy local neptune-calls
 --format json` lists every openCypher call, its parameters, match status, and a
