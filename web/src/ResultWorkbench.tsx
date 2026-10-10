@@ -48,7 +48,7 @@ type SortState = { i: number; dir: 1 | -1 } | null;
 type SelectedCell = { ri: number; ci: number } | null;
 type ModalState =
   | { type: "cell"; value: unknown }
-  | { type: "row"; row: Row; columns: QueryColumn[] }
+  | { type: "row"; row: Row; columns: QueryColumn[]; db: string | null; env: string | null; sql: string }
   | { type: "explain"; plan: string; db: string; env: string | null }
   | null;
 
@@ -1323,7 +1323,7 @@ export default function ResultWorkbench() {
                       className="rownum"
                       data-ri={ri}
                       title={t("row_detail")}
-                      onClick={() => setModal({ type: "row", row: r, columns: result.columns })}
+                      onClick={() => setModal({ type: "row", row: r, columns: result.columns, db: queryDb, env: queryEnv, sql: result.sql })}
                     >
                       {ri + 1}
                     </td>
@@ -1434,7 +1434,7 @@ export default function ResultWorkbench() {
 
       {modal?.type === "cell" && <CellModal value={modal.value} onClose={() => setModal(null)} />}
       {modal?.type === "row" && (
-        <RowDetailModal row={modal.row} columns={modal.columns} onClose={() => setModal(null)} />
+        <RowDetailModal key={activeTabId} row={modal.row} columns={modal.columns} db={modal.db} env={modal.env} sql={modal.sql} onClose={() => setModal(null)} />
       )}
       {modal?.type === "explain" && (
         <ExplainModal

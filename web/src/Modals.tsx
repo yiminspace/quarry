@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { QueryColumn, SavedQuery } from "./api";
+import { fetchRecordLink, type QueryColumn, type SavedQuery } from "./api";
+import { encodeQueryLink } from "./queryLink";
 import { cellPreview, cellText, MODAL_TEXT_CHUNK_CHARS } from "./cellValue";
 import { copy } from "./clip";
 import { t } from "./i18n";
@@ -154,20 +155,42 @@ export function CellModal({ value, onClose }: { value: unknown; onClose: () => v
 }
 
 /** Whole-row detail modal (opened from the row-number cell). */
-export function RowDetailModal({
-  row,
-  columns,
-  onClose,
-}: {
+export function RowDetailModal({ row, columns, db, env, sql, onClose }: {
   row: Row;
   columns: QueryColumn[];
+  db: string | null;
+  env: string | null;
+  sql: string;
   onClose: () => void;
 }) {
+  const [record, setRecord] = useState<{ sql?: string; table?: string; reason?: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    if (db) void fetchRecordLink(db, env, sql, row).then(
+      (value) => { if (alive) setRecord(value); },
+      () => { if (alive) setRecord({ reason: "metadata_unavailable" }); },
+    );
+    return () => { alive = false; };
+  }, [db, env, sql, row]);
+  const reason = !db ? t("record_link_unsupported") : !record ? t("record_link_loading") :
+    record.reason === "unsupported_query" ? t("record_link_unsupported") :
+    record.reason === "no_unique_key" ? t("record_link_no_key") : t("record_link_unavailable");
   return (
     <Modal onClose={onClose} boxStyle={{ width: "60%" }}>
-      <div className="vg-mh mh">
+      <div className="vg-mh mh" style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <i className="ti ti-list-details" /> {t("row_detail")}
+        <button id="recordLinkBtn" className="vg-btn btn" style={{ marginLeft: "auto" }}
+          disabled={!record?.sql} title={record?.sql ? t("copy_record_link") : reason}
+          onClick={() => {
+            if (!db || !record?.sql || !record.table) return;
+            const url = new URL(window.location.href);
+            url.searchParams.set("table", record.table);
+            copy(encodeQueryLink(url.href, { db, env, sql: record.sql }));
+          }}>
+          <i className="ti ti-link" /> {t("copy_record_link")}
+        </button>
       </div>
+      {!record?.sql && <p style={{ color: "var(--fg2)" }} role="status">{reason}</p>}
       <table style={{ border: 0, width: "100%" }}>
         <tbody>
           {columns.map((c) => {

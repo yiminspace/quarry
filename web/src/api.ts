@@ -288,3 +288,7 @@ export function fetchUpdate(): Promise<UpdateInfo> {
 export function fetchChangelog(): Promise<ChangelogVersion[]> {
   return getJSON("/api/changelog");
 }
+
+export function fetchRecordLink(db: string, env: string | null, sql: string, row: Record<string, unknown>): Promise<{ sql?: string; table?: string; reason?: string }> {
+  return postJSON("/api/record-link", { db, env, sql, row });
+}

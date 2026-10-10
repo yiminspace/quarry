@@ -1510,3 +1510,30 @@ def test_changelog_path_falls_back_to_repo_root_for_editable_installs(monkeypatc
     src_quarry.mkdir(parents=True)
     monkeypatch.setattr(gui, "__file__", str(src_quarry / "gui.py"))
     assert gui._changelog_path() == tmp_path / "CHANGELOG.md"
+
+
+@requires_db
+@pytest.mark.integration
+def test_record_link_real_composite_and_unique_metadata(ws, isolated_cache, pg_exec):
+    from quarry.row_link import record_query
+    conn = isolated_cache._resolve('testpg', 'test')
+    rc, _, err = pg_exec('''CREATE TABLE qy_record_link_keys (
+        tenant text, id integer, slug text UNIQUE, PRIMARY KEY (tenant, id));
+        CREATE TABLE qy_record_link_partial (id integer);
+        CREATE UNIQUE INDEX qy_record_link_partial_idx ON qy_record_link_partial (id) WHERE id > 0;
+        CREATE TABLE qy_record_link_child () INHERITS (qy_record_link_keys);''')
+    assert rc == 0, err
+    try:
+        # Ordinary inheritance means the parent's key cannot prove uniqueness
+        # across SELECT's inherited child rows.
+        assert record_query(conn, 'select * from qy_record_link_keys',
+                            {'tenant': 'x', 'id': 1, 'slug': 's'})['reason'] == 'no_unique_key'
+        pg_exec('DROP TABLE qy_record_link_child')
+        out = record_query(conn, 'select * from qy_record_link_keys',
+                           {'tenant': "O'Reilly", 'id': 1, 'slug': 's'})
+        assert out['sql'] == 'SELECT * FROM "qy_record_link_keys" WHERE "tenant" = \'O\'\'Reilly\' AND "id" = 1;'
+        out = record_query(conn, 'select slug from qy_record_link_keys', {'slug': 's'})
+        assert out['sql'] == 'SELECT * FROM "qy_record_link_keys" WHERE "slug" = \'s\';'
+        assert record_query(conn, 'select * from qy_record_link_partial', {'id': 1})['reason'] == 'no_unique_key'
+    finally:
+        pg_exec('DROP TABLE IF EXISTS qy_record_link_child, qy_record_link_keys, qy_record_link_partial CASCADE')

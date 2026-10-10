@@ -97,21 +97,19 @@ export default function Header() {
         <i className="ti ti-settings" />
       </button>
       <span className="vg-sp sp" />
-      <span className={`vg-badge badge ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`} id="kaBadge" title={kaLabel}>
-        <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
-      </span>
       <button
-        className="vg-iconbtn iconbtn"
-        id="kaBtn"
-        title={kaBtn}
-        aria-label={kaBtn}
+        className={`vg-badge badge keeper-control ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`}
+        id="kaBadge"
+        title={`${kaLabel} · ${kaBtn}`}
+        aria-label={`${kaLabel} · ${kaBtn}`}
+        aria-pressed={keepAlive?.keeper?.running ?? false}
         onClick={() =>
           (keepAlive?.keeper?.running ? keepAliveDown() : keepAliveUp())
             .then((next) => useConnStore.getState().setKeepAlive(next))
             .catch(() => {})
         }
       >
-        <i className={`ti ${keepAlive?.keeper?.running ? "ti-player-stop" : "ti-player-play"}`} />
+        <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
       </button>
       {updateInfo?.available && (
         <button className="vg-badge badge update" id="updateBadge" onClick={() => setUpdOpen(true)}>

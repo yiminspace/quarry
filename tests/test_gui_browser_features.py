@@ -2347,9 +2347,20 @@ def test_header_keepalive_badge_and_toggle(page, monkeypatch):
     page.wait_for_selector("#kaBadge")
     assert "down" in page.locator("#kaBadge").inner_text().lower() or "离线" in page.locator("#kaBadge").inner_text()
 
-    page.locator("#kaBtn").click()
-    page.wait_for_timeout(300)
-    assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
+    from playwright.sync_api import expect
+    badge = page.locator("#kaBadge")
+    assert page.locator("#kaBtn").count() == 0
+    assert badge.evaluate("el => el.tagName") == "BUTTON"
+    expect(badge).to_have_attribute("aria-pressed", "false")
+    badge.click()
+    expect(badge).to_have_attribute("aria-pressed", "true")
+    assert "up" in badge.inner_text().lower() or "在线" in badge.inner_text()
+    assert badge.get_attribute("title") == badge.get_attribute("aria-label")
+    badge.focus()
+    badge.press("Enter")
+    expect(badge).to_have_attribute("aria-pressed", "false")
+    badge.press("Space")
+    expect(badge).to_have_attribute("aria-pressed", "true")
 
 
 def test_header_keepalive_badge_tracks_background_state(page, monkeypatch):
@@ -3902,7 +3913,7 @@ def test_icon_hover_hints_cover_header_workbench_and_modals(page, lang):
         page.locator(".vg-lang-switch").click()
         expect(page.locator("#runLbl")).to_have_text("运行")
     assert page.locator("#roBadge").count() == 0
-    header_icons = ["#wsBtn", "#kaBtn", "#healthBtn", ".vg-lang-switch",
+    header_icons = ["#wsBtn", "#kaBadge", "#healthBtn", ".vg-lang-switch",
                     ".vg-switcher-mode", ".vg-switcher-trigger"]
     for selector in header_icons:
         button = page.locator(selector)
@@ -3999,3 +4010,81 @@ def test_saved_queries_stay_in_owning_workspace(page_noparam):
     with page.expect_response('**/api/run'):
         q1.click()
     assert runs[-1]['queryId'] == 'one'
+
+
+def test_row_record_link_uses_result_context_and_does_not_execute(page_clip):
+    page = page_clip
+    _select_testpg(page)
+    _run_sql(page, 'select * from customers order by id')
+    source_sql = page.locator('#sql').input_value()
+    first_id = page.locator('#grid tbody tr').first.locator('td').nth(1).inner_text()
+    _set_sql(page, 'select 123 as later_editor_draft')
+    original_tab = page.locator('#tabs [aria-selected="true"]').get_attribute('data-i')
+    page.locator('#tabAdd').click()
+    _run_sql(page, 'select * from customers where id = 2')
+    page.locator('#tabs [data-i="' + original_tab + '"]').click()
+    requests = []
+    page.on('request', lambda req: requests.append(req.url) if req.method == 'POST'
+            and (req.url.endswith('/api/query') or req.url.endswith('/api/run')) else None)
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    button = page.locator('#recordLinkBtn')
+    from playwright.sync_api import expect
+    expect(button).to_be_enabled()
+    button.click()
+    page.wait_for_function("navigator.clipboard.readText().then(s => s.includes('sql='))")
+    link = page.evaluate('navigator.clipboard.readText()')
+    params = parse_qs(urlparse(link).query)
+    assert params['db'] == ['testpg']
+    assert params['env'] == ['test']
+    assert params['table'] == ['customers']
+    assert params['sql'] == [f'SELECT * FROM "customers" WHERE "id" = {first_id};']
+    assert urlparse(link).netloc == urlparse(page.url).netloc
+    assert page.locator('#sql').input_value() == 'select 123 as later_editor_draft'
+    assert not requests
+    page.keyboard.press('Escape')
+    # Round-trip through the existing link handler with default Auto enabled.
+    page.goto(link, wait_until='networkidle')
+    assert page.locator('#sql').input_value() == params['sql'][0]
+    page.wait_for_selector('#grid tbody tr')
+    assert page.locator('#grid tbody tr').count() == 1
+    assert source_sql != params['sql'][0]
+
+
+def test_row_record_link_disabled_reason_and_metadata_failure(page_clip):
+    page = page_clip
+    _select_testpg(page)
+    _run_sql(page, 'select count(*) as total from customers')
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    from playwright.sync_api import expect
+    expect(page.locator('#recordLinkBtn')).to_be_disabled()
+    expect(page.get_by_role('status').filter(has_text='simple single-table SELECT')).to_be_visible()
+    page.keyboard.press('Escape')
+    _run_sql(page, 'select name from customers')
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    expect(page.get_by_role('status').filter(has_text='primary or unique key')).to_be_visible()
+    page.keyboard.press('Escape')
+    page.route('**/api/record-link', lambda route: route.fulfill(json={'reason': 'metadata_unavailable'}))
+    _run_sql(page, 'select * from customers')
+    page.locator('#grid tbody tr').first.locator('td').first.click()
+    expect(page.get_by_role('status').filter(has_text='Could not verify')).to_be_visible()
+    expect(page.locator('#recordLinkBtn')).to_be_disabled()
+
+
+def test_row_record_link_ordinary_string_key_omits_escape_prefix(page_clip, pg_exec):
+    page = page_clip
+    rc, _, err = pg_exec('CREATE TABLE qy_record_link_strings (package_name text PRIMARY KEY); '
+                        "INSERT INTO qy_record_link_strings VALUES ('jp.co.yahoo.android.news')")
+    assert rc == 0, err
+    try:
+        _select_testpg(page)
+        _run_sql(page, "select * from qy_record_link_strings where 'union,a;(select)' = 'union,a;(select)'")
+        page.locator('#grid tbody tr').first.locator('td').first.click()
+        from playwright.sync_api import expect
+        expect(page.locator('#recordLinkBtn')).to_be_enabled()
+        page.locator('#recordLinkBtn').click()
+        page.wait_for_function("navigator.clipboard.readText().then(s => s.includes('sql='))")
+        params = parse_qs(urlparse(page.evaluate('navigator.clipboard.readText()')).query)
+        assert params['sql'] == ['SELECT * FROM "qy_record_link_strings" '
+                                 'WHERE "package_name" = \'jp.co.yahoo.android.news\';']
+    finally:
+        pg_exec('DROP TABLE qy_record_link_strings')

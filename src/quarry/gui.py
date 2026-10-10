@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, tunnel, workspace
+from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, row_link, tunnel, workspace
 from .core import QuarryError
 
 log = logging.getLogger("quarry.gui")
@@ -869,6 +869,12 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length) or b"{}")
             if u.path == "/api/query":
                 out = api_query(body)
+            elif u.path == "/api/record-link":
+                try:
+                    out = row_link.record_query(_resolve(_req(body, "db"), body.get("env")),
+                                                _req(body, "sql"), _req(body, "row"))
+                except Exception:
+                    out = {"reason": "metadata_unavailable"}
             elif u.path == "/api/run":
                 out = api_run(body)
             elif u.path == "/api/local/up":
