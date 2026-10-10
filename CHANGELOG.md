@@ -196,6 +196,19 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.6.0 (2026-10-10)
+
+### Bug Fixes
+
+- **gui**: 修正记录链接的字面量与 MySQL 键匹配 ([#145](https://github.com/yiminspace/quarry/pull/145),
+  [`681c8f6`](https://github.com/yiminspace/quarry/commit/681c8f6b5af8d1378d40da5fba76014eb16e2203))
+
+### Features
+
+- **gui**: 添加记录链接并精简顶部控件 ([#145](https://github.com/yiminspace/quarry/pull/145),
+  [`681c8f6`](https://github.com/yiminspace/quarry/commit/681c8f6b5af8d1378d40da5fba76014eb16e2203))
+
+
 ## v1.5.3 (2026-10-06)
 
 ### Bug Fixes
