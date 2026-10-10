@@ -37,9 +37,14 @@ class MockResponse:
     query_contains: str
     parameters: dict[str, object]
     results: list[object]
+    query_exact: bool = False
+    parameters_exact: bool = False
 
     def matches(self, query: str, parameters: dict[str, object]) -> bool:
-        return self.query_contains in query and all(
+        query_matches = query == self.query_contains if self.query_exact else self.query_contains in query
+        if self.parameters_exact:
+            return query_matches and parameters == self.parameters
+        return query_matches and all(
             key in parameters and parameters[key] == value
             for key, value in self.parameters.items()
         )
@@ -81,11 +86,15 @@ def load_fixture(path: Path) -> MockNeptuneState:
         query_contains = item.get("query_contains")
         parameters = item.get("parameters", {})
         results = item.get("results")
+        query_exact = item.get("query_exact", False)
+        parameters_exact = item.get("parameters_exact", False)
         if (not isinstance(query_contains, str) or not query_contains
                 or not isinstance(parameters, dict) or not all(isinstance(key, str) for key in parameters)
                 or not isinstance(results, list)):
             raise ValueError("response requires query_contains, optional parameters, and results array")
-        responses.append(MockResponse(query_contains, parameters, results))
+        if type(query_exact) is not bool or type(parameters_exact) is not bool:
+            raise ValueError("query_exact and parameters_exact must be booleans")
+        responses.append(MockResponse(query_contains, parameters, results, query_exact, parameters_exact))
     return MockNeptuneState(responses, hashlib.sha256(content).hexdigest())
 
 

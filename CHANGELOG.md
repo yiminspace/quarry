@@ -9,6 +9,10 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- Local Neptune response fixtures accept `query_exact` and `parameters_exact`
+  to require the complete query and parameter set, preventing broad rules from
+  accepting unrelated requests. Existing substring/subset rules remain supported.
+
 - Row detail offers Copy record link: a Quarry URL with a single-record SELECT
   based on verified primary/unique keys and the result's database/environment.
   Ambiguous queries or unavailable keys show a disabled reason; copying preserves

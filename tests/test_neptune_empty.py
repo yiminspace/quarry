@@ -144,6 +144,52 @@ def test_mock_endpoint_unmatched_is_recorded_and_fails(mock_endpoint) -> None:
     assert exc.value.code == 400
 
 
+def test_strict_rule_rejects_extra_query_and_parameters(mock_endpoint) -> None:
+    endpoint, state = mock_endpoint
+    state.responses = [neptune_empty.MockResponse(
+        "MATCH (n) RETURN n", {"user_id": "test-user"}, [{"n": {"name": "memory"}}],
+        query_exact=True, parameters_exact=True,
+    )]
+    for query, parameters, expected in [
+        ("MATCH (n) RETURN n", {"user_id": "test-user"}, 200),
+        ("MATCH (n) RETURN n LIMIT 1", {"user_id": "test-user"}, 501),
+        ("MATCH (n) RETURN n", {"user_id": "test-user", "query": "blood"}, 501),
+        ("MATCH (n) RETURN n", {}, 501),
+    ]:
+        request = urllib.request.Request(
+            f"{endpoint}/openCypher",
+            data=json.dumps({"query": query, "parameters": parameters}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        if expected == 200:
+            with urllib.request.urlopen(request) as response:
+                assert json.loads(response.read()) == {"results": [{"n": {"name": "memory"}}]}
+        else:
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(request)
+            assert exc.value.code == expected
+    assert [call["matched"] for call in state.calls] == [True, False, False, False]
+
+
+def test_fixture_strict_flags_and_legacy_matching(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture.json"
+    rule = {"query_contains": "RETURN 1", "parameters": {"user_id": "one"}, "results": []}
+    fixture.write_text(json.dumps({"responses": [rule]}))
+    legacy = load_fixture(fixture)
+    assert legacy.execute("RETURN 1 AS n", {"user_id": "one", "limit": 5}) == []
+    rule.update(query_exact=True, parameters_exact=True)
+    fixture.write_text(json.dumps({"responses": [rule]}))
+    strict = load_fixture(fixture)
+    assert strict.execute("RETURN 1", {"user_id": "one"}) == []
+    assert strict.execute("RETURN 1 AS n", {"user_id": "one"}) is None
+    assert strict.execute("RETURN 1", {"user_id": "one", "limit": 5}) is None
+    for name in ("query_exact", "parameters_exact"):
+        bad = {**rule, name: "true"}
+        fixture.write_text(json.dumps({"responses": [bad]}))
+        with pytest.raises(ValueError, match="must be booleans"):
+            load_fixture(fixture)
+
+
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl is unavailable")
 def test_mock_process_serves_https_and_exposes_calls(tmp_path: Path) -> None:
     cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
@@ -427,6 +473,7 @@ def test_down_and_status_neptune_empty(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(local, "_read_neptune_pid", lambda: 88)
     monkeypatch.setattr(local, "_owned_neptune_pid", lambda _pid: True)
     monkeypatch.setattr(local, "_neptune_health", lambda _port: True)
+    monkeypatch.setattr(local, "_neptune_health_payload", lambda _port: {"backend": "empty"})
     status = local.neptune_empty_status()
     assert status["running"] is True and status["backend"] == "empty" and status["pid"] == 88
 
