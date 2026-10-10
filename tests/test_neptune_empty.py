@@ -171,6 +171,40 @@ def test_strict_rule_rejects_extra_query_and_parameters(mock_endpoint) -> None:
     assert [call["matched"] for call in state.calls] == [True, False, False, False]
 
 
+def test_strict_parameters_compare_json_types_recursively(mock_endpoint) -> None:
+    endpoint, state = mock_endpoint
+    parameters = {"enabled": True, "filter": {"archived": False}, "flags": [True],
+                  "count": 1, "optional": None}
+    state.responses = [neptune_empty.MockResponse(
+        "RETURN 1", parameters, [{"n": 1}], query_exact=True, parameters_exact=True,
+    )]
+    cases = [
+        (parameters, 200),
+        ({**parameters, "count": 1.0}, 200),
+        ({**parameters, "enabled": 1}, 501),
+        ({**parameters, "filter": {"archived": 0}}, 501),
+        ({**parameters, "flags": [1]}, 501),
+        ({**parameters, "count": True}, 501),
+        ({**parameters, "optional": ""}, 501),
+        ({**parameters, "filter": {"archived": False, "extra": None}}, 501),
+        ({**parameters, "flags": [True, False]}, 501),
+        ({**parameters, "filter": []}, 501),
+    ]
+    for actual, expected in cases:
+        request = urllib.request.Request(
+            f"{endpoint}/openCypher", data=json.dumps({"query": "RETURN 1", "parameters": actual}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        if expected == 200:
+            with urllib.request.urlopen(request) as response:
+                assert json.loads(response.read()) == {"results": [{"n": 1}]}
+        else:
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                urllib.request.urlopen(request)
+            assert exc.value.code == expected
+    assert [call["matched"] for call in state.calls] == [status == 200 for _, status in cases]
+
+
 def test_fixture_strict_flags_and_legacy_matching(tmp_path: Path) -> None:
     fixture = tmp_path / "fixture.json"
     rule = {"query_contains": "RETURN 1", "parameters": {"user_id": "one"}, "results": []}

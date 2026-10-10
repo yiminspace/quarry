@@ -32,6 +32,20 @@ def parse_request(content_type: str, body: bytes) -> tuple[str, dict[str, object
     return payload.get("query", [""])[0], params if isinstance(params, dict) else {}
 
 
+def _json_equal(left: object, right: object) -> bool:
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _json_equal(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _json_equal(a, b) for a, b in zip(left, right)
+        )
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    return type(left) is type(right) and left == right
+
+
 @dataclass(frozen=True)
 class MockResponse:
     query_contains: str
@@ -43,7 +57,7 @@ class MockResponse:
     def matches(self, query: str, parameters: dict[str, object]) -> bool:
         query_matches = query == self.query_contains if self.query_exact else self.query_contains in query
         if self.parameters_exact:
-            return query_matches and parameters == self.parameters
+            return query_matches and _json_equal(parameters, self.parameters)
         return query_matches and all(
             key in parameters and parameters[key] == value
             for key, value in self.parameters.items()
