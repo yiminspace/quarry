@@ -268,20 +268,21 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 114 | SQLite | file connections share environment groups; local/dev/prod point to distinct files; explicit production disables initial Auto-run and opt-in never executes SQL; table/view browsing, reserved/dotted table previews preserve drafts, structure types, absolute path info, no Docker actions | F:test_sqlite_browse_structure_quoted_tables_and_file_info, F:test_sqlite_environment_files_and_production_autorun, A:test_sqlite_connection_info_has_resolved_file_and_no_server, A:test_sqlite_api_metadata_and_pagination | ✅ |
 | 115 | SQLite | tabular EXPLAIN QUERY PLAN, GUI write rejection, real SELECT/PRAGMA pagination with sort reapplied, active-tab exports and persisted results, latest-wins and origin-tab routing; copied record links use the producing SQL and select the expected row | F:test_sqlite_explain_query_plan_and_gui_readonly, F:test_sqlite_load_more_sort_export_and_tab_restore, F:test_sqlite_pragma_load_more_does_not_repeat_first_page, F:test_sqlite_latest_response_stays_on_origin_tab, F:test_sqlite_record_link_uses_producing_sql_and_selects_one_row, A:test_sqlite_gui_api_cannot_enable_writes | ✅ |
 | 116 | SQLite/workspaces | two real workspaces with distinct connection keys/db names resolve the same `sqlite:///data/local.db` against their own source; conn-info shows each database/config path; connection switches and reload preserve each workspace's draft/result, JSON/CSV export uses the active workspace and does not execute drafts | F:test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results | ✅ |
+| 117 | SQLite/saved queries | supplied parameter values filter the real database but stay out of persisted SQL in `qy_tabres`, `qy_tabs` and `qy_hist`; the parameterized template and selected result survive tab switching/reload, and closing the tab saves only the template to History | F:test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage | ✅ |
 
 ### SQLite integration audit (2026-10-12)
 
 - **Existence:** audited all JSX interaction bindings, localStorage uses and API
   consumers with `rg`. SQLite extends existing table selection/structure
   (64, R4), EXPLAIN (39–40), conn-info (81), pagination (85–86), engine order
-  (108), and shared behavior (114–116). No new interaction binding,
+  (108), and shared behavior (114–117). No new interaction binding,
   persistence key or endpoint; `/api/conninfo` adds `databasePath`.
   The database-file label and engine suffix reuse existing chrome/tokens.
 - **Capability:** header expects accurate environment/production/file context;
   sidebar expects table/view inventory and quoted previews; tabs/editor expect
   draft preservation; toolbar expects read-only execution and an engine-specific
   plan; grid expects pagination, sort, export, record links and restoration. All are covered
-  by 114–116. File creation/import, browsing remote files, SQLite attachments,
+  by 114–117. File creation/import, browsing remote files, SQLite attachments,
   schema editing and a GUI connection editor are deliberately deferred below.
   Autocomplete retains its existing bare-identifier limitation; quoted-name
   completion is recorded below rather than claiming full dialect completion.
@@ -306,6 +307,13 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
   through the normal workspace resolver and serves real query/API responses;
   identical relative file URLs, distinct owner rows, source paths and persisted
   active-workspace exports are checked together in row 116.
+- **Parameterized-result persistence:** row 117 checks a predicate-only private
+  token against real SQLite rows, then tab switching, reload and close-to-History.
+  The storage write sites are `tabsStore.persistTabs` (`qy_tabs`),
+  `tabsStore.persistResults` (`qy_tabres`) and `useSqlHistory.persist` (`qy_hist`).
+  Saved-query responses feed `updateTab` and `setTabResult`; closing the tab feeds
+  `pushHist`. Each sink is asserted without placing the token in selected columns.
+  No frontend store writer or persistence format changed.
 - **Test isolation:** live-SSE browser tests run the real workspace watcher tick
   in a per-test thread that is stopped and joined at teardown. This prevents a
   previous workspace watcher from overwriting the next test's configuration.
@@ -313,9 +321,12 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
   to unbind the active tab, since the modal list updates independently.
 - **Validation:** rebuilt the shipped bundle; frontend unit tests passed
   (61), and lint reported no errors (one existing Sidebar Fast Refresh warning).
-  SQLite API/browser tests passed (11) with Postgres deliberately unreachable.
-  The complete six-module GUI regression passed (416, one existing skip because
-  `hatchling` is unavailable); wheel asset/changelog and sdist checks passed.
+  SQLite API/browser tests passed (12) with Postgres deliberately unreachable.
+  Restoring the old rendered result SQL through a temporary test plugin makes
+  row 117 fail specifically on the parameter value leaking into `qy_tabres`.
+  Before that parameter regression was added, the complete six-module GUI suite
+  passed (416, one existing skip because `hatchling` is unavailable); wheel
+  asset/changelog and sdist checks passed.
 
 ### Tab navigation audit (2026-09-10)
 

@@ -198,3 +198,68 @@ def test_mcp_table_metadata_reports_truncation(sqlite_workspace):
             db.execute(f"CREATE TABLE t{n}(id)")
     result = mcp.tool_list_tables("app")
     assert result["capped"] is True and len(result["tables"]) == 5000
+
+
+@pytest.fixture()
+def confidential_sqlite(sqlite_workspace):
+    marker = "private_parameter_token_97AC"
+    secret = marker + "'\\path; :other"
+    with sqlite3.connect(sqlite_workspace / "data/dev.db") as db:
+        db.execute("UPDATE items SET name=?", (secret,))
+    return core.resolve_connection("app"), secret, marker
+
+
+@pytest.mark.parametrize("sql,style,offset,expected,truncated", [
+    ("SELECT id FROM items WHERE name=:'secret' ORDER BY id", "quoted", 0, [1], True),
+    ("SELECT id FROM items WHERE name=:'secret' ORDER BY id", "quoted", 1, [2], True),
+    ("SELECT id FROM items WHERE name=:'secret' ORDER BY id LIMIT 2", "quoted", 2, [1, 2], False),
+    ("SELECT id FROM items WHERE name=:'secret' ORDER BY id LIMIT :bound", "quoted", 2, [1, 2], False),
+    ("SELECT id FROM items WHERE name=:secret ORDER BY id", "raw", 0, [1], True),
+    ("SELECT id FROM items WHERE :predicate ORDER BY id", "predicate", 1, [2], True),
+    ("WITH picked AS (SELECT id FROM items WHERE name=:'secret') SELECT id FROM picked ORDER BY id",
+     "quoted", 0, [1], True),
+    ("SELECT id FROM items WHERE name=:'secret' AND ':other'=':other' ORDER BY id; -- :ignored",
+     "quoted", 0, [1], True),
+    ("VALUES ((SELECT id FROM items WHERE name=:'secret' ORDER BY id LIMIT 1)), "
+     "((SELECT id FROM items WHERE name=:'secret' ORDER BY id LIMIT 1 OFFSET 1)), "
+     "((SELECT id FROM items WHERE name=:'secret' ORDER BY id LIMIT 1 OFFSET 2))",
+     "quoted", 1, [2], True),
+])
+def test_query_result_sql_keeps_private_parameters_unexpanded(
+        confidential_sqlite, sql, style, offset, expected, truncated):
+    conn, secret, marker = confidential_sqlite
+    quoted = "'" + secret.replace("'", "''") + "'"
+    params = {"predicate": "name=" + quoted} if style == "predicate" else {
+        "secret": quoted if style == "raw" else secret, "bound": "2"}
+    result = core.run_query(conn, sql, params=params, max_rows=1, offset=offset)
+    assert [next(iter(row.values())) for row in result.rows] == expected
+    assert result.truncated is truncated
+    placeholder = ":predicate" if style == "predicate" else ":secret" if style == "raw" else ":'secret'"
+    assert placeholder in result.sql
+    if ":bound" in sql:
+        assert ":bound" in result.sql
+    # The result intentionally projects only IDs. Neither SQL metadata nor
+    # the serialized response should expose a WHERE-only secret, even escaped.
+    assert marker not in result.sql
+    assert marker not in json.dumps(result.to_dict())
+
+
+@pytest.mark.parametrize("face", ["gui", "mcp"])
+@pytest.mark.parametrize("style", ["quoted", "raw"])
+def test_saved_query_responses_do_not_disclose_where_parameters(
+        sqlite_workspace, confidential_sqlite, face, style):
+    from quarry import gui
+
+    _, secret, marker = confidential_sqlite
+    placeholder = ":'secret'" if style == "quoted" else ":secret"
+    sql = f"SELECT id FROM items WHERE name={placeholder} ORDER BY id"
+    (sqlite_workspace / "queries" / "private_filter.sql").write_text(
+        "-- @name: private_filter\n-- @db: app\n-- @param: secret (text, required)\n" + sql + "\n")
+    value = secret if style == "quoted" else "'" + secret.replace("'", "''") + "'"
+    if face == "gui":
+        result = gui.api_run({"name": "private_filter", "params": {"secret": value}, "maxRows": 1})
+    else:
+        result = mcp.tool_run_saved_query("private_filter", params={"secret": value}, max_rows=1)
+    assert result["rows"] == [{"id": 1}] and result["truncated"]
+    assert placeholder in result["sql"]
+    assert marker not in json.dumps(result)

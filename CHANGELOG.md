@@ -15,7 +15,8 @@ pre-1.0 history followed the earlier development policy.
   Queries default to read-only; authorized writes never create a missing file.
   Table/view browsing, schema inspection, query plans, paging, exports and
   primary/unique-key record links use the existing workbench. BLOB values use
-  tagged base64 objects so binary data stays distinct from text.
+  tagged base64 objects so binary data stays distinct from text. Returned SQL
+  retains parameter placeholders when saved-query results are persisted.
 
 - Local Neptune response fixtures accept `query_exact` and `parameters_exact`
   to require the complete query and parameter set, preventing broad rules from

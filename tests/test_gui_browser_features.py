@@ -4359,3 +4359,53 @@ def test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results(pa
     for owner in ('brain', 'yiminlab'):
         own_tabs = [tab for tab in tabs if tab['db'] == f'{owner}_notes']
         assert own_tabs and all(tab['workspace'] == str((tmp_path / owner).resolve()) for tab in own_tabs)
+
+
+def test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage(page_sqlite, tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    private_token = 'sqlite-private-token-f9d0827c'
+    # The parameter is only a predicate: the selected id proves substitution
+    # worked without legitimately returning the private value in the result.
+    with closing(sqlite3.connect(tmp_path / 'notes-dev.db')) as db, db:
+        db.execute('CREATE TABLE private_tokens (id INTEGER PRIMARY KEY, token TEXT NOT NULL)')
+        db.executemany('INSERT INTO private_tokens VALUES (?, ?)', [(1, 'other'), (42, private_token)])
+    template = "SELECT id FROM private_tokens WHERE token = :'token'"
+    (tmp_path / 'queries' / 'by-private-token.sql').write_text(
+        '-- @name: by-private-token\n-- @db: notes_dev\n-- @param: token (text, required)\n'
+        + template + '\n', encoding='utf-8')
+    page.reload(wait_until='networkidle')
+    saved_query = page.locator('.qname[data-q="by-private-token"]').first
+    saved_query.click()
+    page.locator('.modal input.pf[data-p="token"]').fill(private_token)
+    page.keyboard.press('Enter')
+    expect(page.locator('#grid tbody tr')).to_have_count(1)
+    expect(page.locator('#grid td[data-v="42"]')).to_be_visible()
+    assert page.locator('#sql').input_value() == template
+
+    def assert_private_value_not_persisted():
+        stored = page.evaluate("""Object.fromEntries(
+            ['qy_tabres', 'qy_tabs', 'qy_hist'].map(key => [key, localStorage.getItem(key)]))""")
+        for key, value in stored.items():
+            assert private_token not in (value or ''), f'parameter value leaked into {key}'
+        return stored
+
+    stored = assert_private_value_not_persisted()
+    result = next(item['res'] for item in json.loads(stored['qy_tabres']) if item)
+    assert result['rows'] == [{'id': 42}]
+    assert ":'token'" in result['sql']
+    page.locator('#tabAdd').click()
+    _run_sql(page, 'select 99 as other_tab')
+    saved_query.click()
+    expect(page.locator('#grid td[data-v="42"]')).to_be_visible()
+    page.reload(wait_until='networkidle')
+    expect(page.locator('#grid td[data-v="42"]')).to_be_visible()
+    assert page.locator('#sql').input_value() == template
+    assert_private_value_not_persisted()
+    page.locator('.tab.on .x').click()  # Closing stashes the saved template in History.
+    stored = assert_private_value_not_persisted()
+    assert any(item['sql'] == template for item in json.loads(stored['qy_hist']))

@@ -1760,6 +1760,10 @@ def _sqlite_query_result(conn: Connection, sql: str, *, params: dict[str, str],
     rendered = sqlite_engine.substitute_params(sql, params)
     safe_sql, applied_limit = enforce_safety(rendered, allow_write=allow_write,
         max_rows=max_rows, offset=offset, engine="sqlite")
+    # Only executable SQL contains expanded parameters. Result metadata is
+    # persisted by clients, so retain placeholders while reflecting any cap.
+    result_sql = (sqlite_engine.append_limit(sql, applied_limit, offset)
+                  if applied_limit is not None and safe_sql != rendered else sql)
     start = time.monotonic()
     rows, size = sqlite_engine.run_query(conn, safe_sql, read_only=not allow_write,
         timeout=timeout, connect_timeout=connect_timeout,
@@ -1776,7 +1780,7 @@ def _sqlite_query_result(conn: Connection, sql: str, *, params: dict[str, str],
         cache.drop_prefix("columns:")
     return QueryResult(columns=columns, rows=rows, row_count=len(rows),
         truncated=truncated, elapsed_ms=int((time.monotonic() - start) * 1000),
-        engine="sqlite", sql=safe_sql, download_bytes=size, size_is_estimated=True)
+        engine="sqlite", sql=result_sql, download_bytes=size, size_is_estimated=True)
 
 
 def run_query(

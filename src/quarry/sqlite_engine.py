@@ -142,6 +142,13 @@ def is_read_only(sql: str) -> bool:
     return False
 
 
+def append_limit(sql: str, max_rows: int, offset: int) -> str:
+    """Append the row cap to either executable SQL or its parameter template."""
+    semi = skeleton(sql).find(';')
+    inner = sql if semi < 0 else sql[:semi]
+    return f"{inner}\nLIMIT {max_rows + 1} OFFSET {offset}"
+
+
 def enforce_safety(sql: str, *, allow_write: bool, max_rows: int | None,
                    offset: int = 0) -> tuple[str, int | None]:
     from .core import QuarryError, EXIT_SAFETY_BLOCKED
@@ -176,12 +183,9 @@ def enforce_safety(sql: str, *, allow_write: bool, max_rows: int | None,
         top_sql = ''.join(top)
         if re.search(r"\blimit\b", top_sql, re.I):
             return sql, None
-        # Remove the terminator by its original offset, retaining comments.
-        semi = sk.find(';')
-        inner = sql if semi < 0 else sql[:semi]
         terms = re.findall(r"\b(?:select|values)\b", top_sql, re.I)
         if terms and terms[-1].lower() == "select":
-            return f"{inner}\nLIMIT {max_rows + 1} OFFSET {offset}", max_rows
+            return append_limit(sql, max_rows, offset), max_rows
     # VALUES/PRAGMA/EXPLAIN cannot take a trailing LIMIT. Bound and offset
     # fetching in the adapter instead, preserving the original column names.
     return sql, max_rows
