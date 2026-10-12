@@ -209,6 +209,19 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.8.0 (2026-10-12)
+
+### Bug Fixes
+
+- SQLite 结果 SQL 保留参数占位符 ([#147](https://github.com/yiminspace/quarry/pull/147),
+  [`1904926`](https://github.com/yiminspace/quarry/commit/190492607e4c3b8068d618abe9ff380e3b67b6ae))
+
+### Features
+
+- 支持 SQLite 本地文件查询与工作台 ([#147](https://github.com/yiminspace/quarry/pull/147),
+  [`1904926`](https://github.com/yiminspace/quarry/commit/190492607e4c3b8068d618abe9ff380e3b67b6ae))
+
+
 ## v1.7.0 (2026-10-10)
 
 ### Bug Fixes
