@@ -24,13 +24,13 @@ Quarry 把传统设计倒了过来:先做一个**带 agent 安全契约的查询
 
 1. **一核多脸。** 连接管理、查询执行、schema 内省、安全栏都在可 import 的内核(`quarry.core`)里。CLI(`qy`)、GUI、MCP server、agent skill 都是薄壳。修一次 bug,所有脸同时受益。
 
-2. **默认只读;放行是显式且分级的。** CLI 写入需 `--write`,prod 还需确认或 `--yes`;MCP 需服务端和调用同时授权,prod 额外要求 `confirm_prod`。GUI 查询只读;Python 调用方须先取得授权再传 `allow_write=True`。没有外层 LIMIT 的读查询默认限制 500 行,`--max-rows 0` 可显式取消;工具/锁定查询不改写,Redis 在取回后截断。PostgreSQL/MySQL 默认查询还使用数据库只读事务。
+2. **默认只读;放行是显式且分级的。** CLI 写入需 `--write`,prod 还需确认或 `--yes`;MCP 需服务端和调用同时授权,prod 额外要求 `confirm_prod`。GUI 查询只读;Python 调用方须先取得授权再传 `allow_write=True`。没有外层 LIMIT 的读查询默认限制 500 行,`--max-rows 0` 可显式取消;工具/锁定查询不改写,Redis 在取回后截断。PostgreSQL/MySQL 默认查询还使用数据库只读事务;SQLite 默认以只读模式打开已有文件。
 
 3. **机器可信赖的契约。** GUI/MCP/Python 返回 `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`;CLI JSON 保持行数组,诊断和截断提示走 stderr。退出码是稳定 API:`0` ok / `2` 连接错 / `3` SQL 错 / `8` 安全拦截。CLI 参数语法错误也使用 `2`;其他命令有各自的错误码(如 `ping` 失败返回 `1`)。GUI/MCP/Python 使用结构化错误。
 
 4. **Workspace 即代码。** 一个 workspace 就是一个目录:`connections.toml` + `queries/**/*.sql`(带 `-- @meta` 头的命名查询)。查询文件与不含凭据的配置模板可放进*你的*仓库共享;实际连接凭据留在本机。
 
-5. **近乎零依赖。** 基础包与 GUI 使用 Python 3.11+ 标准库。PostgreSQL 使用系统 `psql`,Redis 需要 `redis-cli` 6+,SSH 使用系统 `ssh`;MySQL 使用可选的 `quarry-db[mysql]` 依赖。无需 Electron 或云服务;可选的 `qy up` keeper 在后台运行。
+5. **近乎零依赖。** 基础包与 GUI 使用 Python 3.11+ 标准库,SQLite 使用内置的 `sqlite3`。PostgreSQL 使用系统 `psql`,Redis 需要 `redis-cli` 6+,SSH 使用系统 `ssh`;MySQL 使用可选的 `quarry-db[mysql]` 依赖。无需 Electron 或云服务;可选的 `qy up` keeper 在后台运行。
 
 ## 安装
 
@@ -39,7 +39,7 @@ pipx install quarry-db        # 或 pip install quarry-db
 qy --help
 ```
 
-PostgreSQL 走系统 `psql`;MySQL 需要 `pip install "quarry-db[mysql]"`。
+SQLite 使用 Python 内置的 `sqlite3`,无需数据库服务、Docker 或 `sqlite3` 命令行工具。PostgreSQL 走系统 `psql`;MySQL 需要 `pip install "quarry-db[mysql]"`。
 
 ## 快速开始
 
@@ -57,6 +57,46 @@ qy exec shop --sql "select * from customers"
 qy schema shop customers             # 表结构(\d+)
 qy gui                               # 浏览器数据网格
 ```
+
+### SQLite 文件
+
+配置运行 `qy` 的机器上**已经存在**的 SQLite 文件:
+
+```toml
+[notes_local]
+engine = "sqlite"
+url = "sqlite:///data/notes-local.db"
+db = "notes"
+env = "local"
+
+[notes_prod]
+engine = "sqlite"
+url = "sqlite:////srv/notes/notes.db"
+db = "notes"
+env = "prod"
+production = true
+```
+
+`sqlite:///data/notes-local.db` 相对于该连接所属的 workspace 解析;
+`sqlite:////srv/notes/notes.db` 表示绝对路径。显式设置 `engine = "sqlite"`
+时也可直接填写文件路径。文件不存在会报错,即使已授权写入也不会自动创建空库。
+
+```bash
+qy connections test notes --env local
+qy exec notes --env local --sql "SELECT * FROM notes ORDER BY id"
+qy schema notes notes --env local
+qy gui
+```
+
+CLI、GUI、MCP、Python API 共用表和视图浏览、结构查询、参数、行数限制和导出。
+GUI 支持分页和 SQLite 的 `EXPLAIN QUERY PLAN`。查询默认只读,
+写入沿用现有的显式授权规则;GUI 继续只读。
+
+`local`、`dev`、`prod` 是环境标签,不同文件才构成数据隔离;两个环境指向
+同一个文件就是同一份数据。生产连接需显式设置 `production = true`,
+才能应用生产保护和默认手动执行模式。SQLite 不需要 `qy local up` 或 Docker,
+也不走 SSH 隧道。首版不支持远程文件、`:memory:`、SQLite URI 选项或附加数据库。
+线上使用 PostgreSQL 的项目,本地仍建议使用 PostgreSQL,保持 SQL 和类型行为一致。
 
 ## Workspace
 
@@ -189,11 +229,12 @@ url = "postgresql://user:password@prod.example.com:5432/shop"
 group = "shop"
 db = "shop"
 env = "prod"
+production = true
 ```
 
 - 同 `db` 的连接折叠成 env-set,一份查询跑多环境:`qy run recent_orders --env prod`
 - 未指定 env 默认 `dev`(最安全)
-- GUI 提供环境切换器(prod 变红)
+- GUI 提供环境切换器;生产样式由 `production = true` 决定
 
 ## 多 workspace 聚合
 
@@ -231,7 +272,7 @@ Neptune/openCypher 属于**实验性支持**,不纳入稳定数据库支持承�
 ## 路线图
 
 - 全引擎结果契约列类型
-- SQLite / DuckDB 引擎(零配置本地体验)
+- DuckDB 引擎
 - 跨环境 schema/数据 diff
 - 写操作审计日志
 - 单二进制分发

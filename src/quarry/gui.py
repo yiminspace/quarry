@@ -28,7 +28,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, row_link, tunnel, workspace
+from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, row_link, sqlite_engine, tunnel, workspace
 from .core import QuarryError
 
 log = logging.getLogger("quarry.gui")
@@ -485,7 +485,7 @@ def api_tables(db: str, env: str | None, fresh: bool = False) -> dict:
 
 
 def api_columns(db: str, env: str | None, table: str) -> dict:
-    """Column names + types for one table (postgres/mysql), cached. `columns`
+    """Column names + types for one SQL table, cached. `columns`
     (a flat name list) powers editor autocomplete of `table.<col>`; `types`
     (name -> data_type) powers the sidebar's table-structure browser. Never
     raises — returns {columns: [], types: {}} on any miss.
@@ -558,6 +558,9 @@ def api_conninfo(db: str, env: str | None, reveal: bool = False) -> dict:
     if conn.ssh_host:
         out["tunnel"] = {"host": conn.ssh_host, "user": conn.ssh_user,
                          "port": conn.ssh_port or 22, "key": conn.ssh_key}
+    if out["engine"] == "sqlite":
+        path = sqlite_engine.database_path(conn)
+        out.update(host=None, port=None, database=path.name, databasePath=str(path))
     return out
 
 

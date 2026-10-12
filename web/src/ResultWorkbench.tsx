@@ -792,7 +792,7 @@ export default function ResultWorkbench() {
   };
 
   /** EXPLAIN the current SQL. Single-column plans (postgres) open in a modal;
-   * tabular plans (mysql) render in the grid. The modal is suppressed if its
+   * tabular plans (mysql/sqlite) render in the grid. The modal is suppressed if its
    * tab was switched away or re-pointed while the plan was in flight. */
   const runExplain = async (): Promise<void> => {
     const cur = useConnStore.getState().current;
@@ -805,7 +805,8 @@ export default function ResultWorkbench() {
     setExplainBusy(true);
     const ctx = startReq(useTabsStore.getState().activeId, { db: cur.db, env: cur.env });
     try {
-      const explainSql = `EXPLAIN ${trimmed.replace(/^\s*explain\s+/i, "")}`;
+      const prefix = cur.engine === "sqlite" ? "EXPLAIN QUERY PLAN" : "EXPLAIN";
+      const explainSql = `${prefix} ${trimmed.replace(/^\s*explain\s+(?:query\s+plan\s+)?/i, "")}`;
       const data = await runQuery({ db: cur.db, env: cur.env, sql: explainSql, maxRows });
       if (data.columns.length > 1) {
         applyTabResult(ctx, () => ({
@@ -926,7 +927,7 @@ export default function ResultWorkbench() {
     current &&
     current.db === queryDb &&
     (current.env ?? null) === (queryEnv ?? null) &&
-    (result.engine === "postgres" || result.engine === "mysql")
+    (result.engine === "postgres" || result.engine === "mysql" || result.engine === "sqlite")
   );
 
   const onSort = (i: number): void => {

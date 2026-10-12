@@ -533,7 +533,7 @@ def test_infer_engine_explicit_wins_and_normalizes():
 @pytest.mark.unit
 def test_infer_engine_explicit_junk_rejected():
     with pytest.raises(core.QuarryError) as ei:
-        core.infer_engine("x", "sqlite")
+        core.infer_engine("x", "unsupported")
     assert ei.value.exit_code == core.EXIT_USAGE
 
 

@@ -146,6 +146,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
               {row("host", info.host)}
               {row("port", info.port)}
               {row("database", info.database)}
+              {row(t("ci_database_path"), info.databasePath)}
               <div className="vg-cirow cirow">
                 <span className="vg-cik cik">url</span>
                 <span className="vg-civ civ" id="ciurl">

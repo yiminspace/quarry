@@ -21,11 +21,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 
-from conftest import _running_gui, requires_browser, stub_cdn, stub_events, REDIS_OK, TEST_DB_URL
+from conftest import _running_gui, requires_chromium, stub_cdn, stub_events, DB_OK, REDIS_OK, TEST_DB_URL
 from test_gui_browser import _run_result, _select_testpg, _set_sql
 from test_gui_browser import page_saved  # noqa: F401  (fixture reused below)
 
-pytestmark = [requires_browser, pytest.mark.browser]
+pytestmark = [requires_chromium, pytest.mark.browser]
 
 
 def test_table_query_disclosure_preserves_draft_and_does_not_execute(page_noparam):
@@ -208,10 +208,14 @@ def _mk_page(browser, url):
 @pytest.fixture(autouse=True)
 def _console_clean(request):
     """Invariant: no page JS errors during any test in this module."""
+    # Keep the legacy Postgres requirement, but do not gate SQLite's standalone
+    # browser coverage on a server it never connects to.
+    if not {"page_sqlite", "page_sqlite_workspaces"}.intersection(request.fixturenames) and not DB_OK:
+        pytest.skip("quarry_test Postgres not reachable")
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi")
+                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -711,6 +715,11 @@ group = "acme"
 url = "redis://127.0.0.1:6379/0"
 engine = "redis"
 group = "acme"
+
+[scratch]
+url = "sqlite:///scratch.db"
+engine = "sqlite"
+group = "acme"
 """
 
 
@@ -722,8 +731,9 @@ def test_sidebar_groups_mixed_engines_under_workspace_group(_pw_browser, tmp_pat
             assert page.locator("[data-engine]").count() == 0
             assert page.locator('.dbrow[data-db="shop"] small').inner_text() == "postgres"
             assert page.locator('.dbrow[data-db="cache"] small').inner_text() == "redis"
+            assert page.locator('.dbrow[data-db="scratch"] small').inner_text() == "sqlite"
             names = [el.get_attribute("data-db") for el in page.locator(".dbrow").all()]
-            assert names.index("shop") < names.index("cache")
+            assert names.index("shop") < names.index("scratch") < names.index("cache")
             assert page.locator("#side .pill").count() == 0
             errors = [e for e in page._console_errors
                       if "Failed to load resource" not in e and "net::ERR_" not in e]
@@ -2319,8 +2329,9 @@ def test_workspace_manager_remove_unbinds_active_connection_immediately(page, tm
     page.locator(f'.wsdel[data-dir="{extra_ws}"]').click()
     page.wait_for_selector(f'.wsrow:has-text("{extra_ws.name}")', state="detached")
 
-    txt = page.locator("#qtitle").inner_text()
-    assert "No connection" in txt or "未选连接" in txt  # unbound immediately, no tab switch needed
+    # The modal list and connection tree refresh independently after removal.
+    # Wait for the actual unbinding; no reload or tab switch may be required.
+    page.wait_for_function("/No connection|未选连接/.test(document.querySelector('#qtitle').innerText)")
 
 
 def test_header_keepalive_badge_and_toggle(page, monkeypatch):
@@ -4088,3 +4099,263 @@ def test_row_record_link_ordinary_string_key_omits_escape_prefix(page_clip, pg_e
                                  'WHERE "package_name" = \'jp.co.yahoo.android.news\';']
     finally:
         pg_exec('DROP TABLE qy_record_link_strings')
+
+
+# SQLite's browser coverage uses real, separate files for each environment and
+# must remain runnable on machines without a Postgres server or Docker.
+def _select_sqlite(page):
+    page.locator('.dbrow[data-db="notes"]').click()
+    page.locator('#tbl-panel [data-t="entries"]').wait_for()
+
+
+def test_sqlite_browse_structure_quoted_tables_and_file_info(page_sqlite, tmp_path):
+    page = page_sqlite
+    _select_sqlite(page)
+    assert page.locator('.dbrow[data-db="notes"] .vg-engine-tag').inner_text() == 'sqlite'
+    assert page.locator('#esw .ep').evaluate_all('(els) => els.map(el => el.dataset.env)') == ['local', 'dev', 'prod']
+    assert page.locator('#tbl-panel [data-t="recent_entries"]').is_visible()
+    _set_sql(page, 'select 999 as keep_my_draft')
+    page.locator('#tbl-panel [data-t="order"]').click()
+    page.locator('#grid td[data-v="dev reserved"]').wait_for()
+    assert page.locator('#sql').input_value() == 'select * from "order"'
+    assert page.evaluate("JSON.parse(localStorage.qy_tabs).some(tab => tab.sql === 'select 999 as keep_my_draft')")
+    page.locator('#tbl-panel [data-t="daily.events"]').click()
+    page.locator('#grid td[data-v="dev dotted"]').wait_for()
+    assert page.locator('#sql').input_value() == 'select * from "daily.events"'
+    page.locator('#tbl-panel [data-t="daily.events"]').dblclick()
+    page.locator('#structbox .cirow').first.wait_for()
+    structure = page.locator('#structbox').inner_text()
+    assert 'INTEGER' in structure and 'TEXT' in structure and 'note' in structure
+    page.keyboard.press('Escape')
+    page.locator('#ciBtn').click()
+    page.locator('#cihealth.ok').wait_for()
+    assert str((tmp_path / 'notes-dev.db').resolve()) in page.locator('#cibody').inner_text()
+    assert page.locator('#ciUp, #ciSync').count() == 0
+    assert 'host' not in page.locator('#cibody .cik').all_inner_texts()
+    page.keyboard.press('Escape')
+    # SQLite must not offer a Docker local environment even without a local sibling.
+    page.locator('.dbrow[data-db="archive"]').click()
+    page.locator('#ciBtn').click()
+    page.locator('#cihealth.ok').wait_for()
+    assert page.locator('#ciUp, #ciSync').count() == 0
+
+
+def test_sqlite_load_more_sort_export_and_tab_restore(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    _select_sqlite(page)
+    page.select_option('#maxRows', '100')
+    _run_sql(page, 'select * from entries order by id')
+    expect(page.locator('#grid tbody tr')).to_have_count(100)
+    page.locator('#grid th[data-i="0"]').click()
+    page.locator('#grid th[data-i="0"]').click()
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(200)
+    assert _col_values(page)[0] == '200'
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(250)
+    assert _col_values(page) == [str(i) for i in range(250, 0, -1)]
+    assert page.locator('#loadMoreBtn').count() == 0
+    first_tab = page.locator('.tab[aria-selected="true"]').get_attribute('data-i')
+    page.locator('#tabAdd').click()
+    _run_sql(page, "select 'another tab' as note")
+    page.locator('#grid td[data-v="another tab"]').wait_for()
+    page.locator(f'.tab[data-i="{first_tab}"]').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(250)
+    with page.expect_download() as download:
+        page.locator('#jsonBtn').click()
+    rows = json.loads(download.value.path().read_text(encoding='utf-8'))
+    assert len(rows) == 250 and rows[0] == {'id': 1, 'note': 'dev note 1'}
+    with page.expect_download() as download:
+        page.locator('#csvBtn').click()
+    csv = download.value.path().read_text(encoding='utf-8-sig')
+    assert 'id,note' in csv and '250,dev note 250' in csv and 'another tab' not in csv
+    page.reload(wait_until='networkidle')
+    expect(page.locator('#grid tbody tr')).to_have_count(250)
+    assert page.locator('#sql').input_value() == 'select * from entries order by id'
+
+
+def test_sqlite_environment_files_and_production_autorun(page_sqlite):
+    page = page_sqlite
+    _select_sqlite(page)
+    _run_sql(page, 'select note from entries where id = 1')
+    page.locator('#grid td[data-v="dev note 1"]').wait_for()
+    page.locator('#esw .ep[data-env="local"]').click()
+    page.locator('#grid td[data-v="local note 1"]').wait_for()
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/query') else None)
+    page.locator('#esw .ep[data-env="prod"]').click()
+    page.locator('#prodBadge').wait_for()
+    _assert_run_mode(page, False)
+    assert not requests
+    assert page.locator('#grid td[data-v="local note 1"]').count() == 0
+    _choose_run_mode(page, True)
+    assert not requests
+    page.locator('#runBtn').click()
+    page.locator('#grid td[data-v="prod note 1"]').wait_for()
+    assert requests[-1]['env'] == 'prod'
+    page.locator('#esw .ep[data-env="dev"]').click()
+    page.locator('#grid td[data-v="dev note 1"]').wait_for()
+    with page.expect_download() as download:
+        page.locator('#jsonBtn').click()
+    assert json.loads(download.value.path().read_text()) == [{'note': 'dev note 1'}]
+
+
+def test_sqlite_explain_query_plan_and_gui_readonly(page_sqlite):
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/query') else None)
+    _set_sql(page, 'select * from entries where id = 1')
+    page.locator('#expBtn').click()
+    page.wait_for_function("document.querySelector('#grid table')?.innerText.includes('detail')")
+    assert requests[-1]['sql'] == 'EXPLAIN QUERY PLAN select * from entries where id = 1'
+    assert 'SEARCH entries' in page.locator('#grid').inner_text()
+    assert page.locator('#loadMoreBtn').count() == 0
+    _set_sql(page, 'EXPLAIN QUERY PLAN select * from entries')
+    page.locator('#expBtn').click()
+    page.wait_for_function("document.querySelector('#grid table')?.innerText.includes('SCAN entries')")
+    assert requests[-1]['sql'] == 'EXPLAIN QUERY PLAN select * from entries'
+    _run_sql(page, 'delete from entries')
+    page.locator('#grid .err').wait_for()
+    assert 'read-only' in page.locator('#grid .err').inner_text().lower()
+    _run_sql(page, 'select count(*) as n from entries')
+    page.locator('#grid td[data-v="250"]').wait_for()
+
+
+def test_sqlite_latest_response_stays_on_origin_tab(page_sqlite):
+    page = page_sqlite
+    _select_sqlite(page)
+    delayed = []
+    page.route('**/api/query', lambda route: delayed.append(route)
+               if 'slow_result' in route.request.post_data_json['sql'] else route.continue_())
+    _set_sql(page, 'select 1 as slow_result')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid .spin') !== null")
+    _set_sql(page, 'select 2 as newest_result')
+    page.locator('#sql').press('ControlOrMeta+Enter')
+    page.locator('#grid td[data-v="2"]').wait_for()
+    assert delayed
+    delayed.pop().continue_()
+    page.wait_for_timeout(150)
+    assert page.locator('#grid td[data-v="1"]').count() == 0
+    assert page.locator('#grid td[data-v="2"]').count() == 1
+    _set_sql(page, 'select 1 as slow_result')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid .spin') !== null")
+    page.locator('#tabAdd').click()
+    _run_sql(page, 'select 3 as another_tab')
+    page.locator('#grid td[data-v="3"]').wait_for()
+    delayed.pop().continue_()
+    page.wait_for_function("JSON.parse(localStorage.qy_tabres).some(s => s?.res?.rows[0]?.slow_result === 1)")
+    assert page.locator('#grid td[data-v="1"]').count() == 0
+    page.locator('.tab[data-i="0"]').click()
+    page.locator('#grid td[data-v="1"]').wait_for()
+
+
+def test_sqlite_record_link_uses_producing_sql_and_selects_one_row(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    page.context.grant_permissions(['clipboard-read', 'clipboard-write'])
+    _select_sqlite(page)
+    page.locator('#tbl-panel [data-t="entries"]').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(250)
+    # The result retains the executed, automatically capped SELECT, even when
+    # the editor now contains an unrelated draft.
+    draft = 'select 999 as later_editor_draft'
+    _set_sql(page, draft)
+    record_requests, queries = [], []
+    page.on('request', lambda req: record_requests.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/record-link') else None)
+    page.on('request', lambda req: queries.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/query') else None)
+    page.locator('#grid tbody tr').nth(1).locator('td').first.click()
+    expect(page.locator('#recordLinkBtn')).to_be_enabled()
+    assert record_requests[-1]['row'] == {'id': 2, 'note': 'dev note 2'}
+    assert 'from "entries"' in record_requests[-1]['sql'].lower()
+    assert 'limit ' in record_requests[-1]['sql'].lower()
+    assert draft not in record_requests[-1]['sql']
+    page.locator('#recordLinkBtn').click()
+    page.wait_for_function("navigator.clipboard.readText().then(s => s.includes('sql='))")
+    params = parse_qs(urlparse(page.evaluate('navigator.clipboard.readText()')).query)
+    assert params['db'] == ['notes'] and params['env'] == ['dev']
+    assert params['table'] == ['entries']
+    assert not queries
+    assert page.locator('#sql').input_value() == draft
+    response = page.request.post(page.url.split('/app')[0] + '/api/query', data={
+        'db': params['db'][0], 'env': params['env'][0], 'sql': params['sql'][0],
+    })
+    assert response.ok
+    assert response.json()['rows'] == [{'id': 2, 'note': 'dev note 2'}]
+
+
+def test_sqlite_pragma_load_more_does_not_repeat_first_page(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    _select_sqlite(page)
+    page.select_option('#maxRows', '100')
+    _run_sql(page, 'PRAGMA table_info(wide_columns)')
+    expect(page.locator('#grid tbody tr')).to_have_count(100)
+    assert _col_values(page) == [str(i) for i in range(100)]
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(125)
+    assert _col_values(page) == [str(i) for i in range(125)]
+    assert page.locator('#loadMoreBtn').count() == 0
+
+
+def test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results(page_sqlite_workspaces, tmp_path):
+    from playwright.sync_api import expect
+
+    page = page_sqlite_workspaces
+    expect(page.locator('#ws')).to_contain_text('2 workspaces')
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/query') else None)
+    for owner in ('brain', 'yiminlab'):
+        page.locator(f'.dbrow[data-db="{owner}_notes"]').click()
+        page.locator('#tbl-panel [data-t="records"]').wait_for()
+        assert page.locator('#sql').input_value() == ''
+        assert page.locator('#grid tbody tr').count() == 0
+        page.locator('#tbl-panel [data-t="records"]').click()
+        page.locator(f'#grid td[data-v="{owner} own data"]').wait_for()
+        expect(page.locator('#grid tbody tr')).to_have_count(1)
+        page.locator('#ciBtn').click()
+        page.locator('#cihealth.ok').wait_for()
+        details = page.locator('#cibody').inner_text()
+        assert str((tmp_path / owner / 'data' / 'local.db').resolve()) in details
+        assert str((tmp_path / owner / 'connections.toml').resolve()) in details
+        assert 'sqlite:///data/local.db' in details
+        page.keyboard.press('Escape')
+        if owner == 'brain':
+            _set_sql(page, "select 'brain draft' as scratch")
+    assert [(r['db'], r['env']) for r in requests] == [('brain_notes', 'local'), ('yiminlab_notes', 'local')]
+    requests.clear()
+    page.locator('.dbrow[data-db="brain_notes"]').click()
+    page.locator('#grid td[data-v="brain own data"]').wait_for()
+    assert page.locator('#sql').input_value() == "select 'brain draft' as scratch"
+    with page.expect_download() as download:
+        page.locator('#jsonBtn').click()
+    assert download.value.suggested_filename == 'quarry-brain_notes.json'
+    assert json.loads(download.value.path().read_text()) == [dict(id=1, owner='brain', note='brain own data')]
+    page.reload(wait_until='networkidle')
+    page.locator('#grid td[data-v="brain own data"]').wait_for()
+    assert page.locator('#sql').input_value() == "select 'brain draft' as scratch"
+    page.locator('.dbrow[data-db="yiminlab_notes"]').click()
+    page.locator('#grid td[data-v="yiminlab own data"]').wait_for()
+    assert page.locator('#sql').input_value() == 'select * from "records"'
+    assert page.locator('#grid td[data-v="brain own data"]').count() == 0
+    with page.expect_download() as download:
+        page.locator('#csvBtn').click()
+    assert download.value.suggested_filename == 'quarry-yiminlab_notes.csv'
+    csv = download.value.path().read_text(encoding='utf-8-sig')
+    assert 'yiminlab own data' in csv and 'brain' not in csv
+    assert not requests  # Switching and reloading restored results, never executed drafts.
+    tabs = page.evaluate('JSON.parse(localStorage.qy_tabs)')
+    for owner in ('brain', 'yiminlab'):
+        own_tabs = [tab for tab in tabs if tab['db'] == f'{owner}_notes']
+        assert own_tabs and all(tab['workspace'] == str((tmp_path / owner).resolve()) for tab in own_tabs)

@@ -12,6 +12,44 @@ import pytest
 from conftest import requires_db
 
 
+def test_sqlite_connection_info_has_resolved_file_and_no_server(sqlite_gui_server, tmp_path):
+    client = sqlite_gui_server
+    code, info = client.get('/api/conninfo?db=notes&env=dev')
+    assert code == 200 and info['engine'] == 'sqlite'
+    assert info['databasePath'] == str((tmp_path / 'notes-dev.db').resolve())
+    assert info['database'] == 'notes-dev.db'
+    assert info['host'] is None and info['port'] is None and info['tunnel'] is None
+    code, health = client.get('/api/health?db=notes&env=dev&fresh=1')
+    assert code == 200 and health['ok']
+    code, response = client.post('/api/local/up', {'db': 'notes'})
+    assert code == 400 and 'no local-container support' in response['error']
+
+
+def test_sqlite_api_metadata_and_pagination(sqlite_gui_server):
+    client = sqlite_gui_server
+    code, tables = client.get('/api/tables?db=notes&env=dev')
+    assert code == 200 and tables['engine'] == 'sqlite'
+    assert {'entries', 'recent_entries', 'daily.events', 'order'} <= set(tables['tables'])
+    code, columns = client.get('/api/columns?db=notes&env=dev&table=daily.events')
+    assert code == 200 and columns['columns'] == ['id', 'note']
+    assert columns['types'] == {'id': 'INTEGER', 'note': 'TEXT'}
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'select * from entries order by id',
+                                          'maxRows': 100, 'offset': 200})
+    assert code == 200 and data['rowCount'] == 50 and not data['truncated']
+    assert data['rows'][0] == {'id': 201, 'note': 'local note 201'}
+
+
+def test_sqlite_gui_api_cannot_enable_writes(sqlite_gui_server):
+    client = sqlite_gui_server
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'delete from entries', 'write': True})
+    assert code == 400 and 'read-only' in data['error'].lower()
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'select count(*) as n from entries'})
+    assert code == 200 and data['rows'] == [{'n': 250}]
+
+
 # ---------------------------------------------------------------------------
 # unit — backend helpers
 # ---------------------------------------------------------------------------

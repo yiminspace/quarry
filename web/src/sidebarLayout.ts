@@ -5,7 +5,7 @@ export function groupKey(ws: string | null, group: string | null): string {
   return `${ws || ""}::${group || t("other")}`;
 }
 
-export const ENGINE_ORDER = ["postgres", "mysql", "redis", "neptune"] as const;
+export const ENGINE_ORDER = ["postgres", "mysql", "sqlite", "redis", "neptune"] as const;
 
 /** Same-group connections, SQL family first; registration order inside each engine. */
 export function itemsInEngineOrder(items: ConnItem[]): ConnItem[] {

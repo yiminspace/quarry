@@ -101,6 +101,7 @@ export type ConnInfo = {
   host: string | null;
   port: number | null;
   database: string | null;
+  databasePath?: string | null;
   group: string | null;
   region: string | null;
   notes: string | null;

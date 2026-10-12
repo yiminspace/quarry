@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -122,7 +123,7 @@ _BROWSER_FIXTURES = {"page", "gui_url", "_pw_browser"}
 # true e2e = a real external process (qy / mcp subprocess) or browser.
 _E2E_FIXTURES = {"qy", "mcp", "mcp_ws", "client"}
 # integration = in-process against a real DB, incl. the in-thread GUI HTTP server.
-_INTEGRATION_FIXTURES = {"ws", "pg_exec", "gui_server"}
+_INTEGRATION_FIXTURES = {"ws", "pg_exec", "gui_server", "sqlite_gui_server"}
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -187,6 +188,38 @@ def _isolated_tunnel_registry(tmp_path: Path, monkeypatch):
     tunnel._OWNED_REGISTRY_KEYS.clear()
     yield
     tunnel._OWNED_REGISTRY_KEYS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gui_watcher(request, monkeypatch):
+    """A live-SSE browser test must not leave a watcher using the next test's WS.
+
+    Production owns one process-lifetime watcher; browser tests reuse that
+    process with different workspaces. Keep the real watcher tick, but bound
+    its thread lifetime to the test that starts it.
+    """
+    if not request.node.get_closest_marker("browser"):
+        yield
+        return
+
+    from quarry import gui
+
+    stopped = threading.Event()
+    workers = []
+
+    def watch_loop():
+        workers.append(threading.current_thread())
+        fingerprint = gui._ws_fingerprint()
+        while not stopped.wait(gui.WATCH_INTERVAL_SEC):
+            fingerprint = gui._watch_tick(fingerprint)
+
+    monkeypatch.setattr(gui, "_watch_loop", watch_loop)
+    monkeypatch.setattr(gui, "_WATCHER_STARTED", False)
+    yield
+    stopped.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "GUI workspace watcher outlived its browser test"
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +331,12 @@ class GuiClient:
         return self._req("POST", path, body, headers)
 
 
-from contextlib import contextmanager  # noqa: E402
+from contextlib import closing, contextmanager  # noqa: E402
 
 
 @contextmanager
-def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None):
+def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None,
+                 connections_toml: str | None = None):
     """Start the real GUI HTTP server on an ephemeral port against a temp workspace.
     Yields the base URL. The shared cache (cache.py) is already isolated per-test
     by the autouse _isolated_cache fixture.
@@ -310,11 +344,15 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
     seed_queries: optional {name: sql_text} written into queries/ before serving.
     extra_conn:   optional TOML appended to connections.toml (extra connections,
                   e.g. an env-set or a redis target for browser tests).
+    connections_toml: replace the default Postgres workspace for standalone
+                      engine fixtures that must run without Postgres.
     """
     from http.server import ThreadingHTTPServer
 
     from quarry import gui
     _write_ws(tmp_path)
+    if connections_toml is not None:
+        (tmp_path / "connections.toml").write_text(connections_toml, encoding="utf-8")
     if extra_conn:
         with (tmp_path / "connections.toml").open("a", encoding="utf-8") as f:
             f.write(extra_conn)
@@ -352,6 +390,40 @@ def gui_url(tmp_path: Path):
         yield base
 
 
+@pytest.fixture()
+def sqlite_gui_url(tmp_path: Path):
+    """Real SQLite files and GUI; no Postgres, Docker, or external database."""
+    configs = []
+    for env in ("dev", "local", "prod"):
+        path = tmp_path / f"notes-{env}.db"
+        with closing(sqlite3.connect(path)) as db, db:
+            db.executescript('''
+                CREATE TABLE entries (id INTEGER PRIMARY KEY, note TEXT NOT NULL);
+                CREATE VIEW recent_entries AS SELECT * FROM entries WHERE id > 248;
+                CREATE TABLE "order" (id INTEGER PRIMARY KEY, note TEXT);
+                CREATE TABLE "daily.events" (id INTEGER PRIMARY KEY, note TEXT);
+            ''')
+            db.executemany("INSERT INTO entries VALUES (?, ?)",
+                           [(i, f"{env} note {i}") for i in range(1, 251)])
+            db.execute('INSERT INTO "order" VALUES (1, ?)', (f"{env} reserved",))
+            db.execute('INSERT INTO "daily.events" VALUES (1, ?)', (f"{env} dotted",))
+            db.execute('CREATE TABLE wide_columns (' + ', '.join(
+                f'field_{i} INTEGER' for i in range(125)) + ')')
+        configs.append(
+            f'[notes_{env}]\nurl = "sqlite:///notes-{env}.db"\nengine = "sqlite"\n'
+            f'env = "{env}"\ndb = "notes"\ngroup = "files"\n'
+            f'production = {str(env == "prod").lower()}\n')
+    configs.append('[archive]\nurl = "sqlite:///notes-dev.db"\nengine = "sqlite"\n'
+                   'env = "dev"\ngroup = "files"\n')
+    with _running_gui(tmp_path, connections_toml="\n".join(configs)) as base:
+        yield base
+
+
+@pytest.fixture()
+def sqlite_gui_server(sqlite_gui_url):
+    yield GuiClient(sqlite_gui_url)
+
+
 # ---------------------------------------------------------------------------
 # Playwright browser fixtures (used by the `browser`-marked GUI frontend suite)
 # ---------------------------------------------------------------------------
@@ -369,6 +441,7 @@ def _playwright_ready() -> bool:
 
 
 BROWSER_OK = _playwright_ready()
+requires_chromium = pytest.mark.skipif(not BROWSER_OK, reason="playwright+chromium unavailable")
 requires_browser = pytest.mark.skipif(
     not (BROWSER_OK and DB_OK), reason="playwright+chromium or test DB unavailable")
 
@@ -417,6 +490,55 @@ def page(_pw_browser, gui_url):
         yield pg
     finally:
         ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite(_pw_browser, sqlite_gui_url):
+    """Browser against only SQLite connections; independent of DB_OK."""
+    ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+    stub_cdn(ctx)
+    stub_events(ctx)
+    pg = ctx.new_page()
+    pg._console_errors = []
+    pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+    pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+    pg.goto(sqlite_gui_url, wait_until="networkidle")
+    try:
+        yield pg
+    finally:
+        ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite_workspaces(_pw_browser, tmp_path: Path, monkeypatch):
+    """Two real workspaces use the same relative SQLite URL independently."""
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "isolated-config.toml"))
+    homes = []
+    for name in ("brain", "yiminlab"):
+        home = tmp_path / name
+        (home / "data").mkdir(parents=True)
+        (home / "queries").mkdir()
+        with closing(sqlite3.connect(home / "data" / "local.db")) as db, db:
+            db.execute('CREATE TABLE records (id INTEGER PRIMARY KEY, owner TEXT, note TEXT)')
+            db.execute('INSERT INTO records VALUES (1, ?, ?)', (name, f'{name} own data'))
+        (home / "connections.toml").write_text(
+            f'[{name}_local]\nurl = "sqlite:///data/local.db"\nengine = "sqlite"\n'
+            f'db = "{name}_notes"\nenv = "local"\ngroup = "{name}"\n', encoding="utf-8")
+        homes.append(str(home))
+    with _running_gui(tmp_path, connections_toml="") as url:
+        workspace.configure_workspace(os.pathsep.join(homes))
+        ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+        stub_cdn(ctx)
+        stub_events(ctx)
+        pg = ctx.new_page()
+        pg._console_errors = []
+        pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+        pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+        pg.goto(url, wait_until="networkidle")
+        try:
+            yield pg
+        finally:
+            ctx.close()
 
 
 # ---------------------------------------------------------------------------
