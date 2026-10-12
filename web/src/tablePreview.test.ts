@@ -14,6 +14,12 @@ describe("previewSql", () => {
     expect(previewSql("QyCamelZz", "postgres")).toBe('select * from "QyCamelZz"');
     expect(quoteIdent("Order", "mysql")).toBe("`Order`");
   });
+
+  it("quotes SQLite names including keywords, dots and embedded quotes as one identifier", () => {
+    expect(previewSql("order", "sqlite")).toBe('select * from "order"');
+    expect(previewSql("daily.events", "sqlite")).toBe('select * from "daily.events"');
+    expect(previewSql('a"b', "sqlite")).toBe('select * from "a""b"');
+  });
 });
 
 describe("tableClickPlan", () => {

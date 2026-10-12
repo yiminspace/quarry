@@ -56,9 +56,10 @@ def tool_list_tables(db: str, env: str | None = None) -> dict:
     the GUI's."""
     conn = core.resolve_connection(db, env)
     res = core.cached_tables(conn, db, env, default_timeout=core.MCP_EXECUTE_TIMEOUT_SEC)
+    notice = {"capped": True} if res.get("capped") else {}
     if res["engine"] == "redis":
-        return {"engine": "redis", "keys": [k.get("key") for k in res.get("keys", [])]}
-    return {"engine": res["engine"], "tables": res.get("tables", [])}
+        return {"engine": "redis", "keys": [k.get("key") for k in res.get("keys", [])], **notice}
+    return {"engine": res["engine"], "tables": res.get("tables", []), **notice}
 
 
 def tool_describe_table(db: str, table: str, env: str | None = None) -> dict:
@@ -69,7 +70,9 @@ def tool_describe_table(db: str, table: str, env: str | None = None) -> dict:
     engine = core.connection_engine(conn)
     if engine in ("redis", "neptune"):
         raise QuarryError(f"describe_table is not supported for engine={engine}")
-    safe = "".join(ch for ch in table if ch.isalnum() or ch in "_$")
+    # SQLite identifiers may contain spaces, punctuation, or dots. Its metadata
+    # lookup binds the name as a value, so preserve the exact identifier.
+    safe = table if engine == "sqlite" else "".join(ch for ch in table if ch.isalnum() or ch in "_$")
     if not safe:
         raise QuarryError("invalid table name")
     res = core.cached_columns(conn, db, env, safe, raise_errors=True,

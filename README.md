@@ -25,13 +25,13 @@ Quarry inverts the traditional design: it is a **query kernel with an agent-safe
 
 1. **One core, many faces.** Connection management, query execution, schema introspection, and safety rails live in an importable kernel (`quarry.core`). The CLI (`qy`), the GUI, the MCP server, and agent skills are thin shells. Fix a bug once, every face gets it.
 
-2. **Read-only by default; escalation is explicit and graduated.** CLI writes require `--write`; prod additionally needs confirmation or `--yes`. MCP requires server and per-call authorization, plus `confirm_prod` for prod. GUI queries are read-only; Python callers obtain authorization before passing `allow_write=True`. Read queries without an outer LIMIT default to a 500-row cap; `--max-rows 0` explicitly disables it. PostgreSQL/MySQL query execution also uses database read-only transactions unless writes are authorized.
+2. **Read-only by default; escalation is explicit and graduated.** CLI writes require `--write`; prod additionally needs confirmation or `--yes`. MCP requires server and per-call authorization, plus `confirm_prod` for prod. GUI queries are read-only; Python callers obtain authorization before passing `allow_write=True`. Read queries without an outer LIMIT default to a 500-row cap; `--max-rows 0` explicitly disables it. PostgreSQL/MySQL query execution also uses database read-only transactions unless writes are authorized; SQLite opens existing files in read-only mode.
 
 3. **A contract machines can trust.** GUI/MCP/Python queries return `{columns, rows, rowCount, truncated, elapsedMs, engine, sql, downloadBytes, sizeIsEstimated}`. CLI JSON remains an array of rows; diagnostics and truncation notices go to stderr. Exit codes are stable API: `0` ok, `2` connection error, `3` SQL error, `8` safety block. CLI argument syntax errors also use `2`; other commands have their own codes (for example `ping` returns `1` on failure). GUI/MCP/Python report structured errors.
 
 4. **Workspace as code.** A workspace is just a directory: `connections.toml` + `queries/**/*.sql` (named queries with `-- @meta` headers). Share query files and credential-free templates through *your* repo; keep actual connection credentials local.
 
-5. **Nearly zero dependencies.** The base package and GUI use Python 3.11+ stdlib. PostgreSQL uses system `psql`, Redis needs `redis-cli` 6+, SSH uses system `ssh`, and MySQL uses the optional `quarry-db[mysql]` dependencies. No Electron or cloud service; the optional `qy up` keeper runs in the background.
+5. **Nearly zero dependencies.** The base package and GUI use Python 3.11+ stdlib, including `sqlite3` for SQLite. PostgreSQL uses system `psql`, Redis needs `redis-cli` 6+, SSH uses system `ssh`, and MySQL uses the optional `quarry-db[mysql]` dependencies. No Electron or cloud service; the optional `qy up` keeper runs in the background.
 
 ## Install
 
@@ -40,7 +40,7 @@ pipx install quarry-db        # or: pip install quarry-db
 qy --help
 ```
 
-PostgreSQL uses the system `psql` binary; MySQL needs `pip install "quarry-db[mysql]"`.
+SQLite uses Python's built-in `sqlite3`, with no server, Docker container or `sqlite3` CLI required. PostgreSQL uses the system `psql` binary; MySQL needs `pip install "quarry-db[mysql]"`.
 
 ## Quickstart
 
@@ -58,6 +58,51 @@ qy exec shop --sql "select * from customers"
 qy schema shop customers             # table structure (\d+)
 qy gui                               # browser data grid
 ```
+
+### SQLite files
+
+Point a connection at an **existing** SQLite file on the machine running `qy`:
+
+```toml
+[notes_local]
+engine = "sqlite"
+url = "sqlite:///data/notes-local.db"
+db = "notes"
+env = "local"
+
+[notes_prod]
+engine = "sqlite"
+url = "sqlite:////srv/notes/notes.db"
+db = "notes"
+env = "prod"
+production = true
+```
+
+`sqlite:///data/notes-local.db` resolves relative to the workspace containing
+that connection; `sqlite:////srv/notes/notes.db` is an absolute path. Plain file
+paths are also accepted when `engine = "sqlite"` is explicit. A missing file is
+an error, including for authorized writes: Quarry never creates an empty
+database because a connection path was mistyped.
+
+```bash
+qy connections test notes --env local
+qy exec notes --env local --sql "SELECT * FROM notes ORDER BY id"
+qy schema notes notes --env local
+qy gui
+```
+
+The CLI, GUI, MCP and Python API share table/view browsing, schema inspection,
+parameters, query limits and exports. The GUI supports paging and SQLite's
+`EXPLAIN QUERY PLAN`. Queries default to read-only; writes use the same explicit
+authorization as other SQL engines, and the GUI stays read-only.
+
+`local`, `dev` and `prod` are labels; separate files provide data isolation.
+Two environments pointing at one file access the same data. Set
+`production = true` explicitly for production protection and Manual mode by
+default. SQLite does not use `qy local up`, Docker or SSH tunnels; remote files,
+`:memory:` databases, SQLite URI options and attached databases are outside
+this first implementation. If your application uses PostgreSQL in production,
+keep PostgreSQL locally too for matching SQL and data types.
 
 ## Workspace
 
@@ -251,13 +296,14 @@ url = "postgresql://user:password@prod.example.com:5432/shop"
 group = "shop"
 db = "shop"
 env = "prod"
+production = true
 ```
 
 - Connections with the same `db` fold into one env-set — one saved query runs against any environment: `qy run recent_orders --env prod`
 - `qy connections add/set` accepts `--db` and `--group`; when a new key such as `shop_prod --env prod` matches an existing env-set, Quarry inherits that identity automatically
 - If one env member omits `group` but every grouped sibling agrees, CLI/GUI/MCP keep the logical DB together in that group instead of creating a duplicate under `OTHER`
 - Unspecified env defaults to `dev` (the safest)
-- The GUI shows an environment switcher (prod turns red)
+- The GUI shows an environment switcher; production styling follows `production = true`
 
 ## Multiple workspaces
 
@@ -394,7 +440,7 @@ docker volume. Requires a docker daemon; the image tag is overridable with
 
 `qy gui` — a local, zero-build web GUI (Slate & Copper theme, light/dark):
 
-- Grouped sidebar tree with env switcher (prod turns red), connection health dots
+- Grouped sidebar tree with env switcher, explicit production styling, connection health dots
 - **Multi-tab editor** — SQL and connection drafts persist when browser storage is available; result snapshots are bounded and large results remain in-session
 - SQL highlighting + local autocomplete (keywords / tables / columns)
 - **EXPLAIN button** — one click to the query plan
@@ -415,7 +461,7 @@ Neptune/openCypher is **experimental**, outside the stable database support comm
 ## Roadmap
 
 - Column types in the result contract for all engines
-- SQLite & DuckDB engines (zero-setup local demo)
+- DuckDB engine
 - Cross-environment schema/data diff
 - Write audit log (who ran what, where, when)
 - Single-binary distribution

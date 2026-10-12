@@ -30,16 +30,17 @@ function query(name: string, db: string): SavedQuery {
 }
 
 describe("itemsInEngineOrder", () => {
-  it("keeps registration order inside each engine and orders engines postgres→mysql→redis→neptune", () => {
+  it("keeps registration order inside each engine and orders engines postgres→mysql→sqlite→redis→neptune", () => {
     expect(
       itemsInEngineOrder([
         item("brain_redis", "redis"),
+        item("local_file", "sqlite"),
         item("planning", "postgres"),
         item("userly", "mysql"),
         item("matrix_runtime", "postgres"),
         item("graph", "neptune"),
       ]).map((i) => i.db),
-    ).toEqual(["planning", "matrix_runtime", "userly", "brain_redis", "graph"]);
+    ).toEqual(["planning", "matrix_runtime", "userly", "local_file", "brain_redis", "graph"]);
   });
 
   it("passes through a single-engine group without reordering", () => {

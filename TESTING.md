@@ -9,9 +9,9 @@ rather than fail; CI provides the engines and runs everything).
 | Marker        | What it covers                                              | Needs |
 |---------------|-------------------------------------------------------------|-------|
 | `unit`        | pure logic + mocked externals (safety rails, SQL skeleton, param substitution, redis guard, formatters, URL parsing, cache, port logic) | nothing |
-| `integration` | in-process against a real database, incl. the in-thread GUI HTTP server and in-process CLI/MCP dispatch | Postgres |
-| `e2e`         | a real external process: the `qy` CLI and `qy mcp` stdio server as subprocesses | Postgres |
-| `browser`     | the real GUI frontend driven in headless Chromium (Playwright) | Postgres + Playwright |
+| `integration` | in-process against a real database, incl. the in-thread GUI HTTP server and in-process CLI/MCP dispatch | Postgres or stdlib SQLite |
+| `e2e`         | a real external process: the `qy` CLI and `qy mcp` stdio server as subprocesses | Postgres or stdlib SQLite |
+| `browser`     | the real GUI frontend driven in headless Chromium (Playwright) | Playwright; Postgres for PostgreSQL fixtures, no service for SQLite fixtures |
 
 `browser` is a sub-kind of `e2e` (a test can carry both markers). Every test is
 auto-assigned a layer from the fixtures it uses, so `pytest -m unit` etc. always
@@ -187,7 +187,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 37 | toolbar | overlapping runs are latest-wins (stale response discarded) | F:test_stale_slow_response_does_not_overwrite | ✅ |
 | 38 | toolbar | Format (uppercase + newlines) | B:test_format_button_uppercases_and_newlines | ✅ |
 | 39 | toolbar | EXPLAIN: single-column plan modal + Esc closes | B:test_explain_opens_plan_modal_and_escape_closes | ✅ |
-| 40 | toolbar | EXPLAIN guards: no-conn toast / redis toast / multi-col grid / disabled while running | F:test_explain_without_connection_toasts, F:test_redis_key_tree… (multi-col + disabled unasserted) | 🟡 |
+| 40 | toolbar | EXPLAIN guards: no-conn toast / redis toast / multi-col grid / disabled while running | F:test_explain_without_connection_toasts, F:test_redis_key_tree…, F:test_sqlite_explain_query_plan_and_gui_readonly (SQLite multi-column plan covered; disabled state unasserted) | 🟡 |
 | 41 | toolbar | CSV export: `quarry-<db>.csv`, UTF-8 BOM, quoting/escaping | F:test_csv_export_content_bom_and_escaping, F:test_lossless_numeric_sort_and_export, F:test_empty_columns_and_duplicate_names_export | ✅ |
 | 42 | toolbar | JSON export: `quarry-<db>.json`, row content | F:test_json_export_content, F:test_lossless_numeric_sort_and_export | ✅ |
 | 43 | toolbar | history modal: list + recall into editor; Esc closes | B:test_history_lists_runs…, F:test_history_modal_escape_closes | ✅ |
@@ -211,7 +211,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 61 | global | full state restore after reload (conn + sql + result + widths + collapse) | F:test_editor_and_result_restored…, F:test_group_collapse…, F:test_sidebar_width…, F:test_editor_height… | ✅ |
 | 62 | global | zero console errors as an invariant | F autouse `_console_clean`; B:test_no_console_errors_after_normal_flow | 🟡 |
 | 63 | sidebar | redis key list cap notice ("showing first N keys") | F:test_redis_capped_key_list_shows_notice | ✅ |
-| 64 | sidebar | generated table SQL quotes mixed-case/reserved identifiers | F:test_mixed_case_table_click_is_quoted | ✅ |
+| 64 | sidebar | generated table SQL quotes mixed-case/reserved identifiers; SQLite always quotes each full table name, including literal dots | F:test_mixed_case_table_click_is_quoted, F:test_sqlite_browse_structure_quoted_tables_and_file_info, tablePreview.test.ts | ✅ |
 | 65 | toolbar | max-rows selector: localized row-count labels, a decorative inset chevron with clear text separation, native keyboard operation, and 100/500/2000/5000 result caps persisted across reloads | F:test_max_rows_selector_caps_and_persists, F:test_row_limit_selector_has_readable_label_and_keyboard_control, V:test_row_limit_selector_geometry | ✅ |
 | 66 | header / controls | native hover hints for header, tabs, toolbar, sidebar folds and modal actions; Voyage hints follow locale and mode | F:test_icon_hover_hints_cover_header_workbench_and_modals (en/zh, mode and reveal state), F:test_cell_json_opens_tree_modal, F:test_redis_key_tree_badges_filter_and_inspect; overflow arrows audited in source only | 🟡 |
 | 67 | tabs | per-tab result isolation: grid / status / export always reflect the active tab | F:test_tab_switch_isolates_results | ✅ |
@@ -228,13 +228,13 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 78 | toolbar | EXPLAIN single-column modal is suppressed if its tab was switched / re-pointed while the plan was in flight | implemented (`#expBtn` handler audits TABREQ/tab/connection); browser test tracked in #18 | 🟡 |
 | 79 | tabs | a saved query runs on its OWN connection; launched from another connection, it opens/selects the producing group and preserves the original group's draft; its result is tagged/persisted under the producing connection — for a concrete `@db`; consistency when `@db` is a logical env-set is tracked in #18 | F:test_saved_query_result_persisted_under_producing_connection | ✅ |
 | 80 | header | connection-info button (`#ciBtn`): visible only when a connection is selected; opens the resolved-config modal | F:test_conn_info_modal_shows_resolved_config_and_health | ✅ |
-| 81 | header | connection-info modal (`/api/conninfo`): resolved key/engine/env/host/port/database/source file; URL password always masked; live reachability probe with the raw error on failure | F:test_conn_info_modal_shows_resolved_config_and_health (ok path; error text asserted at API level in test_gui_api.py) | ✅ |
+| 81 | header | connection-info modal (`/api/conninfo`): resolved key/engine/env/host/port/database/source file; SQLite shows its absolute database-file path and no server host/port; URL password always masked; live reachability probe with the raw error on failure | F:test_conn_info_modal_shows_resolved_config_and_health, F:test_sqlite_browse_structure_quoted_tables_and_file_info (ok path; error text asserted at API level in test_gui_api.py) | ✅ |
 | 82 | header | conn-info url row: eye toggles masked↔revealed (`?reveal=1`); copy puts the real URL on the clipboard | F:test_conn_info_url_eye_toggles_and_copy_copies_real_url | ✅ |
 | 83 | header | conn-info action: "Create local env" (`POST /api/local/up`) offered only when the env-set has no local member (postgres/redis); uses the persisted local engine port; writes a new local beside the source connection, reuses it within the same project scope, and namespaces the physical Postgres DB by group/workspace; a fresh postgres env auto-runs the first schema sync, and a sync failure is reported without undoing the up | F:test_conn_info_offers_create_local_when_set_has_none (visibility), A:test_api_local_up_orchestration, A:test_api_local_up_routes_registration_to_source_workspace, A:test_api_local_up_reports_sync_failure_without_undoing_up; container path covered by test_local_docker.py on the underlying functions | 🟡 |
 | 84 | header | conn-info action: "Sync schema from {env}" (`POST /api/local/sync`) offered only ON the local env (postgres); confirm-gated; refuses non-local targets with the CLI's exit-code-9 invariant | F:test_conn_info_offers_sync_on_local_env (visibility), A:test_local_sync_endpoint_refuses_non_local; swap behavior covered by test_local_sync_docker.py | 🟡 |
-| 85 | grid | real pagination: a truncated result offers "load more" (same SQL, growing `OFFSET`), appending rows until the tail page isn't truncated; only offered for postgres/mysql results produced by Run (not saved-query params, not redis/neptune, which can't page this way) | F:test_load_more_paginates_truncated_result, A:test_query_offset_pages_through_results | ✅ |
+| 85 | grid | real pagination: a truncated result offers "load more" (same SQL, growing `OFFSET`), appending rows until the tail page isn't truncated; only offered for postgres/mysql/sqlite results produced by Run (not saved-query params, not redis/neptune, which can't page this way) | F:test_load_more_paginates_truncated_result, F:test_sqlite_load_more_sort_export_and_tab_restore, A:test_query_offset_pages_through_results, A:test_sqlite_api_metadata_and_pagination | ✅ |
 | 86 | grid | "load more" on an already-sorted grid re-sorts the combined rows (not just the new page) so the active sort + its arrow stay correct across pages | F:test_load_more_keeps_active_sort_applied | ✅ |
-| 87 | header | workspace manager (`#wsBtn`): list config.toml-registered workspaces (flags missing dir / no connections.toml), add a new one, remove one (confirm-gated); takes effect immediately without dropping an explicit `--workspace` session; removing the workspace behind the currently active connection unbinds it right away (no tab switch needed) | F:test_workspace_manager_add_and_remove, F:test_workspace_manager_remove_unbinds_active_connection_immediately, A:test_api_workspace_add_and_remove_round_trip, A:test_api_workspace_add_and_remove_keep_explicit_workspace_session, A:test_workspaces_endpoints_through_http | ✅ |
+| 87 | header | workspace manager (`#wsBtn`): list config.toml-registered workspaces (flags missing dir / no connections.toml), add a new one, remove one (confirm-gated); takes effect without dropping an explicit `--workspace` session; removing the workspace behind the currently active connection unbinds it after the connection tree refresh (no reload or tab switch needed) | F:test_workspace_manager_add_and_remove, F:test_workspace_manager_remove_unbinds_active_connection_immediately, A:test_api_workspace_add_and_remove_round_trip, A:test_api_workspace_add_and_remove_keep_explicit_workspace_session, A:test_workspaces_endpoints_through_http | ✅ |
 | 88 | tabs | double-click a tab renames it (Enter/blur commits, Escape reverts); an empty name reverts to the automatic db@env / SQL title; the custom title persists across reloads | F:test_tab_rename_persists_and_empty_reverts | ✅ |
 | 89 | tabs | drag-and-drop reorders tabs; the active tab (and its per-tab result/SQL) follows its id, not its old index | F:test_tab_drag_reorder_moves_active_tab | ✅ |
 | 90 | tabs | middle-click closes a tab (same as the × glyph); the last tab closes to the empty workbench | F:test_tab_middle_click_closes | ✅ |
@@ -255,7 +255,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts, F:test_auto_run_mode_controls_new_and_reused_table_previews | ✅ |
 | 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
 | 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit environment switches execute SQL only with Auto-run enabled (non-production defaults on); configured production shows a Production label at the end of the tab bar; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
-| 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
+| 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → sqlite → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
 | 109 | tabs/sidebar | tabs scoped by workspace/db/env; connection selection restores most recently used tab and environment; Escape clears global search, collapsed table group reopens on tab navigation and table selection returns, with SQL/results/export preserved across reload | F:test_connection_tabs_restore_mru_table_and_env, F:test_tabs_do_not_move_between_workspaces_with_same_db | ✅ |
 | 110 | tabs | no automatic tab-count cap; single-row horizontal scroll with minimum width, active-tab reveal, fixed add/list controls with matching 26px heights, icon sizes and vertical centers; searchable list, no-match state, outside/Escape dismissal, Arrow/Home/End navigation | F:test_tab_overflow_search_keyboard_and_scoped_bulk_close; test_gui_visual:test_tab_menu_uses_surface_tokens_and_fixed_controls | ✅ |
@@ -264,6 +264,69 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 112 | tabs | zero-tab workbench hides editor/results, keeps connection and sidebar, offers New tab and History; new/recall/table/saved/key entry points create an editor on demand | F:test_close_last_tab_shows_empty_and_survives_reload, F:test_close_all_tabs_is_scoped_and_empty_group_stays_empty, F:test_saved_query_opens_from_empty_group, F:test_alt_table_opens_editor_from_empty_without_running, F:test_redis_key_opens_editor_from_empty_group; test_gui_visual:test_empty_workbench_uses_tokens | ✅ |
 
 | 113 | toolbar/editor | Split Run button with a fixed-width Manual/Auto mode menu controls new/reused table previews, environment navigation, query links and opening saved queries; persisted per workspace/db/env/production flag, production defaults off with explicit opt-in, unknown metadata stays off; changing the preference or typing never executes SQL or replays pending navigation; explicit Run remains available | F:test_auto_run_mode_controls_new_and_reused_table_previews, F:test_auto_run_preferences_follow_connection_environment_and_reload, F:test_query_deeplink_respects_auto_run_preference_and_production_default, F:test_auto_run_saved_query_off_allows_manual_run_and_on_runs_new_query, F:test_auto_run_preference_or_edit_cancels_navigation_waiting_for_tables, F:test_auto_run_is_disabled_when_production_metadata_is_unknown, V:test_run_mode_menu_tokens_and_geometry, F:test_auto_run_opt_in_does_not_cross_connection_identity_change, F:test_run_mode_menu_keyboard_dismissal_and_selection_never_execute, F:test_run_mode_menu_closes_when_connection_or_tab_context_changes | ✅ |
+
+| 114 | SQLite | file connections share environment groups; local/dev/prod point to distinct files; explicit production disables initial Auto-run and opt-in never executes SQL; table/view browsing, reserved/dotted table previews preserve drafts, structure types, absolute path info, no Docker actions | F:test_sqlite_browse_structure_quoted_tables_and_file_info, F:test_sqlite_environment_files_and_production_autorun, A:test_sqlite_connection_info_has_resolved_file_and_no_server, A:test_sqlite_api_metadata_and_pagination | ✅ |
+| 115 | SQLite | tabular EXPLAIN QUERY PLAN, GUI write rejection, real SELECT/PRAGMA pagination with sort reapplied, active-tab exports and persisted results, latest-wins and origin-tab routing; copied record links use the producing SQL and select the expected row | F:test_sqlite_explain_query_plan_and_gui_readonly, F:test_sqlite_load_more_sort_export_and_tab_restore, F:test_sqlite_pragma_load_more_does_not_repeat_first_page, F:test_sqlite_latest_response_stays_on_origin_tab, F:test_sqlite_record_link_uses_producing_sql_and_selects_one_row, A:test_sqlite_gui_api_cannot_enable_writes | ✅ |
+| 116 | SQLite/workspaces | two real workspaces with distinct connection keys/db names resolve the same `sqlite:///data/local.db` against their own source; conn-info shows each database/config path; connection switches and reload preserve each workspace's draft/result, JSON/CSV export uses the active workspace and does not execute drafts | F:test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results | ✅ |
+| 117 | SQLite/saved queries | supplied parameter values filter the real database but stay out of persisted SQL in `qy_tabres`, `qy_tabs` and `qy_hist`; the parameterized template and selected result survive tab switching/reload, and closing the tab saves only the template to History | F:test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage | ✅ |
+
+### SQLite integration audit (2026-10-12)
+
+- **Existence:** audited all JSX interaction bindings, localStorage uses and API
+  consumers with `rg`. SQLite extends existing table selection/structure
+  (64, R4), EXPLAIN (39–40), conn-info (81), pagination (85–86), engine order
+  (108), and shared behavior (114–117). No new interaction binding,
+  persistence key or endpoint; `/api/conninfo` adds `databasePath`.
+  The database-file label and engine suffix reuse existing chrome/tokens.
+- **Capability:** header expects accurate environment/production/file context;
+  sidebar expects table/view inventory and quoted previews; tabs/editor expect
+  draft preservation; toolbar expects read-only execution and an engine-specific
+  plan; grid expects pagination, sort, export, record links and restoration. All are covered
+  by 114–117. File creation/import, browsing remote files, SQLite attachments,
+  schema editing and a GUI connection editor are deliberately deferred below.
+  Autocomplete retains its existing bare-identifier limitation; quoted-name
+  completion is recorded below rather than claiming full dialect completion.
+- **Shared state:** there are no new store writers or UX invariants. Generated
+  preview SQL continues through table-click, environment seeding and focus-link
+  restoration; readers are the editor, sidebar selection, tab titles and URL.
+  EXPLAIN and Load more still use `startReq`/`applyTabResult`/`endReq` and the
+  origin tab's result snapshot; grid/status/export/persistence share that
+  snapshot. Added SQLite browser tests combine pagination with sort, tab
+  switching, both exports and reload; PRAGMA pagination covers the adapter's
+  offset path without repeating its first page; distinct-file environment switching with
+  production opt-in; previews with draft preservation; stale responses with
+  origin-tab routing; record-link copy uses the result SQL after an editor edit
+  and re-executes to the expected single record. Existing SQL write sites remain editor/history navigation,
+  table/Alt+table, key inspect, saved-query load/response, Format, History recall,
+  environment seeding and focus/query links, with close paths stashing drafts.
+- **Independent coverage:** `page_sqlite` and `sqlite_gui_server` create disposable
+  SQLite files using the standard library and replace the default Postgres
+  fixture config. SQLite browser tests require only Playwright/Chromium. Existing
+  PostgreSQL browser tests keep their database availability skip.
+  `page_sqlite_workspaces` additionally loads real brain/yiminlab directories
+  through the normal workspace resolver and serves real query/API responses;
+  identical relative file URLs, distinct owner rows, source paths and persisted
+  active-workspace exports are checked together in row 116.
+- **Parameterized-result persistence:** row 117 checks a predicate-only private
+  token against real SQLite rows, then tab switching, reload and close-to-History.
+  The storage write sites are `tabsStore.persistTabs` (`qy_tabs`),
+  `tabsStore.persistResults` (`qy_tabres`) and `useSqlHistory.persist` (`qy_hist`).
+  Saved-query responses feed `updateTab` and `setTabResult`; closing the tab feeds
+  `pushHist`. Each sink is asserted without placing the token in selected columns.
+  No frontend store writer or persistence format changed.
+- **Test isolation:** live-SSE browser tests run the real workspace watcher tick
+  in a per-test thread that is stopped and joined at teardown. This prevents a
+  previous workspace watcher from overwriting the next test's configuration.
+  Workspace-removal coverage waits for the resulting connection-tree refresh
+  to unbind the active tab, since the modal list updates independently.
+- **Validation:** rebuilt the shipped bundle; frontend unit tests passed
+  (61), and lint reported no errors (one existing Sidebar Fast Refresh warning).
+  SQLite API/browser tests passed (12) with Postgres deliberately unreachable.
+  Restoring the old rendered result SQL through a temporary test plugin makes
+  row 117 fail specifically on the parameter value leaking into `qy_tabres`.
+  Before that parameter regression was added, the complete six-module GUI suite
+  passed (416, one existing skip because `hatchling` is unavailable); wheel
+  asset/changelog and sdist checks passed.
 
 ### Tab navigation audit (2026-09-10)
 
@@ -319,6 +382,8 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 
 | Region | Missing capability | Decision |
 |--------|--------------------|----------|
+| SQLite | create/import databases, remote file access, attached databases, schema editing and GUI connection configuration | first release opens configured existing local files; connections remain CLI/TOML managed |
+| editor | autocomplete does not quote reserved/special table names or parse quoted column qualifiers | backlog; table-click previews are dialect-quoted, while these autocomplete cases need manual quoting |
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
 | header | per-tunnel permanent failure details (`blocked`) are available in CLI/API but not expanded in the keeper badge | badge reports daemon state; a running keeper does not prove database reachability |
 | sidebar | row-count / size hints next to tables | backlog (low) |

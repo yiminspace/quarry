@@ -9,6 +9,15 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- SQLite support across CLI, GUI, MCP and Python for existing local database
+  files, using Python's standard library. Connections support workspace-relative
+  or absolute paths, environment grouping and explicit production protection.
+  Queries default to read-only; authorized writes never create a missing file.
+  Table/view browsing, schema inspection, query plans, paging, exports and
+  primary/unique-key record links use the existing workbench. BLOB values use
+  tagged base64 objects so binary data stays distinct from text. Returned SQL
+  retains parameter placeholders when saved-query results are persisted.
+
 - Local Neptune response fixtures accept `query_exact` and `parameters_exact`
   to require the complete query and parameter set, preventing broad rules from
   accepting unrelated requests. Existing substring/subset rules remain supported.

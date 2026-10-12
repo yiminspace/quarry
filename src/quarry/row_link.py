@@ -12,6 +12,13 @@ _SELECT = re.compile(
     rf'(?P<table>{_IDENT}(?:\s*\.\s*{_IDENT})?)(?P<tail>\s+(?:WHERE|ORDER\s+BY|LIMIT|OFFSET)\b[^;]*)?\s*;?\s*$',
     re.I,
 )
+_SQLITE_IDENT = rf'(?:{_IDENT}|\[[^\]]+\])'
+_SQLITE_SELECT = re.compile(
+    rf'^\s*SELECT\s+(?P<cols>\*|{_SQLITE_IDENT}(?:\s*,\s*{_SQLITE_IDENT})*)\s+FROM\s+'
+    rf'(?P<table>{_SQLITE_IDENT}(?:\s*\.\s*{_SQLITE_IDENT})?)(?P<tail>\s+(?:WHERE|ORDER\s+BY|LIMIT|OFFSET)\b[^;]*)?\s*;?\s*$',
+    re.I,
+)
+_ASCII_LOWER = str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 
 
 def _mask_literals(sql: str, engine: str) -> str | None:
@@ -20,6 +27,12 @@ def _mask_literals(sql: str, engine: str) -> str | None:
     i = 0
     while i < len(sql):
         quote = sql[i]
+        if engine == 'sqlite' and quote == '[':
+            end = sql.find(']', i + 1)
+            if end < 0:
+                return None
+            i = end + 1
+            continue
         if quote not in ("'", '"', '`'):
             if engine == 'postgres' and quote == '$':
                 tag = re.match(r'\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$', sql[i:])
@@ -60,6 +73,8 @@ def _mask_literals(sql: str, engine: str) -> str | None:
 
 def _name(part: str, engine: str) -> str:
     part = part.strip()
+    if engine == 'sqlite' and part[0] == '[':
+        return part[1:-1]
     if part[0] in ('"', '`'):
         return part[1:-1].replace(part[0] * 2, part[0])
     return part.lower() if engine == 'postgres' else part
@@ -75,10 +90,16 @@ def _literal(value: object, engine: str) -> str | None:
     if isinstance(value, str):
         if '\x00' in value:
             return None
+        if engine == 'sqlite' and re.fullmatch(r'-?\d+', value, re.ASCII):
+            digits = value.lstrip('-').lstrip('0') or '0'
+            if len(digits) > 16 or (len(digits) == 16 and digits > '9007199254740991'):
+                # SQLite has dynamic storage classes. A serialized large INTEGER
+                # cannot be distinguished from a TEXT key with the same spelling.
+                return None
         if engine == 'mysql':
             return "CONVERT(X'" + value.encode('utf-8').hex() + "' USING utf8mb4)"
         escaped = value.replace("'", "''")
-        if '\\' in value:
+        if engine == 'postgres' and '\\' in value:
             return "E'" + escaped.replace('\\', '\\\\') + "'"
         return "'" + escaped + "'"
     return None  # NULL unique keys need not identify one record.
@@ -86,16 +107,20 @@ def _literal(value: object, engine: str) -> str | None:
 
 def record_query(conn, sql: str, row: dict) -> dict:
     engine = core.connection_engine(conn)
-    masked = _mask_literals(sql, engine) if engine in ('postgres', 'mysql') else None
-    match = _SELECT.fullmatch(masked) if masked is not None else None
+    masked = _mask_literals(sql, engine) if engine in ('postgres', 'mysql', 'sqlite') else None
+    pattern = _SQLITE_SELECT if engine == 'sqlite' else _SELECT
+    ident = _SQLITE_IDENT if engine == 'sqlite' else _IDENT
+    match = pattern.fullmatch(masked) if masked is not None else None
     if not match:
         return {'reason': 'unsupported_query'}
     tail = match['tail'] or ''
     if re.search(r'\b(select|from|join|union|intersect|except|group|having|into|for)\b|--|/\*|[,()]', tail, re.I):
         return {'reason': 'unsupported_query'}
     # Split on actual identifier tokens, so dots inside quoted names survive.
-    parts = [_name(p, engine) for p in re.findall(_IDENT, match['table'])]
+    parts = [_name(p, engine) for p in re.findall(ident, match['table'])]
     schema, table = (parts if len(parts) == 2 else (None, parts[0]))
+    if engine == 'sqlite' and schema is not None and schema.translate(_ASCII_LOWER) != 'main':
+        return {'reason': 'unsupported_query'}
 
     def quoted(name: str) -> str:
         if engine == 'mysql':
@@ -118,6 +143,22 @@ def record_query(conn, sql: str, row: dict) -> dict:
             ORDER BY i.indisprimary DESC, i.indexrelid, k.ordinality"""
         relation = '.'.join(quoted(p) for p in parts)
         params = {'relation': relation}
+    elif engine == 'sqlite':
+        metadata = """SELECT 'primary' AS key_id, 1 AS primary_key,
+            t.name AS column_name, t.pk AS position
+            FROM pragma_table_xinfo(:'table', 'main') t
+            WHERE t.pk > 0 AND EXISTS
+              (SELECT 1 FROM main.sqlite_schema WHERE name = :'table' COLLATE NOCASE AND type = 'table')
+            UNION ALL
+            SELECT 'unique:' || i.name AS key_id, 0 AS primary_key,
+                x.name AS column_name, x.seqno + 1 AS position
+            FROM pragma_index_list(:'table', 'main') i
+            JOIN pragma_index_xinfo(i.name, 'main') x ON x.\"key\" = 1
+            WHERE i.\"unique\" = 1 AND i.partial = 0 AND i.origin != 'pk'
+              AND NOT EXISTS (SELECT 1 FROM pragma_index_xinfo(i.name, 'main') invalid
+                              WHERE invalid.\"key\" = 1 AND invalid.cid < 0)
+            ORDER BY primary_key DESC, key_id, position"""
+        params = {'table': table}
     else:
         metadata = """SELECT tc.constraint_name AS key_id,
             (tc.constraint_type = 'PRIMARY KEY') AS primary_key,
@@ -141,8 +182,10 @@ def record_query(conn, sql: str, row: dict) -> dict:
                 'binary', 'varbinary', 'tinyblob', 'blob', 'mediumblob', 'longblob', 'bit'):
             binary_columns.add(entry['column_name'])
     projected = None if match['cols'] == '*' else {
-        _name(p, engine) for p in re.findall(_IDENT, match['cols'])}
-    normalize = str.casefold if engine == 'mysql' else lambda name: name
+        _name(p, engine) for p in re.findall(ident, match['cols'])}
+    normalize = (str.casefold if engine == 'mysql' else
+                 (lambda name: name.translate(_ASCII_LOWER)) if engine == 'sqlite' else
+                 lambda name: name)
     projected = None if projected is None else {normalize(name) for name in projected}
     values_by_name = {normalize(name): value for name, value in row.items()}
     for columns in keys.values():
@@ -153,7 +196,10 @@ def record_query(conn, sql: str, row: dict) -> dict:
         values = [_literal(values_by_name.get(normalize(col)), engine) for col in columns]
         if not columns or any(value is None for value in values):
             continue
-        predicates = [f'{quoted(col)} = {value}' for col, value in zip(columns, values)]
+        # An SQLite unique index may use a stricter collation than its column.
+        # Binary equality preserves one-record identity even in that case.
+        collate = ' COLLATE BINARY' if engine == 'sqlite' else ''
+        predicates = [f'{quoted(col)}{collate} = {value}' for col, value in zip(columns, values)]
         return {'table': '.'.join(p if re.fullmatch(r'[a-z_][a-z0-9_$]*', p) else quoted(p)
                                   for p in parts),
                 'sql': 'SELECT * FROM ' + '.'.join(quoted(p) for p in parts)

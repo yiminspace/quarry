@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import cache, core, keepalive, local, local_sync, proxy, redis_engine, tunnel, workspace
+from . import cache, core, keepalive, local, local_sync, proxy, redis_engine, sqlite_engine, tunnel, workspace
 from .core import (
     DEFAULT_PING_TIMEOUT_SEC,
     EXIT_CONNECTION_ERROR,
@@ -216,6 +216,12 @@ def _connections_test(key: str, timeout: int = 10, env: str | None = None) -> in
     engine = connection_engine(conn)
     tag = " (SSH)" if conn.ssh_host else ""
     try:
+        if engine == "sqlite":
+            result = core.run_query(conn, "SELECT sqlite_version() AS version", timeout=timeout)
+            print(f"✓ {key}: connected to SQLite")
+            if result.rows:
+                print(f"  {result.rows[0]['version']}")
+            return EXIT_OK
         with tunnel.open_tunnel(conn, engine) as url:
             if engine == "redis":
                 rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
@@ -277,25 +283,32 @@ def _ping_one(conn: core.Connection, timeout: int) -> dict[str, Any]:
     started = time.monotonic()
     error: str | None = None
     try:
-        with tunnel.open_tunnel(conn, engine, connect_timeout=timeout) as url:
-            if engine == "redis":
-                rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
-                if not (rows and rows[0]["value"].upper() == "PONG"):
-                    raise QuarryError("no PONG")
-            elif engine == "neptune":
-                run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
-                                   workspace_home=getattr(conn, "source", None) or workspace.WS.home)
-            elif engine == "mysql":
-                run_mysql_query(url, "SELECT 1", timeout=timeout)
-            else:
-                rc, _, errout = run_psql_capture(url, "SELECT 1", timeout=timeout)
-                if rc != 0:
-                    msg, _ = core._psql_error_message(rc, errout)
-                    raise QuarryError(msg)
+        if engine == "sqlite":
+            core.run_query(conn, "SELECT 1", timeout=timeout)
+        else:
+            _ping_remote(conn, engine, timeout)
     except Exception as exc:  # noqa: BLE001 — any engine/tunnel failure means "unreachable"
         error = str(exc)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     return {"key": conn.key, "engine": engine, "ok": error is None, "elapsed_ms": elapsed_ms, "error": error}
+
+
+def _ping_remote(conn: core.Connection, engine: str, timeout: int) -> None:
+    with tunnel.open_tunnel(conn, engine, connect_timeout=timeout) as url:
+        if engine == "redis":
+            rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
+            if not (rows and rows[0]["value"].upper() == "PONG"):
+                raise QuarryError("no PONG")
+        elif engine == "neptune":
+            run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
+                               workspace_home=getattr(conn, "source", None) or workspace.WS.home)
+        elif engine == "mysql":
+            run_mysql_query(url, "SELECT 1", timeout=timeout)
+        else:
+            rc, _, errout = run_psql_capture(url, "SELECT 1", timeout=timeout)
+            if rc != 0:
+                msg, _ = core._psql_error_message(rc, errout)
+                raise QuarryError(msg)
 
 
 def cmd_ping(args: argparse.Namespace) -> int:
@@ -608,16 +621,53 @@ def _last_toplevel_limit(sql: str) -> re.Match[str] | None:
     return found
 
 
-def _override_limit(sql: str, limit: int) -> str:
+def _sqlite_limit_bounds(sql: str) -> tuple[int, int] | None:
+    """Locate SQLite's final LIMIT clause without matching quoted identifiers.
+
+    SQLite accepts expressions, negative counts and LIMIT offset,count. The
+    clause is last in its statement, so replacing it need not parse expressions.
+    """
+    skeleton = sqlite_engine.skeleton(sql)
+    depths = _paren_depths(skeleton)
+    limits = [m for m in re.finditer(r"(?<![:\w$@.])\blimit\b", skeleton, re.I)
+              if depths[m.start()] == 0]
+    if not limits:
+        return None
+    start = limits[-1].start()
+    end = skeleton.find(";", start)
+    return start, len(sql) if end < 0 else end
+
+
+def _override_limit(sql: str, limit: int, engine: str = "postgres") -> str:
     """Replace the outer LIMIT clause with `LIMIT <limit>`, else append one."""
+    if engine == "sqlite":
+        bounds = _sqlite_limit_bounds(sql)
+        if bounds:
+            start, end = bounds
+            return sql[:start] + f"LIMIT {limit}" + sql[end:]
+        skeleton = sqlite_engine.skeleton(sql)
+        semi = skeleton.find(";")
+        # A terminal semicolon can precede comments. Remove only that SQL
+        # token; semicolons in strings/identifiers/comments remain untouched.
+        inner = sql[:semi] + sql[semi + 1:] if semi >= 0 and not skeleton[semi + 1:].strip() else sql
+        if (core.is_query_read_only(sql, engine)
+                and re.search(r"\bvalues\b", core._top_level_sql(skeleton), re.I)):
+            return f"SELECT * FROM (\n{inner}\n) LIMIT {limit}"
+        return inner + f"\nLIMIT {limit}"
     m = _last_toplevel_limit(sql)
     if m:
         return sql[: m.start()] + f"LIMIT {limit}" + sql[m.end():]
     return _strip_trailing_semicolons(sql) + f"\nLIMIT {limit}"
 
 
-def _strip_limit(sql: str) -> str:
+def _strip_limit(sql: str, engine: str = "postgres") -> str:
     """Remove the outer LIMIT[/OFFSET] clause (for --full)."""
+    if engine == "sqlite":
+        bounds = _sqlite_limit_bounds(sql)
+        if bounds:
+            start, end = bounds
+            return (sql[:start] + sql[end:]).rstrip()
+        return sql
     m = _last_toplevel_limit(sql)
     if not m:
         return sql
@@ -727,9 +777,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     psql_vars = core.resolve_params(q, collect_args_params(args))
     sql = q.sql
     if args.full:
-        sql = _strip_limit(sql)
+        sql = _strip_limit(sql, connection_engine(conn))
     elif args.limit is not None:
-        sql = _override_limit(sql, args.limit)
+        sql = _override_limit(sql, args.limit, connection_engine(conn))
     if args.strict:
         rc = core.validate_query(q, conn, use_proxy=(False if getattr(args, "no_proxy", False) else None))
         if rc != EXIT_OK:
@@ -1067,6 +1117,13 @@ def cmd_audit(args: argparse.Namespace) -> int:
 # local — dev containers (qy local up/down/status)
 # ---------------------------------------------------------------------------
 
+_SQLITE_LOCAL_GUIDANCE = (
+    "SQLite opens an existing local database file and needs no Docker service; "
+    "configure a file with `qy connections add <key> --engine sqlite "
+    "--url sqlite:///data.db --env local`"
+)
+
+
 def _resolve_local_target(
     arg: str, engine_flag: str | None,
 ) -> tuple[str, local.EngineSpec, str | None, str | None]:
@@ -1091,6 +1148,8 @@ def _resolve_local_target(
     if match is not None:
         logical = match.logical_db
         eng = connection_engine(match)
+        if eng == "sqlite":
+            err(_SQLITE_LOCAL_GUIDANCE, exit_code=EXIT_USAGE)
         if eng not in local.SPECS:
             err(f"engine '{eng}' has no local support (postgres/redis/neptune only)",
                 exit_code=EXIT_USAGE)
@@ -1119,6 +1178,8 @@ def _resolve_local_target(
 
 
 def cmd_local_up(args: argparse.Namespace) -> int:
+    if args.engine == "sqlite":
+        err(_SQLITE_LOCAL_GUIDANCE, exit_code=EXIT_USAGE)
     fixture = getattr(args, "fixture", None)
     if fixture is not None and (args.engine not in (None, "neptune") or (args.key is None and args.engine != "neptune")):
         err("--fixture requires a single local Neptune target (--engine neptune)", exit_code=EXIT_USAGE)
@@ -1301,7 +1362,7 @@ def _add_safety_flags(p: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qy",
-        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, Redis, Neptune)",
+        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, SQLite, Redis, Neptune)",
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace dir (connections.toml + queries/); overrides config.toml")
@@ -1319,7 +1380,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca = conn_sub.add_parser("add", help="Add a new connection (errors if exists)")
     p_ca.add_argument("key")
     p_ca.add_argument("--url", required=True)
-    p_ca.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
+    p_ca.add_argument("--engine", choices=["postgres", "mysql", "sqlite", "neptune"], default=None)
     p_ca.add_argument("--region", default=None)
     p_ca.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
                        help="Explicit production classification (independent of env name)")
@@ -1340,7 +1401,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cs = conn_sub.add_parser("set", help="Add or update a connection (upsert)")
     p_cs.add_argument("key")
     p_cs.add_argument("--url", default=None)
-    p_cs.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
+    p_cs.add_argument("--engine", choices=["postgres", "mysql", "sqlite", "neptune"], default=None)
     p_cs.add_argument("--region", default=None)
     p_cs.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
                        help="Explicit production classification (independent of env name)")
@@ -1523,7 +1584,7 @@ def build_parser() -> argparse.ArgumentParser:
         "up", help="Start local services; with a key, auto-register an env=local connection")
     p_lu.add_argument("key", nargs="?",
                       help="Connection key / logical db to bring up + auto-register (env=local)")
-    p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
+    p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "sqlite", "all"], default=None)
     p_lu.add_argument("--image", default=None, help="Override the container image tag")
     p_lu.add_argument("--port", type=_positive_int, default=None,
                       help="Persist a local Docker port; update managed connections in loaded workspaces")

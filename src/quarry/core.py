@@ -6,6 +6,7 @@ as a library (the CLI, GUI, and skill are all thin faces over this module).
 Engines:
     postgres  - shells out to the `psql` binary
     mysql     - via pymysql (optional dependency)
+    sqlite    - existing local files via Python's sqlite3 module
     neptune   - openCypher over HTTP (urllib)
 
 Paths (connections file, queries dir, psql binary) come from the current
@@ -42,7 +43,7 @@ from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from . import cache
 from . import proxy as proxy_mod
-from . import redis_engine, tunnel, workspace
+from . import redis_engine, sqlite_engine, tunnel, workspace
 
 # Exit codes (stable contract for callers)
 EXIT_OK = 0
@@ -379,10 +380,12 @@ def _majority_source(
 def infer_engine(url: str, explicit: str | None = None) -> str:
     if explicit:
         engine = explicit.strip().lower()
-        if engine not in {"postgres", "mysql", "neptune", "redis"}:
-            err(f"unsupported engine '{explicit}' (expected postgres|mysql|neptune|redis)", exit_code=EXIT_USAGE)
+        if engine not in {"postgres", "mysql", "neptune", "redis", "sqlite"}:
+            err(f"unsupported engine '{explicit}' (expected postgres|mysql|neptune|redis|sqlite)", exit_code=EXIT_USAGE)
         return engine
     lower = url.lower()
+    if lower.startswith("sqlite:"):
+        return "sqlite"
     if lower.startswith("mysql://") or lower.startswith("mysql+"):
         return "mysql"
     if lower.startswith("redis://") or lower.startswith("rediss://"):
@@ -540,6 +543,8 @@ _LOCAL_KEY_SUFFIX_RE = re.compile(r"_local\d*$")
 
 
 def _conn_host_port(url: str, engine: str) -> tuple[str | None, int | None]:
+    if engine == "sqlite":
+        return (None, None)
     raw = url
     if "://" not in raw:
         # Neptune alone accepts a bare `host:port` endpoint (normalize_neptune_endpoint
@@ -590,6 +595,11 @@ def check_connection_write(
     url = fields.get("url")
     raw_engine = fields.get("engine")
     engine = str(raw_engine) if isinstance(raw_engine, str) else (infer_engine(url) if isinstance(url, str) else "postgres")
+    if engine == "sqlite":
+        sqlite_engine.database_path(Connection(key=key, url=str(url), engine=engine,
+            ssh_host=fields.get("ssh_host"), ssh_user=fields.get("ssh_user"),
+            ssh_key=fields.get("ssh_key"), ssh_port=fields.get("ssh_port")))
+        return  # File paths have no host/port, Docker naming, or network proxy.
     host, port = _conn_host_port(url, engine) if isinstance(url, str) else (None, None)
 
     conflict = _find_port_conflict(existing, exclude_key=key, host=host, port=port)
@@ -970,6 +980,8 @@ def _check_query_input(sql: str, engine: str) -> None:
 
 
 def is_query_read_only(query: str, engine: str) -> bool:
+    if engine == "sqlite":
+        return sqlite_engine.is_read_only(query)
     if engine == "redis":
         return redis_engine.is_redis_read_only(query)
     if engine == "neptune":
@@ -1031,6 +1043,8 @@ def enforce_safety(
       applied_limit; a query that already has its own LIMIT ignores offset
       (we never rewrite hand-written SQL).
     """
+    if engine == "sqlite":
+        return sqlite_engine.enforce_safety(sql, allow_write=allow_write, max_rows=max_rows, offset=offset)
     if max_rows is not None and max_rows < 0 or offset < 0:
         raise QuarryError("max_rows and offset must be non-negative")
     if max_rows == 0:
@@ -1740,6 +1754,35 @@ def _pg_column_types(url: str, sql: str, params: dict[str, str], timeout: int = 
     return _json_pairs(pairs)
 
 
+def _sqlite_query_result(conn: Connection, sql: str, *, params: dict[str, str],
+                         allow_write: bool, max_rows: int | None, offset: int,
+                         timeout: int, connect_timeout: int | None) -> QueryResult:
+    rendered = sqlite_engine.substitute_params(sql, params)
+    safe_sql, applied_limit = enforce_safety(rendered, allow_write=allow_write,
+        max_rows=max_rows, offset=offset, engine="sqlite")
+    # Only executable SQL contains expanded parameters. Result metadata is
+    # persisted by clients, so retain placeholders while reflecting any cap.
+    result_sql = (sqlite_engine.append_limit(sql, applied_limit, offset)
+                  if applied_limit is not None and safe_sql != rendered else sql)
+    start = time.monotonic()
+    rows, size = sqlite_engine.run_query(conn, safe_sql, read_only=not allow_write,
+        timeout=timeout, connect_timeout=connect_timeout,
+        fetch_limit=applied_limit + 1 if applied_limit is not None else None,
+        fetch_offset=offset if applied_limit is not None and safe_sql == rendered else 0)
+    columns = [{"name": name, "type": None} for name in rows.columns]
+    truncated = applied_limit is not None and len(rows) > applied_limit
+    if truncated:
+        rows = rows[:applied_limit]
+    if allow_write:
+        # DDL and writes can affect any metadata cached under a connection key
+        # or its logical database alias. All aliases must be refreshed.
+        cache.drop_prefix("tables:")
+        cache.drop_prefix("columns:")
+    return QueryResult(columns=columns, rows=rows, row_count=len(rows),
+        truncated=truncated, elapsed_ms=int((time.monotonic() - start) * 1000),
+        engine="sqlite", sql=result_sql, download_bytes=size, size_is_estimated=True)
+
+
 def run_query(
     conn: Connection,
     sql: str,
@@ -1773,6 +1816,11 @@ def run_query(
     other engines leave column types null (the GUI infers from values)."""
     params = params or {}
     engine = connection_engine(conn)
+    if engine == "sqlite":
+        return _sqlite_query_result(conn, sql, params=params, allow_write=allow_write,
+            max_rows=max_rows, offset=offset,
+            timeout=resolve_timeout(conn, timeout, default=default_timeout),
+            connect_timeout=connect_timeout)
     if engine != "redis":
         _check_query_input(substitute_params(sql, params), engine)
     if not allow_write and not is_query_read_only(substitute_params(sql, params), engine):
@@ -1878,6 +1926,21 @@ def connection_fingerprint(conn: Connection) -> str:
         str(conn.ssh_port or ""),
         "proxy" if workspace.is_proxy_enabled(_connection_workspace_home(conn)) else "noproxy",
     ]
+    if connection_engine(conn) == "sqlite":
+        parts.extend(["sqlite", str(conn.source or workspace.WS.home)])
+        # Replacing/removing a local file should not leave a cached green dot
+        # or a table list from another file at the same connection label.
+        try:
+            path = sqlite_engine.database_path(conn)
+            parts.append(str(path))
+            for file in (path, Path(str(path) + "-wal")):
+                try:
+                    stat = file.stat()
+                    parts.append(f"{stat.st_ino}:{stat.st_mtime_ns}:{stat.st_size}")
+                except OSError:
+                    parts.append("missing")
+        except QuarryError:
+            parts.append("invalid")
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
@@ -1912,6 +1975,9 @@ def cached_health(conn: Connection, db: str, env: str | None, *,
         return {"ok": None}
     try:
         engine = connection_engine(conn)
+        if engine == "sqlite":
+            run_query(conn, "SELECT name FROM sqlite_schema LIMIT 1", timeout=6)
+            return _put_health(key, fp, {"ok": True})
         with tunnel.open_tunnel(conn, engine) as url:
             if engine == "redis":
                 redis_engine.run_redis(url, "PING", timeout=6)
@@ -1931,6 +1997,11 @@ def cached_health(conn: Connection, db: str, env: str | None, *,
 
 def _list_tables(conn: Connection, *, default_timeout: int = DEFAULT_EXECUTE_TIMEOUT_SEC) -> list[str]:
     engine = connection_engine(conn)
+    if engine == "sqlite":
+        res = run_query(conn, "SELECT name AS table_name FROM sqlite_schema "
+            "WHERE type IN ('table', 'view') AND name NOT GLOB 'sqlite_*' ORDER BY name",
+            max_rows=5000, default_timeout=default_timeout)
+        return [row["table_name"] for row in res.rows]
     if engine == "redis":
         with tunnel.open_tunnel(conn, engine) as url:
             return redis_engine.scan_keys(url, count=1000)
@@ -1960,8 +2031,10 @@ def cached_tables(conn: Connection, db: str, env: str | None, *, fresh: bool = F
     (schema changes are rare; a fresh=1 call or a local-sync's targeted purge
     is what refreshes an entry)."""
     key = f"tables:{db}@{env}"
+    engine = connection_engine(conn)
+    fp = connection_fingerprint(conn) if engine == "sqlite" else None
     if not fresh:
-        c = cache.get(key)
+        c = cache.get(key, fingerprint=fp)
         if c is not None:
             return {**c, "_cached": True}
     engine = connection_engine(conn)
@@ -1974,7 +2047,7 @@ def cached_tables(conn: Connection, db: str, env: str | None, *, fresh: bool = F
         ts = _list_tables(conn, default_timeout=default_timeout)
         # `capped` tells the caller the list hit _list_tables' 5000-row cap
         out = {"tables": ts, "engine": engine, "capped": len(ts) >= 5000}
-    cache.put(key, out)
+    cache.put(key, out, fingerprint=fp)
     return {**out, "_cached": False}
 
 
@@ -1996,6 +2069,26 @@ def cached_columns(conn: Connection, db: str, env: str | None, table: str, *,
     reporting the real connection/SQL error instead of an empty result."""
     if not (table or "").strip():
         return {"rows": []}
+    if connection_engine(conn) == "sqlite":
+        key = f"columns:{db}@{env}:{table}"
+        fp = connection_fingerprint(conn)
+        cached = None if fresh else cache.get(key, fingerprint=fp)
+        if cached is not None:
+            return cached
+        try:
+            sql = ('SELECT name AS column_name, type AS data_type, '
+                   'CASE WHEN "notnull" = 1 OR (pk > 0 AND upper(type) = \'INTEGER\' '
+                   'AND NOT EXISTS (SELECT 1 FROM pragma_index_list(:\'table\', \'main\') '
+                   'WHERE origin = \'pk\')) THEN \'NO\' ELSE \'YES\' END AS is_nullable, '
+                   'dflt_value AS column_default, NULL AS character_maximum_length, '
+                   'pk AS primary_key, hidden FROM pragma_table_xinfo(:\'table\', \'main\') ORDER BY cid')
+            res = run_query(conn, sql, params={"table": table}, max_rows=2000,
+                default_timeout=default_timeout)
+            return cache.put(key, {"rows": res.rows}, fingerprint=fp)
+        except Exception:
+            if raise_errors:
+                raise
+            return {"rows": []}
     key = f"columns:{db}@{env}:{table}"
     if not fresh:
         c = cache.get(key)
@@ -2058,9 +2151,9 @@ def cached_columns(conn: Connection, db: str, env: str | None, table: str, *,
 # ---------------------------------------------------------------------------
 
 def rows_to_csv(rows: list[dict[str, Any]]) -> str:
-    if not rows:
+    if not rows and not getattr(rows, "columns", None):
         return ""
-    fieldnames: list[str] = []
+    fieldnames: list[str] = list(getattr(rows, "columns", ()))
     for row in rows:                       # union of keys — rows may be heterogeneous
         for k in row:
             if k not in fieldnames:
@@ -2221,6 +2314,15 @@ def execute_sql(
     as QueryResult, see run_query) are surfaced via this optional out-param
     instead of changing either."""
     engine = connection_engine(conn)
+    if engine == "sqlite":
+        res = run_query(conn, sql, params=psql_vars, allow_write=allow_write,
+            max_rows=max_rows, timeout=timeout, connect_timeout=connect_timeout)
+        if stats is not None:
+            stats.update(elapsed_ms=res.elapsed_ms, download_bytes=res.download_bytes,
+                         size_is_estimated=res.size_is_estimated)
+        if res.truncated:
+            err(f"result truncated to {max_rows} rows; raise --max-rows or use --max-rows 0 for all rows")
+        return _emit_rows(ResultRows(res.rows, [column["name"] for column in res.columns]), fmt)
     if engine != "redis":
         _check_query_input(substitute_params(sql, psql_vars), engine)
     if not allow_write and not is_query_read_only(substitute_params(sql, psql_vars), engine):
@@ -2332,6 +2434,15 @@ def validate_query(q: Query, conn: Connection, *, use_proxy: bool | None = None)
         psql_vars[p.name] = p.default if p.default is not None else _dummy_value_for(p)
 
     engine = connection_engine(conn)
+    if engine == "sqlite":
+        try:
+            sql = sqlite_engine.substitute_params(q.sql, psql_vars)
+            sqlite_engine.enforce_safety(sql, allow_write=False, max_rows=None)
+            run_query(conn, "EXPLAIN QUERY PLAN " + sql, timeout=20, max_rows=0)
+        except QuarryError as exc:
+            err(f"validation failed: {exc}")
+            return exc.exit_code
+        return EXIT_OK
     # Validation must be side-effect-free: a multi-statement or data-modifying
     # body would otherwise execute its writes under `EXPLAIN <body>`.
     if engine != "redis":

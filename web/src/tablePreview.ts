@@ -2,6 +2,9 @@ import { parseMainTable } from "./store/tabsStore";
 
 /** Quote mixed-case / reserved identifiers (legacy `qid`). */
 export function quoteIdent(name: string, engine: string): string {
+  // SQLite allows keywords and dots inside table names; quote every name so
+  // a filename-backed database never interprets one as SQL or a schema path.
+  if (engine === "sqlite") return `"${name.replaceAll('"', '""')}"`;
   if (/^[a-z_][a-z0-9_$]*$/.test(name)) return name;
   if (engine === "mysql") return `\`${name.replaceAll("`", "``")}\``;
   return `"${name.replaceAll('"', '""')}"`;
@@ -11,7 +14,7 @@ export function quoteIdent(name: string, engine: string): string {
  * (and "load more") bound the result. Do not bake a LIMIT into the text. */
 export function previewSql(table: string, engine: string): string {
   if (engine === "neptune") return 'MATCH (n:`' + table.replaceAll('`', '``') + '`) RETURN n LIMIT 25';
-  const target = engine !== "mysql" && table.includes(".") ? table : quoteIdent(table, engine);
+  const target = engine === "postgres" && table.includes(".") ? table : quoteIdent(table, engine);
   return `select * from ${target}`;
 }
 
