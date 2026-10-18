@@ -647,8 +647,9 @@ export default function ResultWorkbench() {
     const table = currentTable ?? parseMainTable(sql);
     const search = encodeFocusSearch({ db, env, table });
     const url = new URL(window.location.href);
-    if (url.search !== search) {
-      window.history.replaceState(null, "", `${url.pathname}${search}${url.hash}`);
+    const pathname = "/quarry/";
+    if (url.search !== search || url.pathname !== pathname) {
+      window.history.replaceState(null, "", `${pathname}${search}${url.hash}`);
     }
     document.title = focusTitle({ db, env, table });
   }, [sessionReady, current, currentTable, sql]);
@@ -1086,7 +1087,7 @@ export default function ResultWorkbench() {
       return;
     }
     const link = encodeQueryLink(window.location.href, {
-      db: activeTab?.db,
+      db: activeTab.db,
       env: activeTab?.env ?? null,
       sql: activeTab.sql,
     });

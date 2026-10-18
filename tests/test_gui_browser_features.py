@@ -183,7 +183,7 @@ def test_query_titles_expand_description_without_counts(page_envset, tmp_path):
 def test_app_uses_distinct_svg_favicon(page):
     icon = page.locator('head link[rel="icon"]')
     assert icon.get_attribute("type") == "image/svg+xml"
-    assert icon.get_attribute("href") == "/app/favicon.svg"
+    assert icon.get_attribute("href") == "/quarry/favicon.svg"
     response = page.request.get(icon.evaluate("node => node.href"))
     assert response.ok
     assert "<text" not in response.text()
@@ -2545,7 +2545,7 @@ def _capture_query_requests(page):
 
 
 def _auto_run_preference_key(page, db, env, production):
-    groups = page.request.get(page.url.split('/app/')[0] + '/api/connections').json()['groups']
+    groups = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()['groups']
     group = next(group for group in groups if any(item['db'] == db for item in group['items']))
     return json.dumps([group.get('ws'), db, env, production], separators=(',', ':'))
 
@@ -2755,8 +2755,8 @@ def test_query_deeplink_respects_auto_run_preference_and_production_default(page
                       [key, preference])
     requests = _capture_query_requests(page)
     sql = 'select 42 as shared_auto_run'
-    base = page.url.split('/app/')[0]
-    page.goto(f'{base}/app/?{urlencode({"db": db, "env": env, "sql": sql})}', wait_until='networkidle')
+    base = page.url.split('/quarry/')[0]
+    page.goto(f'{base}/quarry/?{urlencode({"db": db, "env": env, "sql": sql})}', wait_until='networkidle')
     assert page.locator('#sql').input_value() == sql
     _assert_run_mode(page, preference is True)
     if preference is True:
@@ -2899,7 +2899,7 @@ def test_copy_query_link_copies_db_env_sql(page_clip):
 def test_query_deeplink_opens_existing_tab_and_autoruns(page):
     sql = "select 42 as shared_link_row"
     qs = urlencode({"db": "testpg", "env": "test", "sql": sql})
-    base = page.url.split("/app/")[0]
+    base = page.url.split("/quarry/")[0]
     page.evaluate(
         """([seedSql]) => {
             localStorage.setItem("qy_tabs", JSON.stringify([
@@ -2910,7 +2910,7 @@ def test_query_deeplink_opens_existing_tab_and_autoruns(page):
         }""",
         [sql],
     )
-    page.goto(f"{base}/app/?{qs}", wait_until="networkidle")
+    page.goto(f"{base}/quarry/?{qs}", wait_until="networkidle")
     page.wait_for_selector('#grid td[data-v="42"]')
     assert page.locator(".tab[data-i]").count() == 1
     assert page.locator("#sql").input_value() == sql
@@ -2971,8 +2971,8 @@ def test_focus_url_opens_new_tab_when_active_tab_has_sql(page):
         }""",
         [draft],
     )
-    base = page.url.split("/app/")[0]
-    page.goto(f"{base}/app/?db=testpg&env=test&table=customers", wait_until="networkidle")
+    base = page.url.split("/quarry/")[0]
+    page.goto(f"{base}/quarry/?db=testpg&env=test&table=customers", wait_until="networkidle")
     page.wait_for_function(
         "document.querySelector('#sql').value === 'select * from customers'")
     assert page.locator(".tab[data-i]").count() == 2
@@ -2995,7 +2995,7 @@ def test_handwritten_schema_sql_keeps_schema_in_focus_url(page):
 def test_focus_url_restores_selection_without_autorun(page):
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
-    base = page.url.split("/app/")[0]
+    base = page.url.split("/quarry/")[0]
     page.evaluate(
         """() => {
             localStorage.removeItem("qy_tabs");
@@ -3003,7 +3003,7 @@ def test_focus_url_restores_selection_without_autorun(page):
             localStorage.removeItem("qy_tabres");
         }"""
     )
-    page.goto(f"{base}/app/?db=testpg&env=test&table=customers", wait_until="networkidle")
+    page.goto(f"{base}/quarry/?db=testpg&env=test&table=customers", wait_until="networkidle")
     page.wait_for_selector('.dbrow.on[data-db="testpg"]')
     page.wait_for_function(
         "document.querySelector('#sql').value === 'select * from customers'")
@@ -3018,8 +3018,8 @@ def test_query_deeplink_invalid_env_shows_notice_and_skips_autorun(page_envset):
     queries = []
     page.on("request", lambda r: "/api/query" in r.url and queries.append(r.url))
     qs = urlencode({"db": "shop", "env": "ghost", "sql": "select 1 as bad_env"})
-    base = page.url.split("/app/")[0]
-    page.goto(f"{base}/app/?{qs}", wait_until="networkidle")
+    base = page.url.split("/quarry/")[0]
+    page.goto(f"{base}/quarry/?{qs}", wait_until="networkidle")
     page.wait_for_selector("#toast", state="visible")
     assert "link" in page.locator("#toast").inner_text().lower()
     page.wait_for_timeout(600)
@@ -3467,7 +3467,7 @@ def test_tabs_do_not_move_between_workspaces_with_same_db(page_envset):
     page = page_envset
     page.locator('.dbrow[data-db="shop"]').click()
     _set_sql(page, 'select 88 as old_workspace_draft')
-    response = page.request.get(page.url.split('/app')[0] + '/api/connections').json()
+    response = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     for group in response['groups']:
         group['ws'] = '/different/workspace'
     page.route('**/api/connections', lambda route: route.fulfill(json=response))
@@ -3975,7 +3975,7 @@ def test_icon_hover_hints_cover_header_workbench_and_modals(page, lang):
 
 def test_saved_queries_stay_in_owning_workspace(page_noparam):
     page = page_noparam
-    tree = page.request.get(page.url.split('/app')[0] + '/api/connections').json()
+    tree = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     item = next(i for g in tree['groups'] for i in g['items'] if i['db'] == 'testpg')
     tree['groups'] = [dict(ws='/ws/one', group='One', items=[item]),
                       dict(ws='/ws/two', group='Two', items=[])]
@@ -4286,7 +4286,7 @@ def test_sqlite_record_link_uses_producing_sql_and_selects_one_row(page_sqlite):
     assert params['table'] == ['entries']
     assert not queries
     assert page.locator('#sql').input_value() == draft
-    response = page.request.post(page.url.split('/app')[0] + '/api/query', data={
+    response = page.request.post(page.url.split('/quarry/')[0] + '/api/query', data={
         'db': params['db'][0], 'env': params['env'][0], 'sql': params['sql'][0],
     })
     assert response.ok
@@ -4409,3 +4409,39 @@ def test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage(page_sq
     page.locator('.tab.on .x').click()  # Closing stashes the saved template in History.
     stored = assert_private_value_not_persisted()
     assert any(item['sql'] == template for item in json.loads(stored['qy_hist']))
+
+
+# Workspace identity stays internal; URLs use the logical database and environment.
+def test_quarry_path_tracks_connections_and_copied_links(page_sqlite_workspaces):
+    page = page_sqlite_workspaces
+    for name in ("brain", "yiminlab"):
+        page.locator(f'.dbrow[data-db="{name}_notes"]').click()
+        page.wait_for_function("name => location.pathname === '/quarry/' && new URL(location.href).searchParams.get('db') === name + '_notes'", arg=name)
+        page.locator('#tbl-panel .tname[data-t="records"]').click()
+        page.wait_for_selector("#grid table tbody tr")
+    page.locator('.dbrow[data-db="brain_notes"]').click()
+    page.wait_for_function("location.pathname === '/quarry/' && new URL(location.href).searchParams.get('db') === 'brain_notes'")
+    assert "brain" in page.locator("#grid").inner_text()
+    # The share action identifies the active database through query parameters.
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.locator('#linkBtn').click()
+    link = page.evaluate("navigator.clipboard.readText()")
+    assert urlparse(link).path == "/quarry/"
+    assert parse_qs(urlparse(link).query)["db"] == ["brain_notes"]
+    page.reload(wait_until="networkidle")
+    page.wait_for_selector('.dbrow.on[data-db="brain_notes"]')
+    assert urlparse(page.url).path == "/quarry/"
+    page.goto(link, wait_until="networkidle")
+    page.wait_for_selector('#grid td[data-v="brain own data"]')
+    assert urlparse(page.url).path == "/quarry/"
+
+
+def test_quarry_focus_url_restores_table_without_running(page_sqlite_workspaces):
+    page = page_sqlite_workspaces
+    base = page.url.split("/quarry/")[0]
+    queries = []
+    page.on("request", lambda r: r.method == "POST" and "/api/query" in r.url and queries.append(r.url))
+    page.goto(base + "/quarry/?db=yiminlab_notes&env=local&table=records", wait_until="networkidle")
+    page.wait_for_function("document.querySelector('#sql').value === 'select * from \"records\"'")
+    assert urlparse(page.url).path == "/quarry/"
+    assert queries == []

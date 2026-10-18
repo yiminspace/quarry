@@ -173,7 +173,7 @@ Neptune 空服务不执行或持久化真实图数据，图查询正确性需要
 
 ## 8. GUI 如何维护工作状态
 
-`qy gui` 启动本机 Python HTTP 服务：`/app/` 提供构建好的 React 页面，`/api/*` 处理请求。打开页面后如何跟上文件变化和进程升级，见第 9 节。运行已安装的 GUI 无需 Node.js；Node.js 用于前端开发和构建。
+`qy gui` 启动本机 Python HTTP 服务：`/quarry/` 提供构建好的 React 页面，`/api/*` 处理请求。打开页面后如何跟上文件变化和进程升级，见第 9 节。运行已安装的 GUI 无需 Node.js；Node.js 用于前端开发和构建。
 
 前端使用 Zustand 管理连接、界面和标签页状态：
 

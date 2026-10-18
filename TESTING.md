@@ -61,12 +61,12 @@ boundary Python versions 3.11 and 3.13 (with Postgres + MySQL + Redis services),
 `coverage` gate job on 3.12 that also runs the e2e layer (so no version×layer
 combination runs twice), a `browser` job (headless Chromium, cached between
 runs), and a package `build` check. Every job builds the React shell (`web/`,
-`npm ci && npm run build`) before Python tests so `/app` assets are present.
+`npm ci && npm run build`) before Python tests so `/quarry` assets are present.
 
-## The React frontend (`/app`)
+## The React frontend (`/quarry`)
 
 The GUI frontend is a Vite + React + TypeScript package under `web/` that
-builds into `src/quarry/web_dist/` and is served by `gui.py` at `/app` — the
+builds into `src/quarry/web_dist/` and is served by `gui.py` at `/quarry` — the
 default landing page (`/` redirects there). Node is dev/CI-only; the built
 assets ship in the wheel. **The browser suite tests the built bundle: run
 `cd web && npm run build` after changing `web/src`.**
@@ -79,9 +79,9 @@ GUI, pins the React app unchanged. Packaging and React-only features live in
 
 | # | Area | Feature | Covered by | ✓ |
 |---|------|---------|------------|---|
-| R1 | react | `/app/` mounts the app directly (not only via the `/` redirect) | test_gui_react_app:test_react_app_mounts_at_app_path | ✅ |
-| R2 | react | `/api/version` JSON endpoint; `/` redirects to `/app/` | test_gui_react_app:test_api_version, test_gui_api:test_root_redirects_to_react_app | ✅ |
-| R3 | react | wheel includes `quarry/web_dist/index.html` and every hashed `/app/assets/*` file referenced by that index; sdist excludes node_modules | test_gui_react_app:test_wheel_includes_web_dist, test_sdist_excludes_node_modules, CI build job | ✅ |
+| R1 | react | `/quarry/` mounts the app directly (not only via the `/` redirect) | test_gui_react_app:test_react_app_mounts_at_app_path, test_gui_api:test_quarry_route_has_no_workspace_segment | ✅ |
+| R2 | react | `/api/version` JSON endpoint; `/` redirects to `/quarry/` | test_gui_react_app:test_api_version, test_gui_api:test_root_redirects_to_react_app | ✅ |
+| R3 | react | wheel includes `quarry/web_dist/index.html` and every hashed `/quarry/assets/*` file referenced by that index; sdist excludes node_modules | test_gui_react_app:test_wheel_includes_web_dist, test_sdist_excludes_node_modules, CI build job | ✅ |
 | R4 | react | table-structure browser (issue #11): double-click a sidebar table name → modal lists column names + types (incl. quoted special-char table names) | test_gui_react_app:test_table_structure_modal_shows_columns_and_types, test_table_structure_quoted_special_char_table | ✅ |
 | R5 | react | switching tables replaces the structure modal's columns — latest-wins even when the first table's /api/columns response lands late | test_gui_react_app:test_table_structure_modal_switching_tables_replaces_columns | ✅ |
 | R6 | react | a stale /api/tables response for a connection the user switched away from never repaints the table panel | test_gui_react_app:test_stale_tables_response_does_not_overwrite | ✅ |
@@ -93,7 +93,7 @@ GUI, pins the React app unchanged. Packaging and React-only features live in
 
 ## GUI feature matrix
 
-The GUI is a React + TypeScript SPA (`web/src/`) served under `/app` by the
+The GUI is a React + TypeScript SPA (`web/src/`) served under `/quarry` by the
 stdlib-only backend in `src/quarry/gui.py` (`http.server` + `/api/*`). Because
 the feature surface lives in a handful of components and stores, it can be
 enumerated *exhaustively* — this matrix is that enumeration, and it is the
@@ -251,9 +251,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 101 | header | compact tunnel keep-alive control: single clickable status badge (`down`/`up`/`reconnecting`) toggles start/stop with mouse, Enter or Space; action tooltip and pressed state; no separate play/stop icon backed by `/api/keepalive*`, matching `qy status` semantics across GUI/keeper locale and timezone differences; unverifiable legacy PID and tunnel records fail closed | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state, V:test_keeper_control_tokens; U:test_process_identity_is_independent_of_caller_locale_and_timezone, test_legacy_keeper_identity_needs_pid_file_start_time_proof, test_legacy_reused_pid_never_signalled_even_if_ps_text_matches, test_pre_v2_registry_identity_is_not_reused_even_with_open_port; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
 | 102 | grid/tabs | multi-megabyte cells never enter grid/row-detail DOM attributes or text in full; grid preview is 512 chars, inspector text grows in 20k chunks, JSON children mount lazily, and >512 KiB results skip synchronous persistence while remaining fully copyable/exportable in the current session | F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview, test_gui_visual:test_large_result_session_badge_inherits_status_token; cellValue.test.ts, tabsStore.test.ts | ✅ |
 | 103 | sidebar/editor | PostgreSQL table browser includes non-system schemas as `schema.table`; qualified tables can be clicked to run a preview, double-clicked for columns, and used for qualified column completion; public-table short names remain compatible | F:test_non_public_schema_table_is_visible_and_clickable, A:test_list_and_describe_non_public_postgres_table, A:test_list_tables_postgres | ✅ |
-| 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/app/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
+| 104 | app shell | browser chrome uses the crystal-in-rock SVG favicon served from the GUI's `/quarry/` base | F:test_app_uses_distinct_svg_favicon, A:test_gui_html_and_favicon_asset | ✅ |
 | 105 | sidebar/tabs | clicking a table reuses an empty active tab or an existing same-table preview tab; otherwise opens a new tab and never overwrites a tab that already has SQL | F:test_table_click_opens_new_tab_without_overwrite, F:test_table_click_reuses_same_table_preview_tab, tablePreview.test.ts, F:test_auto_run_mode_controls_new_and_reused_table_previews | ✅ |
-| 106 | app shell | address bar + `document.title` track the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
+| 106 | app shell | address bar uses `/quarry/` with no workspace segment and `document.title` tracks the active `db`/`env`/`table` (schema-qualified when the SQL is); opening a focus URL restores that selection in a new/reused/empty tab without auto-running or rebinding a nonempty draft | F:test_selection_updates_url_and_title, F:test_focus_url_restores_selection_without_autorun, F:test_focus_url_opens_new_tab_when_active_tab_has_sql, F:test_handwritten_schema_sql_keeps_schema_in_focus_url, F:test_quarry_path_tracks_connections_and_copied_links, F:test_quarry_focus_url_restores_table_without_running, queryLink.test.ts, tablePreview.test.ts, tabsStore.test.ts | ✅ |
 | 107 | sidebar/tabs | selecting Neptune opens/reuses a connection-bound tab with `MATCH (n) RETURN n LIMIT 25`; initial connection selection waits for explicit Run; explicit environment switches execute SQL only with Auto-run enabled (non-production defaults on); configured production shows a Production label at the end of the tab bar; existing drafts and loaded starter results are preserved | F:test_neptune_connection_opens_starter_without_autorun, connectionStarter.test.ts | ✅ |
 | 108 | sidebar | mixed-engine workspace groups list connections in postgres → mysql → sqlite → redis → neptune order, with a quiet mono engine suffix (not a filled chip or section header) distinct from the workspace origin path | F:test_sidebar_groups_mixed_engines_under_workspace_group, test_gui_visual:test_engine_tag_differs_from_workspace_origin, sidebarLayout.test.ts | ✅ |
 
@@ -820,3 +820,23 @@ guard described here.
 - Shared-state: markup/CSS only; no state writers or readers change. The existing
   overflow/browser interaction test covers fixed controls and list navigation;
   the dark/light geometry pin checks both icons and the count against their controls.
+
+
+### GUI route audit (2026-10-18)
+
+- Existence: `/quarry/` is the landing page. Active connection/tab changes
+  update `db/env/table` in the query string; query and record links use this
+  same tool path. Rows 94/106 cover links; R1 covers serving. No API endpoint,
+  localStorage key, interaction binding or visible color is added. `/app/`
+  and workspace-name paths return 404.
+- Capability: header workspace management, sidebar, tabs/drafts, editor,
+  toolbar links and grid record links keep their existing behavior. URLs use
+  the configured logical database and environment, independent of workspace
+  folder names. Focus links restore without executing. Existing Design gaps
+  remain unchanged.
+- Shared-state: URL/title writes stay in the single `replaceState` effect;
+  focus/query restoration retains its existing tab/connection write sites.
+  Readers are sidebar selection, tabs, editor, results and copy actions.
+  Browser tests cover cross-workspace connection switching, copied query links,
+  reopening links, reload and focus restoration without execution. No shared
+  store, result, draft or production-preference write site changes.

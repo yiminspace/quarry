@@ -8,7 +8,7 @@ describe("query link codec", () => {
       env: "prod",
       sql: "select '中文\"x\"'\nfrom orders where note like '%a&b=c%';",
     };
-    const link = encodeQueryLink("http://localhost:9876/app/", original);
+    const link = encodeQueryLink("http://localhost:9876/quarry/", original);
     const parsed = decodeQueryLink(new URL(link).search);
     expect(parsed).toEqual(original);
   });
@@ -46,5 +46,15 @@ describe("focus URL", () => {
     expect(focusTitle({ db: null, env: null, table: null })).toBe("Quarry");
     expect(focusTitle({ db: "shop", env: "dev", table: null })).toBe("shop@dev");
     expect(focusTitle({ db: "shop", env: "dev", table: "customers" })).toBe("shop@dev · customers");
+  });
+});
+
+describe("query link path", () => {
+  it("uses the tool path independently of workspace names", () => {
+    const url = new URL(encodeQueryLink("http://localhost/quarry/example/", {
+      db: "planning", env: "dev", sql: "select 1",
+    }));
+    expect(url.pathname).toBe("/quarry/");
+    expect(url.searchParams.get("db")).toBe("planning");
   });
 });

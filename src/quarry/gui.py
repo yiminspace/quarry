@@ -783,18 +783,22 @@ class Handler(BaseHTTPRequestHandler):
                 _SUBSCRIBERS.discard(q)
 
     def _serve_react_app(self, path: str) -> bool:
-        """Serve the Vite-built React app — the GUI's only frontend, under /app/."""
-        if path == "/app":
+        """Serve the Vite-built React app — the GUI's only frontend, under /quarry/."""
+        if path == "/quarry":
             self.send_response(301)
-            self.send_header("Location", "/app/")
+            query = urlparse(self.path).query
+            self.send_header("Location", "/quarry/" + ("?" + query if query else ""))
             self.end_headers()
             return True
-        if not path.startswith("/app/"):
+        if not path.startswith("/quarry/"):
             return False
         root = _WEB_DIST.resolve()
-        rel = path[len("/app/"):] or "index.html"
+        rel = path[len("/quarry/"):] or "index.html"
+        if rel not in ("index.html", "favicon.svg") and not rel.startswith("assets/"):
+            self._send(404, {"error": "not found"})
+            return True
         target = (root / rel).resolve()
-        if not str(target).startswith(str(root)):
+        if not target.is_relative_to(root):
             self._send(403, {"error": "forbidden"})
             return True
         if not target.is_file():
@@ -823,7 +827,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 self.send_response(301)
-                self.send_header("Location", "/app/")
+                self.send_header("Location", "/quarry/")
                 self.end_headers()
                 return
             if self._serve_react_app(u.path):
@@ -978,7 +982,7 @@ def serve(host="127.0.0.1", port=8765, ws_path=None, open_browser=True) -> int: 
     print("  activity + errors log below; Ctrl-C to stop.", flush=True)
     if open_browser:
         try:
-            webbrowser.open(f"{url}/app/")
+            webbrowser.open(f"{url}/quarry/")
         except Exception:
             pass
     try:

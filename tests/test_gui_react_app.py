@@ -1,4 +1,4 @@
-"""Browser + API checks for the React GUI at /app — the only frontend quarry
+"""Browser + API checks for the React GUI at /quarry — the only frontend quarry
 ships; `gui.py` is backend-only (http.server + /api/* + serving web_dist).
 
 The general feature matrix lives in test_gui_browser.py /
@@ -36,9 +36,9 @@ def _mk_page(browser, url):
 
 
 def test_react_app_mounts_at_app_path(_pw_browser, tmp_path):
-    """The React app is served at /app/ directly (not only via the / redirect)."""
+    """The React app is served at /quarry/ directly (not only via the / redirect)."""
     with _running_gui(tmp_path) as base:
-        ctx, page = _mk_page(_pw_browser, f"{base}/app/")
+        ctx, page = _mk_page(_pw_browser, f"{base}/quarry/")
         try:
             page.wait_for_selector(".brand")
             assert page.locator(".brand").inner_text() == "Quarry"
@@ -185,7 +185,7 @@ def test_api_version(gui_server):
 
 @pytest.mark.integration
 def test_react_app_index_served(gui_server):
-    with urllib.request.urlopen(gui_server.base + "/app/") as resp:
+    with urllib.request.urlopen(gui_server.base + "/quarry/") as resp:
         html = resp.read().decode()
     assert resp.status == 200
     assert 'id="root"' in html
@@ -216,11 +216,11 @@ def test_wheel_includes_web_dist(tmp_path):
         index_name = indexes[0]
         html = zf.read(index_name).decode()
 
-    asset_refs = set(re.findall(r'(?:src|href)="(/app/assets/[^"]+)"', html))
+    asset_refs = set(re.findall(r'(?:src|href)="(/quarry/assets/[^"]+)"', html))
     assert asset_refs, "expected hashed JS/CSS references in the built index"
     web_dist_prefix = index_name.removesuffix("index.html")
     missing = {
-        web_dist_prefix + ref.removeprefix("/app/")
+        web_dist_prefix + ref.removeprefix("/quarry/")
         for ref in asset_refs
     } - names
     assert not missing, f"wheel is missing index-referenced assets: {sorted(missing)}"

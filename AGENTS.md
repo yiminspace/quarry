@@ -8,7 +8,7 @@ The GUI is a React + TypeScript SPA in `web/` (Vite build, `zustand` stores),
 served by the stdlib-only Python backend in `src/quarry/gui.py`
 (`http.server` + `/api/*` handlers). `gui.py` holds no frontend markup or JS —
 it only serves `web/`'s build output (`src/quarry/web_dist/`, built via
-`npm run build` from `web/`) under `/app/`, which is the default landing page
+`npm run build` from `web/`) under `/quarry/`, which is the default landing page
 (`/` redirects there). Because the feature surface lives in a handful of
 components (`web/src/*.tsx`) plus the stores (`web/src/store/*.ts`), it is
 still *exhaustively enumerable* — and we keep it enumerated:
@@ -69,7 +69,7 @@ still *exhaustively enumerable* — and we keep it enumerated:
 dev server, `npm run build` to produce `src/quarry/web_dist/` (what ships in the
 wheel — end users still `pip install` with zero runtime dependencies; Node is
 dev/CI-only). `npm run lint` runs eslint. CI builds `web/` before running the
-Python test suite so `/app` assets exist for the browser layer.
+Python test suite so `/quarry` assets exist for the browser layer.
 
 **The browser suite tests the BUILT bundle, not `web/src`** — after changing
 anything under `web/src`, run `cd web && npm run build` before `pytest`, or you
