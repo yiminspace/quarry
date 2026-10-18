@@ -213,6 +213,15 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.9.0 (2026-10-18)
+
+### Features
+
+- **gui**: Use a workspace-independent /quarry/ URL
+  ([#148](https://github.com/yiminspace/quarry/pull/148),
+  [`bfbe162`](https://github.com/yiminspace/quarry/commit/bfbe16283ac7621d33007f4807d9b99799c6306d))
+
+
 ## v1.8.0 (2026-10-12)
 
 ### Bug Fixes
