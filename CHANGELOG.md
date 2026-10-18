@@ -266,6 +266,24 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.10.0 (2026-10-18)
+
+### Bug Fixes
+
+- Preserve SQL assistant retries and live conversations
+  ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+### Features
+
+- Add configurable SQL assistant with conversation checkpoints
+  ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+- 添加可配置的 SQL 助手与会话恢复 ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+
 ## v1.9.0 (2026-10-18)
 
 ### Features
