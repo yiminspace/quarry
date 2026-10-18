@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueryResult } from "../api";
+import { t } from "../i18n";
 import {
   MAX_PERSISTED_RESULT_BYTES,
   parseMainTable,
@@ -97,7 +98,7 @@ describe("tabTitle", () => {
   });
 
   it("falls back to the new-query placeholder with neither SQL nor a connection", () => {
-    expect(tabTitle(tab({}))).toBe("new query");
+    expect(tabTitle(tab({}))).toBe(t("new_query"));
   });
 });
 
@@ -197,5 +198,31 @@ describe("connection tab recency", () => {
     expect(useTabsStore.getState().activeId).toBe("");
     expect(JSON.parse(localStorage.getItem("qy_empty_tab_groups")!)).toContain('[null,"shop","prod"]');
     expect(s.tabs.filter((tab) => tab.env === "dev")).toHaveLength(2);
+  });
+});
+
+describe("assistant SQL revision guards", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({ tabs: [tab({ sql: "select 1", sqlRevision: 0 })], activeId: "t1", results: {} });
+  });
+  it("tracks every SQL write through either entry point, including editing back to the original", () => {
+    const store = useTabsStore.getState();
+    store.updateActiveTab({ sql: "select 2" });
+    store.updateTab("t1", { sql: "select 1" });
+    expect(useTabsStore.getState().tabs[0].sqlRevision).toBe(2);
+    store.updateTab("t1", { sql: "select 1" });
+    expect(useTabsStore.getState().tabs[0].sqlRevision).toBe(2);
+    expect(JSON.parse(localStorage.getItem("qy_tabs")!)[0].sqlRevision).toBe(2);
+  });
+  it("binds a durable conversation without changing SQL or revision", () => {
+    useTabsStore.getState().bindConversation("t1", "conversation-1");
+    expect(useTabsStore.getState().tabs[0]).toMatchObject({ sql: "select 1", sqlRevision: 0, conversationId: "conversation-1" });
+    expect(JSON.parse(localStorage.getItem("qy_tabs")!)[0].conversationId).toBe("conversation-1");
+  });
+  it("keeps saved template SQL immutable and does not bump its revision on rejected writes", () => {
+    useTabsStore.setState({ tabs: [tab({ sql: "select :id", savedQueryId: "saved", sqlRevision: 0 })] });
+    useTabsStore.getState().updateTab("t1", { sql: "select 2" });
+    expect(useTabsStore.getState().tabs[0]).toMatchObject({ sql: "select :id", sqlRevision: 0 });
   });
 });

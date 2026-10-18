@@ -697,3 +697,226 @@ def test_keeper_control_tokens(page, mode):
     page.locator('#kaBadge').focus()
     assert _style(page, '#kaBadge', 'outlineColor') == _token_color(page, '--accent')
     assert _style(page, '#kaBadge', 'outlineStyle') == 'solid'
+
+
+@pytest.mark.parametrize('language', ['zh', 'en'])
+def test_assistant_chrome_tracks_theme_tokens(page, tmp_path, monkeypatch, language):
+    from test_gui_browser_features import _assistant_scrollbar_styles
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "assistant-config.toml"))
+    page.route('**/api/assistant/config', lambda route: route.fulfill(json={'configured': False}))
+    page.evaluate('language => localStorage.setItem("qy_lang", language)', language)
+    page.reload(wait_until='networkidle')
+    _select_testpg(page)
+    _set_sql(page, 'SELECT 1')
+    page.get_by_test_id('assistant-open').click()
+    page.get_by_test_id('assistant-close').click()
+
+    def token_color(selector, prop, token):
+        return page.locator(selector).evaluate('''(el, [prop, token]) => {
+          const probe = document.createElement('span');
+          probe.style.color = token.startsWith('--') ? `var(${token})` : token;
+          el.parentElement.append(probe);
+          const expected = getComputedStyle(probe).color;
+          const actual = getComputedStyle(el)[prop];
+          probe.remove();
+          return {actual, expected};
+        }''', [prop, token])
+
+    def resize_chrome(selector, edge):
+        return page.locator(selector).evaluate('''(el, edge) => {
+          const style = getComputedStyle(el), grip = getComputedStyle(el, '::after');
+          return {
+            background: style.backgroundColor,
+            borderColor: style[`border${edge}Color`],
+            borderWidth: style[`border${edge}Width`],
+            borderStyle: style[`border${edge}Style`],
+            gripColor: grip.backgroundColor, gripOpacity: grip.opacity,
+            gripWidth: grip.width, gripHeight: grip.height,
+          };
+        }''', edge)
+
+    for mode in ('dark', 'light'):
+        if page.evaluate('document.documentElement.dataset.mode') != mode:
+            page.locator('.vg-switcher-mode').click()
+        page.mouse.move(500, 30)
+        rail = '[data-testid="assistant-open"]'
+        assert page.locator(rail + ' .assistant-rail-name').inner_text() == ('SQL 助手' if language == 'zh' else 'SQL Assistant')
+        assert page.locator(rail + ' i').count() == 0
+        bounds = page.locator(rail).bounding_box()
+        assert bounds['height'] == 88
+        child = page.locator(rail + ' .assistant-rail-name')
+        box = child.bounding_box()
+        assert bounds['x'] <= box['x'] < box['x'] + box['width'] <= bounds['x'] + bounds['width']
+        assert bounds['y'] <= box['y'] < box['y'] + box['height'] <= bounds['y'] + bounds['height']
+        assert child.evaluate('el => getComputedStyle(el).writingMode') == 'vertical-rl'
+        assert _style(page, rail + ' .assistant-rail-name', 'fontSize') == '12px'
+        page.screenshot(path=str(tmp_path / f'assistant-chrome-{language}-{mode}-collapsed.png'))
+        colors = token_color(rail + ' .assistant-rail-name', 'color', '--acc')
+        assert colors['actual'] == colors['expected']
+        colors = token_color(rail, 'backgroundColor', 'color-mix(in srgb,var(--acc) 8%,var(--surf-2))')
+        assert colors['actual'] == colors['expected']
+        page.locator(rail).hover()
+        colors = token_color(rail, 'backgroundColor', 'color-mix(in srgb,var(--acc) 14%,var(--surf-2))')
+        assert colors['actual'] == colors['expected']
+        assert _style(page, rail, 'color') == _token_color(page, '--acc')
+        page.locator(rail).click()
+        page.mouse.move(500, 30)
+        for selector, prop, token in (
+            ('[data-testid="assistant-panel"]', 'backgroundColor', '--surf-2'),
+            ('[data-testid="assistant-close"]', 'color', '--fg3'),
+            ('[data-testid="assistant-close"]', 'backgroundColor', '--surf-2'),
+            ('[data-testid="assistant-close"]', 'borderTopColor', '--line'),
+            ('[data-testid="assistant-input"]', 'color', '--fg'),
+            ('[data-testid="assistant-input"]', 'backgroundColor', '--surf-2'),
+            ('[data-testid="assistant-input"]', 'borderTopColor', '--line'),
+            ('[data-testid="assistant-divider"]', 'backgroundColor', '--surf-1'),
+            ('[data-testid="assistant-ghost"]', 'color', '--fg3'),
+        ):
+            colors = token_color(selector, prop, token)
+            assert colors['actual'] == colors['expected'], (mode, selector, colors)
+        assert _style(page, '[data-testid="assistant-ghost"]', 'opacity') == '0.75'
+        assert _style(page, '[data-testid="assistant-panel"]', 'paddingTop') == '0px'
+        assert page.get_by_test_id('assistant-messages').bounding_box()['y'] == page.get_by_test_id('assistant-panel').bounding_box()['y']
+        assert _style(page, '[data-testid="assistant-messages"]', 'paddingTop') == '14px'
+        assert _style(page, '[data-testid="assistant-messages"]', 'paddingRight') == '16px'
+        assert _style(page, '[data-testid="assistant-messages"]', 'marginRight') == '0px'
+        scrollbar = _assistant_scrollbar_styles(page)
+        assert scrollbar == {'width': '4px', 'trackTop': '38px',
+                             'thumb': _token_color(page, '--line2'), 'buttons': 'none',
+                             'thumbBorderLeft': '0px', 'thumbBorderRight': '0px',
+                             'thumbBackgroundClip': 'border-box',
+                             'standardWidth': 'auto', 'standardColor': 'auto'}
+        assert _style(page, '[data-testid="assistant-input"]', 'boxShadow') == 'none'
+        vertical = resize_chrome('[data-testid="assistant-divider"]', 'Left')
+        horizontal = resize_chrome('#edresizer', 'Bottom')
+        for key in ('background', 'borderColor', 'borderWidth', 'borderStyle', 'gripColor', 'gripOpacity'):
+            assert vertical[key] == horizontal[key], (mode, key, vertical, horizontal)
+        assert vertical['borderWidth'] == '1px' and vertical['borderStyle'] == 'solid'
+        assert vertical['gripOpacity'] == '0.4'
+        assert horizontal['gripColor'] == _token_color(page, '--fg3')
+        assert horizontal['gripOpacity'] == '0.4'
+        assert _style(page, '[data-testid="assistant-divider"]', 'borderLeftWidth') == '1px'
+        assert _style(page, '[data-testid="assistant-divider"]', 'borderRightWidth') == '0px'
+        for prop in ('borderBottomWidth', 'borderBottomColor', 'borderBottomStyle'):
+            assert _style(page, '[data-testid="assistant-divider"]', prop) == _style(page, '.toolbar', prop)
+        assert _style(page, '[data-testid="assistant-divider"]', 'borderBottomWidth') == '1px'
+        assert _style(page, '[data-testid="assistant-divider"]', 'borderBottomStyle') == 'solid'
+        assert page.evaluate('''() => {
+          const divider = document.querySelector('[data-testid="assistant-divider"]').getBoundingClientRect();
+          const toolbar = document.querySelector('.toolbar').getBoundingClientRect();
+          return Math.abs(divider.right - toolbar.left) <= 1 && Math.abs(divider.bottom - toolbar.bottom) <= 1;
+        }''')
+        assert page.get_by_test_id('assistant-divider').evaluate('''el => {
+          const style = getComputedStyle(el), grip = getComputedStyle(el, '::after');
+          return parseFloat(style.borderLeftWidth) + parseFloat(grip.left) + parseFloat(grip.width) / 2;
+        }''') == 3
+        assert vertical['gripWidth'] == horizontal['gripHeight'] == '2px'
+        assert vertical['gripHeight'] == horizontal['gripWidth'] == '30px'
+        assert page.get_by_test_id('assistant-divider').bounding_box()['width'] == page.locator('#edresizer').bounding_box()['height'] == 6
+        field = page.get_by_test_id('assistant-input')
+        field.hover()
+        assert page.locator('[data-testid^="assistant-language"], .assistant-language-row').count() == 0
+        assert _style(page, '[data-testid="assistant-input"]', 'paddingBottom') == '10px'
+        assert _style(page, '[data-testid="assistant-input"]', 'minHeight') == '70px'
+        assert page.get_by_test_id('assistant-close').evaluate('el => getComputedStyle(el, "::before").content') == 'none'
+        page.screenshot(path=str(tmp_path / f'assistant-chrome-{language}-{mode}-expanded.png'))
+        assert _style(page, '.assistant-close i', 'borderTopWidth') == '0px'
+        assert _style(page, '.assistant-close i', 'borderRadius') == '0px'
+        field.focus()
+        assert page.locator('[data-testid^="assistant-language"]').count() == 0
+        field.fill('')
+        field.evaluate('el => el.blur()')
+        field.hover()
+        assert _style(page, '[data-testid="assistant-input"]', 'borderTopColor') == _token_color(page, '--line2')
+        field.focus()
+        colors = token_color('[data-testid="assistant-input"]', 'borderTopColor', 'color-mix(in srgb,var(--acc) 55%,var(--line2))')
+        assert colors['actual'] == colors['expected']
+        assert _style(page, '[data-testid="assistant-input"]', 'boxShadow') == 'none'
+        field.evaluate('el => el.blur()')
+        divider = page.get_by_test_id('assistant-divider')
+        page.locator('#edresizer').hover()
+        horizontal_hover = resize_chrome('#edresizer', 'Bottom')
+        divider.hover()
+        vertical_hover = resize_chrome('[data-testid="assistant-divider"]', 'Left')
+        for key in ('background', 'borderColor', 'borderWidth', 'borderStyle', 'gripColor', 'gripOpacity'):
+            assert vertical_hover[key] == horizontal_hover[key], (mode, key, vertical_hover, horizontal_hover)
+        assert vertical_hover['borderColor'] == vertical['borderColor']
+        assert vertical_hover['gripColor'] == _token_color(page, '--acc')
+        assert vertical_hover['gripOpacity'] == '1'
+        assert vertical_hover['gripWidth'] == horizontal_hover['gripHeight'] == '2px'
+        assert vertical_hover['gripHeight'] == horizontal_hover['gripWidth'] == '30px'
+        colors = token_color('[data-testid="assistant-divider"]', 'backgroundColor', '--bg3')
+        assert colors['actual'] == colors['expected']
+        assert _style(page, '[data-testid="assistant-divider"]', 'borderRightWidth') == '0px'
+        page.screenshot(path=str(tmp_path / f'assistant-divider-{language}-{mode}-hover.png'))
+        divider.focus()
+        divider.press('ArrowRight')
+        divider.press('ArrowLeft')
+        page.mouse.move(500, 30)
+        assert divider.evaluate('el => el.matches(":focus-visible")')
+        assert _style(page, '[data-testid="assistant-divider"]', 'outlineColor') == _token_color(page, '--acc')
+        assert _style(page, '[data-testid="assistant-divider"]', 'outlineWidth') == '2px'
+        assert _style(page, '[data-testid="assistant-divider"]', 'outlineStyle') == 'solid'
+        assert _style(page, '[data-testid="assistant-divider"]', 'outlineOffset') == '-2px'
+        focused = resize_chrome('[data-testid="assistant-divider"]', 'Left')
+        assert focused['background'] == _token_color(page, '--bg3')
+        assert focused['gripColor'] == _token_color(page, '--acc') and focused['gripOpacity'] == '1'
+        page.get_by_test_id('assistant-close').hover()
+        assert _style(page, '.assistant-close', 'backgroundColor') == _token_color(page, '--bg3')
+        assert _style(page, '.assistant-close', 'color') == _token_color(page, '--fg')
+        assert _style(page, '.assistant-close', 'borderTopColor') == _token_color(page, '--line2')
+        page.get_by_test_id('assistant-close').click()
+        page.get_by_test_id('assistant-open').click()
+        page.mouse.move(500, 30)
+        assert _style(page, '.assistant-close', 'outlineStyle') == 'none'
+        assert page.get_by_test_id('assistant-close').evaluate('el => document.activeElement !== el')
+        page.get_by_test_id('assistant-close').click()
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_assistant_markdown_chrome_tracks_theme_tokens(page, tmp_path, monkeypatch, mode):
+    from test_gui_browser_features import _ASSISTANT_MARKDOWN, _AssistantBrowserStub, _assistant_send, _drag
+    page.set_viewport_size({'width': 1280, 'height': 1200})
+    stub = _AssistantBrowserStub(page, tmp_path, monkeypatch)
+    stub.response = _ASSISTANT_MARKDOWN
+    _select_testpg(page)
+    _set_sql(page, '')
+    page.evaluate('mode => document.documentElement.dataset.mode = mode', mode)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_send(page, 'Explain the example')
+    page.locator('.assistant-markdown table').wait_for()
+    page.mouse.move(500, 30)
+    for selector, prop, token in (
+        ('.assistant-markdown h2', 'color', '--acc'),
+        ('.assistant-markdown h2 strong', 'color', '--acc'),
+        ('.assistant-markdown p strong', 'color', '--fg'),
+        ('.assistant-markdown p > code', 'color', '--fg'),
+        ('.assistant-markdown p > code', 'backgroundColor', '--bg3'),
+        ('.assistant-markdown pre', 'backgroundColor', '--bg3'),
+        ('.assistant-markdown pre', 'borderTopColor', '--line'),
+        ('.assistant-markdown pre code', 'color', '--fg'),
+        ('.assistant-markdown pre code .hljs-keyword', 'color', '--acc'),
+        ('.assistant-markdown pre code .hljs-string', 'color', '--ok'),
+        ('.assistant-markdown pre code .hljs-number', 'color', '--num'),
+        ('.assistant-markdown pre code .hljs-built_in', 'color', '--num'),
+        ('.assistant-markdown pre code .hljs-literal', 'color', '--bool'),
+        ('.assistant-markdown pre code .hljs-comment', 'color', '--fg3'),
+        ('.assistant-markdown blockquote', 'color', '--fg3'),
+        ('.assistant-markdown blockquote', 'borderLeftColor', '--line2'),
+        ('.assistant-markdown a', 'color', '--acc'),
+        ('.assistant-table-scroll', 'borderTopColor', '--line'),
+        ('.assistant-markdown th', 'backgroundColor', '--bg3'),
+        ('.assistant-markdown th', 'color', '--fg'),
+        ('.assistant-markdown td', 'color', '--fg2'),
+        ('.assistant-markdown td', 'borderBottomColor', '--line'),
+    ):
+        assert _style(page, selector, prop) == _token_color(page, token), (mode, selector, prop)
+    assert page.locator('.assistant-message-assistant').evaluate('el => Math.abs(parseFloat(getComputedStyle(el).lineHeight) / parseFloat(getComputedStyle(el).fontSize) - 1.55) < 0.01')
+    assert _style(page, '.assistant-message-assistant', 'marginBottom') == '16px'
+    assert _style(page, '.assistant-markdown p', 'marginBottom') == '8px'
+    assert _style(page, '.assistant-markdown ul', 'marginBottom') == '8px'
+    assert _style(page, '.assistant-markdown h2', 'marginBottom') == '6px'
+
+    _drag(page, '#edresizer', 0, 280)
+    page.get_by_test_id('assistant-messages').evaluate('el => { el.scrollTop = 0; }')
+    page.screenshot(path=str(tmp_path / f'assistant-markdown-{mode}.png'))

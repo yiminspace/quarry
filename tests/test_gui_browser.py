@@ -263,7 +263,7 @@ def test_theme_toggle_flips_data_theme(page):
 @requires_browser
 @pytest.mark.browser
 def test_language_toggle_switches_run_label(page):
-    # default lang is 'en' -> Run label; the lang switcher shows the current locale 'EN'
+    # The shared fixture explicitly selects English; the switcher shows 'EN'.
     run_label = page.locator("#runLbl")
     run_label.wait_for()
     assert run_label.inner_text() == "Run"
@@ -431,8 +431,8 @@ def page_saved(_pw_browser, tmp_path):
         "SELECT * FROM customers WHERE id = :id\n"
     )
     with _running_gui(tmp_path, seed_queries={"cust-by-id": q}) as url:
-        ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
-        from conftest import stub_cdn, stub_events
+        from conftest import stub_cdn, stub_events, english_browser_context
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
         stub_cdn(ctx)
         stub_events(ctx)
         pg = ctx.new_page()

@@ -814,7 +814,29 @@ class Handler(BaseHTTPRequestHandler):
             log.warning("%s → %s (code=%s)", path, exc, exc.exit_code)
         else:
             log.error("%s → %s\n%s", path, exc, traceback.format_exc())
-        self._send(400, {"error": str(exc), "code": getattr(exc, "exit_code", None)})
+        self._send(getattr(exc, "status_code", 400), {"error": str(exc), "code": getattr(exc, "exit_code", None)})
+
+    def _serve_assistant(self, body: dict) -> None:
+        """One request's model stream; deliberately separate from broadcast /events."""
+        from . import assistant
+
+        assistant._text(body.get("conversationId"), "Conversation ID", 100, required=True)
+        if "requestId" in body:
+            assistant._text(body["requestId"], "Request ID", 100, required=True)
+        events = assistant.stream_chat(body, gui=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            for event in events:
+                self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+        except OSError:
+            pass  # disconnect closes the upstream response and records interruption
+        finally:
+            events.close()
 
     def do_GET(self):
         if not self._local_origin_ok():
@@ -858,6 +880,16 @@ class Handler(BaseHTTPRequestHandler):
                 out = api_changelog()
             elif u.path == "/api/keepalive":
                 out = api_keepalive()
+            elif u.path == "/api/assistant/config":
+                from .assistant_config import config_status
+                out = config_status()
+            elif u.path == "/api/assistant/preferences":
+                from .assistant_config import gui_preferences
+                out = gui_preferences()
+            elif u.path == "/api/assistant/conversations":
+                from . import assistant, assistant_store
+                out = assistant.conversation_view(assistant_store.get(g("id"))) if g("id") else {
+                    "conversations": [assistant.conversation_view(item) for item in assistant_store.list_conversations()]}
             else:
                 return self._send(404, {"error": "not found"})
             request_log = log.debug if u.path == "/api/keepalive" else log.info
@@ -873,9 +905,35 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.monotonic()
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if u.path.startswith("/api/assistant/") and not 0 <= length <= 256_000:
+                return self._send(413, {"error": "Assistant request is too large."})
             body = json.loads(self.rfile.read(length) or b"{}")
+            if u.path.startswith("/api/assistant/") and not isinstance(body, dict):
+                return self._send(400, {"error": "Assistant request must be an object."})
             if u.path == "/api/query":
                 out = api_query(body)
+            elif u.path == "/api/assistant/chat":
+                return self._serve_assistant(body)
+            elif u.path == "/api/assistant/conversations":
+                from .assistant import create_conversation
+                out = create_conversation(body)
+            elif u.path == "/api/assistant/cancel":
+                from .assistant import cancel_chat
+                out = cancel_chat(_req(body, "conversationId"), _req(body, "requestId"))
+            elif u.path in {"/api/assistant/conversations/update", "/api/assistant/conversations/apply", "/api/assistant/conversations/restore"}:
+                from . import assistant, assistant_store
+                identity = _req(body, "id")
+                assistant._context(assistant_store.get(identity))
+                if u.path.endswith("/update"):
+                    out = assistant_store.update(identity, body.get("revision"), body.get("sql", ""))
+                elif u.path.endswith("/apply"):
+                    explicit = body.get("explicit", False)
+                    if type(explicit) is not bool:
+                        raise QuarryError("explicit must be a boolean")
+                    out = assistant_store.apply(identity, body.get("revision"), _req(body, "sql"), _req(body, "messageId"), explicit=explicit)
+                else:
+                    out = assistant_store.restore(identity, body.get("revision"), _req(body, "checkpointId"))
+                out = assistant.conversation_view(out)
             elif u.path == "/api/record-link":
                 try:
                     out = row_link.record_query(_resolve(_req(body, "db"), body.get("env")),

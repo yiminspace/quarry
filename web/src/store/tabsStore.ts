@@ -17,6 +17,10 @@ export type Tab = {
   workspace?: string | null;
   visited?: number;
   savedQueryId?: string;
+  /** Independent from the tab lifetime; durable history lives on the backend. */
+  conversationId?: string;
+  /** Incremented by the single SQL write sink, including user edits and restore. */
+  sqlRevision?: number;
 };
 
 /** Workspace is part of a tab's identity, including when a removed workspace
@@ -101,7 +105,7 @@ function newId(): TabId {
   return `t${++TID}`;
 }
 
-type StoredTab = { id?: string; sql?: string; db?: string | null; env?: string | null; title?: string | null; workspace?: string | null; visited?: number; savedQueryId?: string };
+type StoredTab = Partial<Tab>;
 type StoredResult = { db?: string | null; env?: string | null; res?: (QueryResult & { _sql?: string }) | null } | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
@@ -173,6 +177,8 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     workspace: tb.workspace,
     visited: Number.isFinite(tb.visited) ? tb.visited : 0,
     savedQueryId: typeof tb.savedQueryId === "string" ? tb.savedQueryId : undefined,
+    conversationId: typeof tb.conversationId === "string" ? tb.conversationId : undefined,
+    sqlRevision: Number.isSafeInteger(tb.sqlRevision) ? tb.sqlRevision : 0,
   }));
   const ati = Math.min(Math.max(Number(localStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
   return { tabs, activeId: tabs[ati]?.id ?? "", results: readStoredResults(tabs, ati) };
@@ -182,7 +188,7 @@ function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
     localStorage.setItem(
       TABS_KEY,
-      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited, savedQueryId: tb.savedQueryId }))),
+      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision }))),
     );
     localStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
@@ -292,6 +298,7 @@ export type TabsState = {
   updateActiveTab: (patch: Partial<Pick<Tab, "sql" | "db" | "env">>) => void;
   updateTab: (id: TabId, patch: Partial<Pick<Tab, "sql" | "db" | "env">>) => void;
   setTabResult: (id: TabId, snapshot: TabResultSnapshot | null) => void;
+  bindConversation: (id: TabId, conversationId: string | undefined) => void;
 };
 
 export const useTabsStore = create<TabsState>((set, get) => {
@@ -421,7 +428,10 @@ export const useTabsStore = create<TabsState>((set, get) => {
         patch = { ...patch };
         delete patch.sql;
       }
-      let tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch, ...("db" in patch ? { workspace: workspaceFor(patch.db ?? null) } : {}) } : t));
+      let tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch,
+        sqlRevision: "sql" in patch && patch.sql !== t.sql ? (t.sqlRevision ?? 0) + 1 : t.sqlRevision,
+        ...("db" in patch ? { workspace: workspaceFor(patch.db ?? null) } : {}),
+      } : t));
       if (id === s.activeId && ("db" in patch || "env" in patch)) tabs = visit(tabs, id);
       // SQL input is the hot path: never reserialize unchanged result payloads
       // on every keystroke. A low-frequency connection/env re-point still
@@ -429,6 +439,13 @@ export const useTabsStore = create<TabsState>((set, get) => {
       // explicit null entries keep the established reload contract.
       if ("db" in patch || "env" in patch) saveTopology(tabs, s.activeId, s.results);
       else saveTabs(tabs, s.activeId);
+      set({ tabs });
+    },
+
+    bindConversation: (id, conversationId) => {
+      const s = get();
+      const tabs = s.tabs.map((tab) => tab.id === id ? { ...tab, conversationId } : tab);
+      saveTabs(tabs, s.activeId);
       set({ tabs });
     },
 

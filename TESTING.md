@@ -112,8 +112,9 @@ tab-switching silently kept — and exported — another tab's result set.)
 1. **Existence audit** (code → matrix). Every interaction binding in
    `web/src/*.tsx` (`grep 'onClick\|onKeyDown\|onChange\|onMouseDown\|onDoubleClick'`),
    every `localStorage` key (`qy_lang qy_theme qy_sw qy_edh qy_tabs qy_ati
-   qy_tabres qy_ui qy_maxrows qy_collapsed qy_hist qy_result qy_auto_run` — legacy keys
-   retain their value formats; `qy_auto_run` adds scoped execution preferences),
+   qy_tabres qy_ui qy_maxrows qy_collapsed qy_hist qy_result qy_auto_run` —
+   legacy keys retain their value formats; `qy_auto_run` adds scoped execution
+   preferences; the obsolete `qy_assistant_language` key is ignored),
    and every `/api/*` endpoint the frontend fetches must map to a row.
    *Catches:* implemented-but-untested behavior. *Blind to:* features that
    should exist but don't, and cross-feature state bugs.
@@ -151,7 +152,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 2 | header | no permanent read-only / auto LIMIT badge; query safety is unchanged | B:test_load_shows_brand_without_readonly_badge, F:test_icon_hover_hints_cover_header_workbench_and_modals | ✅ |
 | 3 | app shell/workbench | explicit production configuration drives muted SQL-editor/connection/tab/Run chrome; selected tabs retain one short underline, editor has no extra accent line; localized Production label occupies a fixed slot at the end of the tab bar, outside the editor; stays visible during SQL scrolling/resizing and in the zero-tab state; header stays neutral without a production label and env switching keeps controls in place | F:test_production_context_follows_connection_without_toasts, F:test_single_production_connection_context_is_localized, F:test_production_context_has_stable_layout, F:test_production_tab_context_leaves_sql_unobstructed_when_scrolled_or_resized, F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production, V:test_production_context_tokens | ✅ |
 | 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
-| 5 | header | language toggle 中/EN (reload, full chrome, persistence) | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome | ✅ |
+| 5 | header/assistant | fresh profiles default to Chinese; language toggle 中/EN reloads full chrome and persists the choice, including assistant controls and conversation history | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome, F:test_fresh_default_language_is_chinese_and_switch_persists, F:test_assistant_localizes_explanation_checkpoint_configuration_and_history | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
 | 7 | sidebar | connection groups; an ungrouped env sibling inherits the logical DB's sole group instead of creating a duplicate under OTHER; workspace origin label prefers the majority workspace when a group spans directories | B:test_load_shows_brand_without_readonly_badge (origin single-ws only), F:test_missing_group_env_sibling_stays_in_one_sidebar_env_set, A:test_ungrouped_env_member_inherits_its_only_sibling_group, A:test_group_workspace_origin_prefers_majority_source | 🟡 |
 | 8 | sidebar | group collapse/expand + persistence | F:test_group_collapse_persists_after_reload | ✅ |
@@ -191,7 +192,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 41 | toolbar | CSV export: `quarry-<db>.csv`, UTF-8 BOM, quoting/escaping | F:test_csv_export_content_bom_and_escaping, F:test_lossless_numeric_sort_and_export, F:test_empty_columns_and_duplicate_names_export | ✅ |
 | 42 | toolbar | JSON export: `quarry-<db>.json`, row content | F:test_json_export_content, F:test_lossless_numeric_sort_and_export | ✅ |
 | 43 | toolbar | history modal: list + recall into editor; Esc closes | B:test_history_lists_runs…, F:test_history_modal_escape_closes | ✅ |
-| 44 | toolbar | history search / ago timestamps / empty toast / 100 cap | F:test_history_search_filters, F:test_history_empty_toast (ago + cap unasserted) | 🟡 |
+| 44 | toolbar | history search / ago timestamps / empty Queries view with Conversations still available / 100 cap | F:test_history_search_filters, F:test_history_empty_keeps_conversations_accessible (ago + cap unasserted) | 🟡 |
 | 45 | grid | render: sticky rownum, typed headers, zebra rows | B:test_click_table_renders_grid_with_types_and_status | ✅ |
 | 46 | grid | cell type coloring (num/uuid/ts/bool/json/null) | F:test_cell_type_coloring, F:test_cell_json_opens_tree_modal | ✅ |
 | 47 | grid | sort asc/desc, exact for bigint/decimal strings; 3rd click restores original order; arrow | B:test_sort_column_toggles_arrow_and_reorders, F:test_sort_numeric_strings_and_third_click_restores, F:test_lossless_numeric_sort_and_export | ✅ |
@@ -269,6 +270,16 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 115 | SQLite | tabular EXPLAIN QUERY PLAN, GUI write rejection, real SELECT/PRAGMA pagination with sort reapplied, active-tab exports and persisted results, latest-wins and origin-tab routing; copied record links use the producing SQL and select the expected row | F:test_sqlite_explain_query_plan_and_gui_readonly, F:test_sqlite_load_more_sort_export_and_tab_restore, F:test_sqlite_pragma_load_more_does_not_repeat_first_page, F:test_sqlite_latest_response_stays_on_origin_tab, F:test_sqlite_record_link_uses_producing_sql_and_selects_one_row, A:test_sqlite_gui_api_cannot_enable_writes | ✅ |
 | 116 | SQLite/workspaces | two real workspaces with distinct connection keys/db names resolve the same `sqlite:///data/local.db` against their own source; conn-info shows each database/config path; connection switches and reload preserve each workspace's draft/result, JSON/CSV export uses the active workspace and does not execute drafts | F:test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results | ✅ |
 | 117 | SQLite/saved queries | supplied parameter values filter the real database but stay out of persisted SQL in `qy_tabres`, `qy_tabs` and `qy_hist`; the parameterized template and selected result survive tab switching/reload, and closing the tab saves only the template to History | F:test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage | ✅ |
+| 118 | editor/assistant | collapsed 32px rail with the full vertical SQL Assistant / SQL 助手 label stays on the left inside the SQL input; expanded chat is left of the editor and reaches the query toolbar's bottom without overlapping result headers, including editor/window/composer resizing; expanded editor minimum 200px keeps the composer visible, collapsed input remains 88px; query controls remain below the right editor; dragging down can fill the available height above status (or section bottom without results), with controls visible after window/toolbar changes; dragging back or hiding restores results; hide restores a full-width toolbar, minimizes editor and expands results; reopen restores height; 6px vertical divider shares the horizontal bar's colors, transposed grip and hover feedback; its 1px border is on the left and the right border is absent; its 1px bottom border matches and joins the toolbar border without a gap; keyboard focus has an accent outline, and mouse/keyboard resizing preserves width; 22×26px close handle centered at the top of the divider; messages begin at panel top with normal 14px inner spacing; click and keyboard close are independent of divider resizing, no repeated title/send/context/maximize controls | F:test_assistant_layout_collapses_inside_editor_and_reopens, F:test_assistant_panel_stays_above_result_headers_after_resizing, F:test_assistant_editor_can_expand_to_status_bar_and_restore_results, F:test_assistant_divider_restores_width_after_collapse, V:test_assistant_chrome_tracks_theme_tokens, V:test_assistant_markdown_chrome_tracks_theme_tokens | ✅ |
+| 119 | assistant/composer | Enter sends, Shift+Enter adds a line, IME confirmation does not send; unsent draft and accepted explanation intent survive hide/reopen and tab switches; missing model preserves the attempted message with a CLI configuration hint; no model configuration GUI | F:test_assistant_enter_shift_enter_and_ime_composition, F:test_assistant_unsent_draft_and_explanation_intent_survive_hide_and_tab_switch, F:test_assistant_unconfigured_preserves_input_and_only_shows_cli_hint | ✅ |
+| 120 | assistant/context | opening existing SQL makes no model request; an empty composer offers a faint localized overlay showing the complete explanation prompt with no keyboard instructions; Tab fills exactly the displayed text only, Enter sends explain=true; empty SQL, existing drafts and IME do not accept the suggestion; explanation never changes or executes SQL | F:test_assistant_suggested_explanation_requires_tab_then_enter, F:test_assistant_explanation_suggestion_respects_drafts_empty_sql_and_composition | ✅ |
+| 121 | assistant/stream | replies render incrementally with compact line/paragraph spacing in an independently scrolling history with a fixed composer; follows new text at the bottom but respects a reader scrolling upward; provider failures/interrupted streams cannot apply partial SQL | F:test_assistant_stream_scroll_keeps_composer_fixed_and_respects_reader, F:test_assistant_failed_reply_cannot_apply_partial_sql, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
+| 122 | assistant/editor | completed edits apply only to unchanged origin SQL and create a checkpoint; Restore previous SQL keeps chat and both drafts in SQL history, marks the original change as restored and does not create a restore chain even with rapid clicks or legacy history; a lost successful Apply response can be retried without duplicate checkpoints; changing SQL never executes, existing Run does | F:test_assistant_apply_restore_preserves_drafts_and_only_run_executes, F:test_assistant_restore_repeated_clicks_do_not_create_an_undo_chain, F:test_assistant_inflight_manual_edit_requires_explicit_application, F:test_assistant_manual_edit_during_apply_roundtrip_remains_restorable, F:test_assistant_edit_cancels_pending_environment_autorun, F:test_assistant_apply_lost_response_retry_preserves_drafts_and_checkpoints | ✅ |
+| 123 | assistant/tabs | late replies after manual editing, tab/environment navigation or closing cannot overwrite the new context or resurrect a closed tab; an edited origin needs explicit Apply SQL; late history reads/errors cannot replace a newer reply or configuration error | F:test_assistant_inflight_manual_edit_requires_explicit_application, F:test_assistant_late_reply_cannot_overwrite_other_context, F:test_assistant_late_history_load_cannot_replace_a_new_reply, F:test_assistant_late_history_error_preserves_configuration_error_and_draft | ✅ |
+| 124 | history/conversations | conversations persist independently of tabs on the local backend; History → Conversations remains accessible with zero tabs, restores SQL/messages/checkpoints without execution, reuses an open conversation without replacing its running or newer reply/checkpoint and flushes latest manual SQL on close | F:test_assistant_conversation_reopens_closed_tab_with_checkpoints, F:test_assistant_close_flushes_latest_manual_sql_to_history, F:test_assistant_history_search_empty_and_unavailable_connection, F:test_assistant_existing_conversation_loads_when_model_is_unconfigured, F:test_assistant_close_during_conversation_creation_keeps_latest_sql, F:test_assistant_history_reopen_preserves_live_session | ✅ |
+| 125 | assistant/saved queries | changing an immutable saved-query template creates an editable draft and leaves the source template intact, without executing either query | F:test_assistant_saved_query_edit_creates_draft_preserves_template | ✅ |
+| 126 | assistant/Markdown | assistant replies render headings, emphasis, lists, inline/fenced code, tables and blockquotes in streams and recovered history; user/system messages stay literal; code examples cannot apply or run SQL; raw HTML, executable/local URLs and remote image requests are blocked; external links open separately; code/tables scroll within a narrow panel; headings use the theme accent and SQL keywords/strings/numbers/comments use distinct theme tokens | F:test_assistant_markdown_formats_reply_and_reopened_history_without_sql_changes, F:test_assistant_markdown_blocks_html_unsafe_urls_and_remote_images, F:test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed, F:test_assistant_markdown_wide_code_and_tables_scroll_inside_narrow_panel, V:test_assistant_markdown_chrome_tracks_theme_tokens | ✅ |
+| 127 | assistant/language | no reply-language controls appear on hover or keyboard focus; the GUI reads the CLI-owned preference and backend-resolved system language, independently of interface language and obsolete localStorage; reopening/focus/visibility/reload reads CLI updates without changing drafts/SQL/history or sending model/query requests; the preference affects GUI replies only | F:test_assistant_has_no_reply_language_settings_on_hover_or_focus, F:test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state, F:test_assistant_reply_language_rereads_cli_and_system_changes, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
 
 ### SQLite integration audit (2026-10-12)
 
@@ -392,6 +403,9 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
 | toolbar | arbitrary result-cap values beyond 100/500/2000/5000 | deferred; the row-limit selector deliberately retains its existing presets |
+| assistant | model settings form, query execution from chat, maximizing the panel and a separate checkpoint manager | intentionally excluded; CLI configuration, existing Run and inline Restore previous SQL are the supported controls |
+| assistant | cross-connection joins, Redis/Cypher generation and result-row analysis | first assistant release is scoped to SQL/schema on the current PostgreSQL/MySQL/SQLite connection; query result rows are not sent automatically |
+| assistant/history | conversation deletion, export and full-text search of message bodies | deferred; History provides local conversation recovery while retaining the existing query-history search |
 
 Safety/performance-relevant UX invariants that must never regress (rows 13,
 27–28, 37, 47, 102):
@@ -840,3 +854,205 @@ guard described here.
   Browser tests cover cross-workspace connection switching, copied query links,
   reopening links, reload and focus restoration without execution. No shared
   store, result, draft or production-preference write site changes.
+
+### SQL assistant audits (2026-10-18)
+
+- **Existence:** `EditorWorkspace` owns open/hide, pointer resizing in both
+  directions and keyboard resizing of the split (118). Both directions reuse
+  `vg-hresizer` chrome, with vertical geometry, a left-side border and the inherited bottom border joining the toolbar (118). `SqlAssistant` owns
+  composer input, Tab acceptance, Enter/Shift+Enter/IME handling (119–120),
+  read-only reply-preference refresh (127),
+  scroll-follow state (121), Apply SQL and Restore previous SQL (122–123).
+  `HistoryModal` adds Queries/Conversations selection, conversation filtering
+  and recovery (124). Model configuration remains CLI-only. `/api/assistant/config`,
+  `/conversations` (list/get/create), `/conversations/update`,
+  `/conversations/apply`, `/conversations/restore`, `/chat` and `/cancel` map to
+  119–124. Chat uses its own NDJSON stream rather than the notification SSE
+  channel. GET `/api/assistant/preferences` (127) reads the CLI-owned
+  `[gui.assistant] reply_language` setting and resolved system language. There
+  is no preferences POST or GUI language-setting interaction. The legacy `qy_assistant_language`
+  key is no longer read or written. `qy_tabs` gains `conversationId`
+  and `sqlRevision`; `qy_edh` still stores editor height, and `qy_lang` controls
+  interface language. Messages and checkpoints live in the local backend
+  conversation store. Markdown links and local overflow scrolling map to 126;
+  rendering adds no API, storage key, SQL writer or execution binding.
+- **Capability / current interface:** chat opens on the left of the SQL editor.
+  Its 32px collapsed rail displays the complete SQL 助手/SQL Assistant label
+  vertically, without a separate icon. The expanded close control is a
+  22×26px handle centered on the 6px divider, 8px from its top. Messages start
+  at the panel top with normal 14px inner spacing. The separator and close
+  button are siblings, so clicking or keyboard-activating close does not start
+  a resize. The scrollport reaches the divider with no right-side margin. In
+  Chromium/WebKit its scrollbar is 4px wide and the track starts 38px below
+  the panel top, clearing the close handle locally. Standard thin scrollbars
+  remain the fallback. Text keeps its 16px right padding (12px on small screens).
+  The vertical divider reuses the horizontal resize bar's colors and hover
+  feedback; both are 6px thick, with the 30×2px grip transposed vertically.
+  Its 1px boundary is on the left, with no right boundary; its inherited 1px
+  bottom border matches and joins the toolbar border without a gap. The grip's offset
+  compensates for the left border so its center stays in place. Normal and
+  hover backgrounds, border color, grip color and opacity match. Keyboard focus adds an accent
+  outline and uses the hover colors. Dragging right or pressing ArrowRight grows
+  chat. The query toolbar is rendered
+  once below the right editor, with the chat composer aligned to its lower
+  edge. Collapsing restores a full-width toolbar, an 88px editor and more
+  result space. Expanded dragging keeps at least 200px for a composer resized
+  to 140px, and can use the available height above status (or the section
+  bottom without results). Resizing the window, wrapping the toolbar and
+  returning from a smaller window preserve the manual height preference.
+  Opening loads reply preferences and existing local conversation history;
+  it makes no model-configuration, conversation-create or model request. With
+  SQL and an empty, idle composer, faint text shows the complete localized explanation prompt
+  aligned to the textarea's font and padding. There is no GUI reply-language
+  setting, including on hover or keyboard focus. `qy ai language zh|en|system`
+  controls all GUI replies; its default follows the language of the system
+  running Quarry (Chinese resolves to zh, other languages to en). Interface
+  language and obsolete browser-local preferences do not override it. Existing
+  drafts, SQL and history remain unchanged. Tab accepts the exact neutral
+  explanation suggestion and Enter sends `explain=true`; Shift+Tab, existing
+  drafts and IME retain normal behavior. Editing the accepted text clears
+  explanation-only intent. The suggestion uses the backend-resolved reply
+  language and contains no explicit language instruction. This preference does
+  not affect CLI replies or model settings; legacy auto is a system alias.
+  The assistant can explain or propose SQL using the selected SQL connection's
+  metadata. The existing Run action remains the sole query execution path.
+  Missing model configuration preserves input and points to the CLI. History
+  remains reachable with zero tabs and reopens SQL, messages and checkpoints
+  without executing. Markdown assistant replies support formatted explanations
+  and bounded wide code/tables; user/system messages remain literal. HTML is
+  skipped, images are not fetched, and only HTTP(S)/mailto links navigate with
+  `noopener noreferrer`. Headings and SQL token colors use theme variables.
+  GUI configuration, chat-triggered execution, maximize, cross-connection joins,
+  non-SQL engines, result-row analysis and conversation deletion/export remain
+  explicit Design gaps.
+- **Shared state / complete write inventory:** existing SQL writers are
+  initial/legacy restoration; editor input and history navigation; table and
+  Alt+table previews; key inspection; saved-query open/response and Copy as new
+  query; Format; History recall; environment seeding; focus/query links.
+  New writers are `useSqlAssistant.commitSql` (completed auto-apply, explicit
+  Apply SQL and Restore) and conversation recovery into a new tab. Normal tab
+  writes pass through `tabsStore.updateTab`, which increments a monotonic SQL
+  revision; saved templates remain immutable and assistant changes create a
+  draft. `bindConversation` is the only live conversation-ID writer, with
+  hydration/persistence carrying that ID. `commitSql` compares origin tab,
+  workspace, database, environment, SQL and revision and calls `keepDraft`
+  before writing. Readers include the editor, sidebar/table selection, tab
+  titles, URL/title synchronization, history, request baselines and persistence.
+  Query request tracking and each tab's result snapshot remain separate:
+  assistant streams never feed result grids, exports or Run. Tests combine
+  asynchronous replies with manual edits, tab/environment switches and close;
+  checkpoint restoration with SQL history; saved templates with editable
+  drafts; and conversation persistence with close/reload/reopen. Assistant
+  writes clear pending origin-tab navigation so delayed table metadata cannot
+  auto-run an edit or Restore. Coverage holds metadata until after each write
+  and observes no query call. The apply-response race delays persistence,
+  introduces a manual edit, explicitly applies the retained proposal and
+  verifies Restore returns that manual SQL. Apply marks its proposal pending
+  before the request; a lost successful HTTP response and a later autosave 409
+  cannot hide Apply or mislabel the editor as restored. Retrying unchanged SQL
+  reuses its checkpoint; applying after a manual edit preserves that draft in
+  the new checkpoint. The browser test commits through the real HTTP handler
+  before dropping the first response and verifies both retry paths without Run.
+  Closing while conversation creation
+  is in flight still flushes the latest SQL. Restore reuses the original
+  assistant checkpoint, shows a non-clickable restored state while its target
+  SQL is current, and cannot create an undo chain through rapid clicks or
+  legacy system records. Backend restore audit messages remain persisted;
+  visible messages and actionable checkpoint identities do not grow.
+  `setDraft(tabId)` owns in-memory composer text and explanation intent; both
+  survive hide/reopen and tab switches without backend draft persistence.
+  `assistantPreferencesStore.refresh` writes only the latest server GET result
+  on mount/reopen, window focus and document visibility. It is the sole frontend
+  preference-state writer; no browser key or backend configuration is written.
+  `qy ai language` uses `set_reply_language` as the CLI-owned persisted writer.
+  Consumers are the neutral ghost language and GUI provider reply rule; CLI
+  requests do not consume that GUI rule. None calls `setDraft` or changes SQL,
+  history or results. Browser coverage combines CLI updates with accepted
+  drafts, per-tab state, interface changes and reloads, and verifies that a
+  stale browser-local language value cannot override resolved server state.
+  Late history reads/errors can publish only for the original binding before
+  a newer conversation arrives; an existing send/configuration error and
+  unsent text survive a later history failure. History recovery into an already
+  live session only opens the panel: it cannot reset generation state, replace
+  a newer reply/checkpoint, or unlock another send while the reply is running.
+  The regression holds a History GET across both active and completed generation.
+  Height writers are store
+  hydration, `EditorWorkspace` open/hide restoration and vertical drag, plus
+  the unused non-embedded `SqlEditor` fallback. Window reclamping changes the
+  visible height without replacing `editorHeight`/`qy_edh`. Resizing writes no
+  SQL, conversation, result or execution state. Markdown and syntax highlighting
+  only consume conversation/stream text and never call Apply, Restore or Run.
+  Moving close into the divider slot adds no state, storage keys, API consumers
+  or state writers. The existing close and resize handlers remain separate;
+  a pointer move within the close handle must not change the retained width.
+- **Test boundary and completed validation:** browser tests stub the assistant
+  HTTP/model boundary and use the real isolated local conversation store.
+  A controlled `ReadableStream` covers partial Markdown, completion and scroll
+  behavior. Provider, metadata and persistence policies are tested at the
+  Python API/service layer. Independent Live Verify runs cover the real
+  backend/model route, including default Chinese and requested English;
+  browser tests establish request language and UI behavior, not model fluency.
+  Earlier broad browser validation covered 291 cases across feature/visual
+  tests and the remaining browser modules, including packaging. The legacy
+  105-tab case needed an explicit hydration readiness wait and passed its
+  combined rerun. Subsequent assistant changes passed all 38 assistant cases
+  and all 54 then-collected visual cases, plus the neighboring fresh-profile
+  language-persistence check. These runs cover manual suggestion acceptance,
+  draft/IME guards, delayed history outcomes, safe Markdown, restore races,
+  history recovery, editor sizing and both theme palettes. A former 13px
+  composer-clipping case is pinned by the expanded 200px minimum test. Geometry
+  checks wait for the target viewport/resize observation and read rectangles
+  together, retaining the 2px alignment limit. After the final CSS-only
+  restoration of the vertical entry, six focused cases
+  passed: two layout widths, result-header resizing,
+  divider resizing, and Chinese/English chrome checks covering both themes.
+  Chrome checks now own close-control colors and focus behavior previously
+  duplicated in the Markdown test; both full localized labels fit the 88px
+  collapsed height. Eight final locale/theme/state screenshots
+  were checked. Unchanged Markdown, language behavior and request logic were
+  not rerun for that CSS revision. Python compilation and `git diff --check`
+  passed. Divider checks also cover mouse/keyboard width preservation; no
+  browser check calls a configured model.
+  The CLI-only reply-language revision passed 11 focused browser/visual cases
+  using an isolated real preferences GET endpoint and stubbed model responses.
+  Both interface languages verify that hover/focus reveals no language setting,
+  changes no geometry and ignores the obsolete browser preference. CLI and
+  simulated system-language updates are read on reopen/focus/visibility/reload,
+  independently of interface language, while accepted drafts, per-tab text,
+  SQL and history remain intact. Both locale chrome cases cover dark/light
+  tokens; related neutral-ghost, localized-history and minimum-panel geometry
+  checks passed. A completion wait excludes the in-flight stream placeholder
+  before counting saved replies. Python compilation and `git diff --check`
+  passed; no browser test called a real model.
+  Moving the close control to the divider passed seven focused cases on the
+  final bundle: two layout widths, pointer/keyboard divider interaction,
+  result-header/composer resizing, streaming scroll behavior and both locale
+  chrome checks (each covers dark and light). Messages start at the panel top;
+  the handle is centered on the divider and clears both chat and SQL text.
+  The scrolling region reaches the divider; its narrow track starts below the
+  handle, and a hit test confirms that track area is not intercepted. Moving the pointer within the close
+  handle does not change the saved width; divider drag/arrows and keyboard
+  close still work. Python compilation and `git diff --check` passed.
+  Removing the full-height scrollbar gap passed six focused cases: two layout
+  widths, streaming scroll behavior, independent close/divider interaction and
+  both locale chrome checks across dark/light themes. The scrollport meets the
+  divider without a margin; Chromium's scrollbar measures 4px, its thumb has
+  zero left/right border and border-box paint so the visible thumb is not eaten
+  by inherited transparent borders. The exact loaded `:vertical` track rule
+  pins the 38px top clearance (generic pseudo computed style omits that state);
+  scroll geometry and hit testing confirm the track area clears the handle.
+  Actual browser rendering independently confirmed a visible narrow thumb and
+  scrolling with zero right gap. This CSS change adds no handlers or state
+  writers. Python compilation and `git diff --check` passed.
+  The shared divider geometry passed six focused layout, interaction, scrolling
+  and locale/theme cases. The final border-position revision keeps the original
+  normal/hover colors, moves the 1px vertical boundary to the left and offsets
+  the grip to preserve its center. Shared state writers remain unchanged.
+  Both locale chrome cases (each covers dark/light) and the divider/close
+  interaction case passed. Tests pin left border 1px/right border 0px, the
+  preserved grip center, matching normal/hover palettes and unchanged keyboard
+  focus, resizing and retained width. The three cases also passed after restoring
+  the bottom border: its 1px width, solid style, color and bottom/right coordinates
+  join the toolbar border without a gap. This CSS-only adjustment adds no state writers.
+  Python compilation and `git diff --check`
+  passed.

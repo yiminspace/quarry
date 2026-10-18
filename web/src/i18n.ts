@@ -5,6 +5,46 @@
 
 const I18N: Record<string, Record<string, string>> = {
   en: {
+    assistant_name: "SQL Assistant",
+    assistant_panel: "SQL assistant",
+    assistant_open: "Open SQL assistant",
+    assistant_hide: "Hide SQL assistant",
+    assistant_resize: "Resize SQL assistant",
+    editor_resize: "Resize SQL editor",
+    editor_drag: "Drag to resize editor",
+    assistant_conversation: "SQL assistant conversation",
+    assistant_empty: "Ask about your SQL, or describe what you want to query.",
+    assistant_input: "Ask about your SQL",
+    assistant_placeholder: "Ask about your SQL…",
+    assistant_apply: "Apply SQL",
+    assistant_restore: "Restore previous SQL",
+    assistant_thinking: "Thinking…",
+    assistant_not_configured: "Model not configured. Run `qy ai configure` in your terminal.",
+    assistant_configure_help: "Model not configured. Run `qy ai configure --help` in your terminal.",
+    assistant_explain_prompt: "Explain this SQL",
+  assistant_rail_label: "SQL Assistant",
+    assistant_changed: "Your SQL changed while the reply was being prepared. Apply the suggestion when ready.",
+    assistant_changed_again: "SQL changed again. Your draft has been kept.",
+    assistant_changed_restore: "SQL changed while restoring. Your draft has been kept.",
+    assistant_stopped: "Generation stopped.",
+    assistant_interrupted: "The reply was interrupted. Please try again.",
+    assistant_interrupted_saved: "Reply interrupted. Try again.",
+    assistant_restored: "Previous SQL restored.",
+    assistant_empty_response: "The model returned an empty response.",
+    assistant_request_failed: "The model request failed.",
+    assistant_http_failed: "Request failed ({status}).",
+    assistant_timeout: "Model response timed out. Try again.",
+    assistant_failed: "The SQL assistant could not complete this request. Try again.",
+    assistant_incomplete: "Model response was incomplete. No SQL changes were applied.",
+    assistant_connection_missing: "This conversation's connection is no longer available.",
+    history_type: "History type",
+    history_queries: "Queries",
+    history_conversations: "Conversations",
+    conversations_search: "Search conversations…",
+    conversations_loading: "Loading conversations…",
+    conversations_empty: "No conversations yet.",
+    conversations_no_match: "No matching conversations.",
+    assistant_conversation_title: "SQL conversation",
     close_all_tabs: "Close all tabs in this connection",
     no_open_queries: "No open queries",
     no_open_queries_hint: "Select a table from the sidebar or start a new query.",
@@ -166,6 +206,46 @@ const I18N: Record<string, Record<string, string>> = {
     ka_reconnecting: "tunnel keeper: reconnecting",
   },
   zh: {
+    assistant_name: "SQL 助手",
+    assistant_panel: "SQL 助手",
+    assistant_open: "打开 SQL 助手",
+    assistant_hide: "收起 SQL 助手",
+    assistant_resize: "调整 SQL 助手宽度",
+    editor_resize: "调整 SQL 编辑器高度",
+    editor_drag: "拖拽调整编辑器高度",
+    assistant_conversation: "SQL 助手对话",
+    assistant_empty: "询问 SQL 的含义，或描述你想查询的内容。",
+    assistant_input: "向 SQL 助手提问",
+    assistant_placeholder: "询问 SQL，或描述查询需求…",
+    assistant_apply: "应用 SQL",
+    assistant_restore: "恢复之前的 SQL",
+    assistant_thinking: "思考中…",
+    assistant_not_configured: "尚未配置模型，请在终端运行 `qy ai configure`。",
+    assistant_configure_help: "尚未配置模型，请在终端运行 `qy ai configure --help`。",
+    assistant_explain_prompt: "解读当前 SQL",
+  assistant_rail_label: "SQL 助手",
+    assistant_changed: "回复期间你修改了 SQL。草稿已保留，可在准备好后应用建议。",
+    assistant_changed_again: "SQL 再次发生变化，已保留你的草稿。",
+    assistant_changed_restore: "恢复期间 SQL 发生变化，已保留你的草稿。",
+    assistant_stopped: "已停止生成。",
+    assistant_interrupted: "回复已中断，请重试。",
+    assistant_interrupted_saved: "回复已中断，请重试。",
+    assistant_restored: "已恢复之前的 SQL。",
+    assistant_empty_response: "模型返回了空回复。",
+    assistant_request_failed: "模型请求失败。",
+    assistant_http_failed: "请求失败（{status}）。",
+    assistant_timeout: "模型回复超时，请重试。",
+    assistant_failed: "SQL 助手未能完成本次请求，请重试。",
+    assistant_incomplete: "模型回复不完整，未修改 SQL。",
+    assistant_connection_missing: "此对话使用的数据库连接已不可用。",
+    history_type: "历史类型",
+    history_queries: "查询",
+    history_conversations: "对话",
+    conversations_search: "搜索对话…",
+    conversations_loading: "正在加载对话…",
+    conversations_empty: "暂无对话。",
+    conversations_no_match: "没有匹配的对话。",
+    assistant_conversation_title: "SQL 对话",
     close_all_tabs: "关闭当前连接的全部标签页",
     no_open_queries: "没有打开的查询",
     no_open_queries_hint: "从侧栏选择一张表，或新建查询。",
@@ -324,10 +404,10 @@ const I18N: Record<string, Record<string, string>> = {
   },
 };
 
-export const LANG: "en" | "zh" = localStorage.getItem("qy_lang") === "zh" ? "zh" : "en";
+export const LANG: "en" | "zh" = localStorage.getItem("qy_lang") === "en" ? "en" : "zh";
 
-export function t(key: string): string {
-  return I18N[LANG]?.[key] ?? I18N.en[key] ?? key;
+export function t(key: string, language: "en" | "zh" = LANG): string {
+  return I18N[language]?.[key] ?? I18N.en[key] ?? key;
 }
 
 /** `t()` + `{var}` substitution, e.g. tv("list_capped", { n: 5000 }). */
@@ -342,4 +422,20 @@ export function toggleLang(): void {
   // Same behavior as the legacy GUI's 中/EN toggle: the whole chrome
   // re-renders in the other language via a reload.
   location.reload();
+}
+
+/** Localize only known application status text; database/model details remain verbatim. */
+export function assistantStatusText(text: string): string {
+  const keys: Record<string, string> = {
+    "Previous SQL restored.": "assistant_restored",
+    "Generation stopped.": "assistant_stopped",
+    "The reply was interrupted. Please try again.": "assistant_interrupted",
+    "Reply interrupted. Try again.": "assistant_interrupted_saved",
+    "Model not configured. Run `qy ai configure` in your terminal.": "assistant_not_configured",
+    "Model not configured. Run `qy ai configure --help` in your terminal.": "assistant_configure_help",
+    "Model response timed out. Try again.": "assistant_timeout",
+    "The SQL assistant could not complete this request. Try again.": "assistant_failed",
+    "Model response was incomplete. No SQL changes were applied.": "assistant_incomplete",
+  };
+  return keys[text] ? t(keys[text]) : text;
 }

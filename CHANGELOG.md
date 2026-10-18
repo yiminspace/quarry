@@ -9,6 +9,13 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- A SQL assistant alongside the editor explains existing queries and generates or
+  changes SQL using the current connection's table metadata. Replies stream into
+  a collapsible panel; changes offer Restore previous SQL and never execute a
+  query. Conversations and checkpoints remain available from History after a
+  tab is closed. Model configuration is managed through `qy ai configure`, and
+  CLI commands for explaining and generating SQL use the same assistant service.
+
 - SQLite support across CLI, GUI, MCP and Python for existing local database
   files, using Python's standard library. Connections support workspace-relative
   or absolute paths, environment grouping and explicit production protection.
@@ -56,6 +63,41 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
+- The GUI starts in Chinese and remembers a switch to English. Assistant controls,
+  conversation history follow the selected interface language.
+  The expanded chat panel reaches the bottom of the query toolbar, with query
+  controls below the right editor and the chat input at the bottom on the left.
+  Hiding the assistant restores the toolbar to full width.
+
+- The assistant opens on the left of the SQL editor. Vertical resizing can use
+  the available height above the status bar, with the toolbar and chat input
+  kept visible as the window changes; dragging upward restores result space.
+
+- Assistant explanations now render Markdown headings, lists, code and tables
+  while streaming and after reopening history. Wide examples scroll inside the
+  chat panel; headings and SQL syntax use theme colors. Code examples do not
+  change or execute the editor's SQL.
+
+- Restoring SQL now marks the original change as restored without creating a
+  chain of restore messages and buttons. The assistant stays above result
+  headers when resized.
+
+- Opening the assistant keeps model requests idle. An empty chat input offers
+  a faint, complete explanation prompt: Tab fills exactly the displayed text
+  and Enter sends it. Chat uses tighter line and paragraph spacing, with a
+  small collapse handle at the top of the divider. Chat starts at the panel
+  top without a reserved header row. Its 4px scrollbar sits against the divider
+  and leaves only the top of the track clear of the handle. The collapsed rail shows the full
+  SQL Assistant label vertically. The vertical divider shares the horizontal
+  resize bar's thickness, centered grip, colors and hover feedback, with its
+  thin border on the left and its bottom edge joined to the toolbar border.
+  Keyboard resizing keeps a visible focus outline.
+
+- GUI assistant reply language is configured through `qy ai language zh|en|system`
+  and defaults to the system language. The GUI reads this preference without
+  displaying language settings; it preserves drafts and history, and CLI replies
+  and model settings are unaffected. Tab suggestions use neutral explanation text.
+
 - GUI URLs now use `/quarry/?db=…&env=…&table=…`, following the active
   connection and tab without including workspace folder names.
   The former `/app/` route is removed.
@@ -79,6 +121,17 @@ pre-1.0 history followed the earlier development policy.
   for that production connection.
 
 ### Fixed
+
+- Retrying an assistant SQL change after a lost response reuses the saved
+  checkpoint. Pending suggestions remain available while recovering from a
+  conflict, without overwriting handwritten SQL or executing a query.
+
+- Reopening an active SQL conversation from History preserves its running reply,
+  unsent input and latest checkpoint instead of replacing them with an older read.
+
+- SQL assistant metadata preserves MySQL composite primary-key order. Model
+  configuration accepts commented or quoted TOML table headers and validates
+  changes before replacing configuration or credentials.
 
 - The update panel opens release notes in the canonical `yiminspace/quarry` repository.
 
