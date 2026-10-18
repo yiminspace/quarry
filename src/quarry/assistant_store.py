@@ -158,12 +158,23 @@ def apply(id: str, revision: int, sql: str, message_id: str, *, explicit: bool =
     sql = _sql(sql)
     with _db(write=True) as db:
         doc = _load(db, id)
-        _cas(doc, revision)
         message = next((m for m in doc["messages"] if m["id"] == message_id), None)
         if not message or message["role"] != "assistant" or message.get("sql") != sql:
             raise QuarryError("SQL does not match a completed assistant proposal")
         if message.get("status", "complete") != "complete":
             raise QuarryError("An incomplete reply cannot change SQL")
+        checkpoint = next((cp for cp in doc["checkpoints"]
+                           if cp["id"] == message.get("checkpointId")
+                           and cp["messageId"] == message_id and cp["afterSql"] == sql), None)
+        if checkpoint and doc["sql"] == sql:
+            # The first request may have committed before its response was
+            # lost. Recognize its exact retry before CAS, without duplicating
+            # checkpoints or changing history order. A newer draft still
+            # takes the ordinary CAS path below.
+            if type(revision) is not int or not 0 <= revision <= doc["revision"]:
+                _cas(doc, revision)
+            return _public(doc)
+        _cas(doc, revision)
         if not explicit and message.get("baseRevision", revision) != revision:
             raise Conflict("SQL changed while the assistant was replying. Review the suggestion before applying it.")
         if message.get("checkpointId") and not explicit:

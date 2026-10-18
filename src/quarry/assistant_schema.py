@@ -112,17 +112,20 @@ def _describe(ctx: Context, table: str) -> dict:
     elif ctx.engine == "mysql":
         # MySQL connections select one database; avoid silently interpreting a
         # dotted string as a different database from the selected connection.
-        columns = _query(ctx, """SELECT column_name AS name, column_type AS type,
-            (is_nullable = 'YES') AS nullable, column_comment AS comment,
-            (column_key = 'PRI') AS primary_position FROM information_schema.columns
-            WHERE table_schema = DATABASE() AND table_name = :'table' ORDER BY ordinal_position""", params)
+        columns = _query(ctx, """SELECT c.column_name AS name, c.column_type AS type,
+            (c.is_nullable = 'YES') AS nullable, c.column_comment AS comment,
+            COALESCE((SELECT k.ordinal_position FROM information_schema.key_column_usage k
+                      WHERE k.table_schema = c.table_schema AND k.table_name = c.table_name
+                        AND k.column_name = c.column_name AND k.constraint_name = 'PRIMARY'), 0) AS primary_position
+            FROM information_schema.columns c
+            WHERE c.table_schema = DATABASE() AND c.table_name = :'table' ORDER BY c.ordinal_position""", params)
         keys = _query(ctx, """SELECT constraint_name AS key_id, ordinal_position AS position,
             column_name AS column_name, referenced_table_schema AS target_schema,
             referenced_table_name AS target_table, referenced_column_name AS target_column
             FROM information_schema.key_column_usage WHERE table_schema = DATABASE()
               AND table_name = :'table' AND referenced_table_name IS NOT NULL
             ORDER BY constraint_name, ordinal_position""", params)
-        primary = [r["name"] for r in columns if r["primary_position"]]
+        primary = [r["name"] for r in sorted(columns, key=lambda r: r["primary_position"]) if r["primary_position"]]
     else:
         params = {"table": _pg_relation(table)}
         columns = _query(ctx, """SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type,

@@ -72,6 +72,40 @@ def test_preference_and_model_configuration_preserve_each_other_and_credentials(
     assert credentials.read_bytes() == before_credentials
 
 
+@pytest.mark.parametrize("model_header,gui_header", [
+    ("[assistant] # model endpoint", "[gui.assistant] # reply preferences"),
+    ('  ["assistant"]', '  ["gui"."assistant"]'),
+    ("['assistant']", "['gui'.'assistant']"),
+])
+def test_model_and_language_updates_accept_valid_toml_headers(preferences_home, model_header, gui_header):
+    path = preferences_home / "config.toml"
+    path.write_text(f'workspaces=["~/db"]\n{model_header}\nbase_url="http://localhost:1/v1"\nmodel="before"\nauth="none"\n{gui_header}\nreply_language="en"\nwidth=42\n')
+    assistant_config.configure_model(base_url="http://localhost:2/v1", model="after", api_key="new-test-secret")
+    assistant_config.set_reply_language("zh")
+    document = tomllib.loads(path.read_text())
+    assert document["workspaces"] == ["~/db"]
+    assert document["assistant"]["model"] == "after"
+    assert document["gui"]["assistant"] == {"reply_language": "zh", "width": 42}
+    assert assistant_config.load_model_config().api_key == "new-test-secret"
+
+
+@pytest.mark.parametrize("original", [
+    'workspaces=["~/db"]\nassistant={base_url="http://localhost:1/v1",model="before",auth="none"}\n',
+    'note="""\n[assistant]\nnot a table\n[other]\n"""\n[assistant]\nbase_url="http://localhost:1/v1"\nmodel="before"\nauth="none"\n',
+])
+def test_unrepresentable_model_update_never_changes_config_or_credentials(preferences_home, original):
+    path = preferences_home / "config.toml"
+    path.write_text(original)
+    credentials = preferences_home / "assistant-credentials.json"
+    credentials.write_text('{"api_key":"existing-test-secret"}\n')
+    before_config, before_credentials = path.read_bytes(), credentials.read_bytes()
+    with pytest.raises(QuarryError, match="Cannot update model configuration"):
+        assistant_config.configure_model(base_url="http://localhost:2/v1", model="after", api_key="replacement-test-secret")
+    assert path.read_bytes() == before_config
+    assert credentials.read_bytes() == before_credentials
+    assert tomllib.loads(path.read_text())["assistant"]["model"] == "before"
+
+
 def test_cli_language_show_change_and_auto_are_gui_only(preferences_home, capsys):
     parser = cli.build_parser()
     for index, (value, expected) in enumerate(((None, "system"), ("zh", "zh"), ("en", "en"), ("system", "system"), ("auto", "system"), (None, "system"))):

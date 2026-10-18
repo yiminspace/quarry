@@ -5891,3 +5891,117 @@ def test_assistant_localizes_explanation_checkpoint_configuration_and_history(pa
         assert bool(re.search(r'[\u4e00-\u9fff]', text)) == (language == 'zh')
     page.get_by_test_id('history-conversations').click()
     page.get_by_test_id('conversation-item').first.wait_for()
+
+
+@pytest.mark.parametrize('history_arrives', ['during_generation', 'after_generation'])
+def test_assistant_history_reopen_preserves_live_session(page_sqlite, tmp_path, monkeypatch, history_arrives):
+    page = page_sqlite
+
+    def wait_for_route(pending):
+        deadline = time.monotonic() + 5
+        while not pending and time.monotonic() < deadline:
+            page.wait_for_timeout(10)
+        assert len(pending) == 1
+
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    queries = _assistant_query_requests(page)
+    stub.hold = True
+    stub.response = 'The newer reply keeps the note and limits the query to four rows.'
+    stub.proposal = 'SELECT id, note FROM entries LIMIT 4'
+    _assistant_send(page, 'Show four rows')
+    page.wait_for_function('document.querySelector("[data-testid=assistant-stream]") !== null')
+    wait_for_route(stub.pending)
+    history_reads = []
+
+    def hold_history(route):
+        conversation_id = parse_qs(urlparse(route.request.url).query)['id'][0]
+        history_reads.append((route, stub.store.get(conversation_id)))
+
+    page.route('**/api/assistant/conversations?id=*', hold_history)
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.click()
+    wait_for_route(history_reads)
+
+    if history_arrives == 'after_generation':
+        stub.complete()
+        page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    route, stale_conversation = history_reads.pop()
+    route.fulfill(json=stale_conversation)
+    page.get_by_test_id('history-conversations').wait_for(state='hidden')
+
+    if history_arrives == 'during_generation':
+        assert page.get_by_test_id('assistant-stream').is_visible()
+        # Reopening must not unlock Enter while the original request is active.
+        _assistant_send(page, 'Keep this unsent draft')
+        assert page.get_by_test_id('assistant-input').input_value() == 'Keep this unsent draft'
+        assert len(stub.chats) == 2
+        stub.complete()
+        page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert page.get_by_test_id('assistant-restore').count() == 1
+    assert page.get_by_test_id('assistant-stream').count() == 0
+    assert len(stub.chats) == 2
+    assert queries == []
+
+
+@pytest.mark.parametrize('manual_edit', [False, True])
+def test_assistant_apply_lost_response_retry_preserves_drafts_and_checkpoints(page_sqlite, tmp_path, monkeypatch, manual_edit):
+    page = page_sqlite
+    original = 'SELECT id FROM entries LIMIT 10'
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql=original)
+    # Use the real server connection fingerprint so Apply crosses the real
+    # HTTP handler and store; only the model reply remains deterministic.
+    page.route('**/api/assistant/conversations', lambda route: route.continue_()
+               if route.request.method == 'POST' else stub._route(route))
+    page.route('**/api/assistant/conversations/update', lambda route: route.continue_())
+    attempts, committed = [], []
+
+    def lose_first_response(route):
+        attempts.append(route.request.post_data_json)
+        response = route.fetch()
+        assert response.status == 200
+        if len(attempts) == 1:
+            committed.append(response.json())
+            route.abort('failed')
+        else:
+            route.fulfill(response=response)
+
+    page.route('**/api/assistant/conversations/apply', lose_first_response)
+    queries = _assistant_query_requests(page)
+    stub.proposal = 'SELECT id, note FROM entries LIMIT 4'
+    page.get_by_test_id('assistant-open').click()
+    _assistant_send(page, 'Include note and show four rows')
+    page.get_by_role('alert').wait_for()
+    assert len(attempts) == 1 and len(committed[0]['checkpoints']) == 1
+    assert committed[0]['sql'] == stub.proposal
+    assert page.locator('#sql').input_value() == original
+    manual = 'SELECT note FROM entries WHERE id = 23'
+    if manual_edit:
+        with page.expect_response(lambda response: response.url.endswith('/api/assistant/conversations/update') and response.status == 409):
+            _set_sql(page, manual)
+        page.get_by_role('alert').filter(has_text='This conversation changed.').wait_for()
+        assert page.locator('#sql').input_value() == manual
+        assert page.get_by_test_id('assistant-apply').is_visible()
+        assert page.get_by_test_id('assistant-restore').count() == 0
+    page.get_by_test_id('assistant-apply').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    page.get_by_test_id('assistant-restore').wait_for()
+    final = stub.store.get(committed[0]['id'])
+    assert len(attempts) == 2
+    if manual_edit:
+        assert attempts[1]['revision'] > attempts[0]['revision']
+        assert len(final['checkpoints']) == 2
+        assert final['checkpoints'][-1]['beforeSql'] == manual
+        page.get_by_test_id('assistant-restore').click()
+        page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=manual)
+    else:
+        assert attempts[0]['revision'] == attempts[1]['revision']
+        assert final['revision'] == committed[0]['revision']
+        assert final['checkpoints'] == committed[0]['checkpoints']
+        assert final['checkpoints'][0]['beforeSql'] == original
+    assert page.get_by_role('alert').count() == 0
+    assert queries == []

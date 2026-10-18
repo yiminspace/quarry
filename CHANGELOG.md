@@ -122,6 +122,17 @@ pre-1.0 history followed the earlier development policy.
 
 ### Fixed
 
+- Retrying an assistant SQL change after a lost response reuses the saved
+  checkpoint. Pending suggestions remain available while recovering from a
+  conflict, without overwriting handwritten SQL or executing a query.
+
+- Reopening an active SQL conversation from History preserves its running reply,
+  unsent input and latest checkpoint instead of replacing them with an older read.
+
+- SQL assistant metadata preserves MySQL composite primary-key order. Model
+  configuration accepts commented or quoted TOML table headers and validates
+  changes before replacing configuration or credentials.
+
 - The update panel opens release notes in the canonical `yiminspace/quarry` repository.
 
 - The result-limit selector now displays localized row-count labels with a

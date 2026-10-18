@@ -7,7 +7,7 @@ import pytest
 
 from quarry import assistant_schema as schema, assistant_store as store, workspace
 from quarry.core import QuarryError
-from conftest import requires_db
+from conftest import requires_db, requires_mysql
 
 
 @pytest.fixture
@@ -179,6 +179,40 @@ def test_catalog_returns_keys_and_foreign_key_without_data(catalog):
     assert out[2]["primaryKey"] == ["b", "a"]
     assert "rows" not in out[0]
     assert schema.describe_tables(catalog, ["daily.events"])["tables"][0]["name"] == "daily.events"
+
+
+def test_mysql_catalog_preserves_key_order_independent_of_column_order(monkeypatch):
+    context = schema.Context(None, "test", "test", None, "mysql", "test")
+    def query(ctx, sql, params, limit=501):
+        assert params == {"table": "accounts"}
+        if "information_schema.columns" in sql:
+            assert "information_schema.key_column_usage" in sql and "k.constraint_name = 'PRIMARY'" in sql
+            return [{"name": "account_id", "type": "int", "nullable": False, "primary_position": 2},
+                    {"name": "tenant_id", "type": "int", "nullable": False, "primary_position": 1},
+                    {"name": "note", "type": "text", "nullable": True, "primary_position": 0}]
+        return []
+    monkeypatch.setattr(schema, "_query", query)
+    table = schema.describe_tables(context, ["accounts"])["tables"][0]
+    assert [c["name"] for c in table["columns"]] == ["account_id", "tenant_id", "note"]
+    assert table["primaryKey"] == ["tenant_id", "account_id"]
+    assert all("primary_position" not in c for c in table["columns"])
+
+
+@requires_mysql
+@pytest.mark.integration
+def test_mysql_catalog_reads_composite_primary_key_in_declared_order():
+    import os
+    conn = schema.core.Connection(key="mysql", url=os.environ["QUARRY_TEST_MYSQL_URL"], engine="mysql")
+    context = schema.Context(conn, "test", "test", None, "mysql", "test")
+    name = "qy_assistant_" + uuid4().hex
+    schema.core.run_query(conn, f"CREATE TABLE {name} (account_id int, tenant_id int, note text, PRIMARY KEY (tenant_id, account_id))", allow_write=True)
+    try:
+        table = schema.describe_tables(context, [name])["tables"][0]
+        assert [c["name"] for c in table["columns"]] == ["account_id", "tenant_id", "note"]
+        assert table["primaryKey"] == ["tenant_id", "account_id"]
+        assert table["foreignKeys"] == []
+    finally:
+        schema.core.run_query(conn, f"DROP TABLE {name}", allow_write=True)
 
 
 def test_catalog_search_cap_and_unknown_names(catalog):

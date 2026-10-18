@@ -40,6 +40,10 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
     const current = sessionsRef.current[tabId]?.draft ?? { text: "", explain: false };
     publish(tabId, { draft: typeof update === "function" ? update(current) : update });
   }, [publish]);
+  const markUnapplied = useCallback((tabId: string, messageId: string) => {
+    const pending = sessionsRef.current[tabId]?.unappliedMessageIds ?? [];
+    publish(tabId, { unappliedMessageIds: [...new Set([...pending, messageId])] });
+  }, [publish]);
   const reportError = useCallback(async (tabId: string, error: unknown): Promise<void> => {
     const conversation = sessionsRef.current[tabId]?.conversation;
     if (error instanceof AssistantApiError && error.status === 409 && conversation) {
@@ -158,10 +162,13 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
         if (proposal && !explain) {
           const current = useTabsStore.getState().tabs.find((item) => item.id === tab.id);
           if (canApplyAssistantSql(current, baseline)) {
+            // Persistence can succeed even if its HTTP response is lost. Keep
+            // the proposal actionable until the editor itself accepts the SQL.
+            markUnapplied(tab.id, proposal.messageId);
             const applied = await applyConversation(completed.id, completed.revision, proposal.sql, proposal.messageId);
             publish(tab.id, { conversation: applied });
             if (!commitSql(baseline, applied, proposal.sql)) {
-              publish(tab.id, { unappliedMessageIds: [proposal.messageId], notice: t("assistant_changed") });
+              publish(tab.id, { notice: t("assistant_changed") });
             }
           } else if (current) {
             publish(tab.id, { notice: t("assistant_changed") });
@@ -174,7 +181,7 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
       await reportError(tab.id, error);
       return false;
     } finally { requests.current.delete(tab.id); publish(tab.id, { busy: false }); }
-  }, [publish, locked, syncSql, commitSql, reportError]);
+  }, [publish, locked, syncSql, commitSql, reportError, markUnapplied]);
 
   const open = useCallback(async (tab: Tab): Promise<void> => {
     publish(tab.id, { open: true });
@@ -199,17 +206,18 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
   const apply = useCallback(async (tab: Tab, message: AssistantMessage): Promise<void> => {
     if (!message.sql || sessionsRef.current[tab.id]?.busy) return;
     const baseline = { ...tab };
+    markUnapplied(tab.id, message.id);
     publish(tab.id, { busy: true, error: undefined });
     try {
       await locked(tab.id, async () => {
         const conversation = await syncSql(tab);
         const applied = await applyConversation(conversation.id, conversation.revision, message.sql!, message.id, true);
         publish(tab.id, { conversation: applied });
-        if (!commitSql(baseline, applied, message.sql!)) publish(tab.id, { unappliedMessageIds: [message.id], notice: t("assistant_changed_again") });
+        if (!commitSql(baseline, applied, message.sql!)) publish(tab.id, { notice: t("assistant_changed_again") });
       });
     } catch (error) { await reportError(tab.id, error); }
     finally { publish(tab.id, { busy: false }); }
-  }, [locked, syncSql, publish, commitSql, reportError]);
+  }, [locked, syncSql, publish, commitSql, reportError, markUnapplied]);
 
   const restore = useCallback(async (tab: Tab, checkpointId: string): Promise<void> => {
     if (sessionsRef.current[tab.id]?.busy) return;
@@ -228,6 +236,13 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
   }, [locked, syncSql, publish, commitSql, reportError]);
 
   const attach = useCallback((tabId: string, conversation: Conversation) => {
+    const current = sessionsRef.current[tabId];
+    if (current?.busy || current?.conversation?.id === conversation.id) {
+      // History reuses a live tab. Its GET can predate an in-flight reply or
+      // SQL update, so reopening must not replace that tab's current session.
+      publish(tabId, { open: true });
+      return;
+    }
     useTabsStore.getState().bindConversation(tabId, conversation.id);
     publish(tabId, { open: true, conversation, busy: false, error: undefined, notice: undefined });
   }, [publish]);

@@ -85,6 +85,29 @@ def _read_settings() -> dict:
     return settings
 
 
+def _config_table_span(lines: list[str], table: str) -> tuple[int, int] | None:
+    """Recognize TOML headers with indentation, quoted names or comments.
+
+    Candidate edits are also parsed and compared before writing, so header-like
+    text inside a multiline value cannot silently change an unrelated setting.
+    """
+    wanted: dict = {}
+    for part in reversed(table.split(".")):
+        wanted = {part: wanted}
+    headers = []
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("["):
+            continue
+        try:
+            headers.append((index, tomllib.loads(line)))
+        except ValueError:
+            continue
+    for position, (index, parsed) in enumerate(headers):
+        if parsed == wanted:
+            return index, headers[position + 1][0] if position + 1 < len(headers) else len(lines)
+    return None
+
+
 def _locale_language(value: str | None) -> str | None:
     name = re.split(r"[-_.@]", (value or "").strip().lower())[0]
     if not name or name in ("c", "posix"):
@@ -153,9 +176,9 @@ def set_reply_language(language: str) -> dict:
     path = workspace._config_path()
     with core.connections_file_lock(path):
         # CLI is also the recovery path for an invalid stored preference.
-        _read_document()
+        document = _read_document()
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        span = workspace._find_table_span(lines, "gui.assistant")
+        span = _config_table_span(lines, "gui.assistant")
         assignment = f"reply_language = {json.dumps(language)}"
         if span:
             start, end = span
@@ -169,8 +192,11 @@ def set_reply_language(language: str) -> dict:
             lines.extend(([""] if lines else []) + ["[gui.assistant]", assignment])
         text = "\n".join(lines) + "\n"
         try:
-            tomllib.loads(text)
-        except ValueError:
+            parsed = tomllib.loads(text)
+            document.setdefault("gui", {}).setdefault("assistant", {})["reply_language"] = language
+            if parsed != document:
+                raise ValueError("Unrelated configuration would change")
+        except (ValueError, AttributeError, TypeError):
             raise QuarryError("Cannot update GUI reply language. Use a [gui.assistant] table in config.toml.") from None
         _atomic_write(path, text)
         return gui_preferences()
@@ -200,16 +226,30 @@ def configure_model(*, base_url: str, model: str, api_key_env: str | None = None
     # Share the preference writer's lock: concurrent model configuration must
     # not erase a GUI reply preference.
     with core.connections_file_lock(path):
-        _read_settings()  # Refuse to overwrite malformed TOML.
+        document = _read_document()  # Refuse to overwrite malformed TOML.
+        if not isinstance(document.get("assistant", {}), dict):
+            raise QuarryError("Invalid [assistant] configuration.")
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        span = workspace._find_table_span(lines, "assistant")
+        span = _config_table_span(lines, "assistant")
         if span:
             lines[span[0]:span[1]] = block
         else:
             lines.extend(([""] if lines else []) + block)
+        text = "\n".join(lines) + "\n"
+        try:
+            parsed = tomllib.loads(text)
+            updated_settings = parsed.get("assistant", {})
+            if not isinstance(updated_settings, dict) or any(updated_settings.get(key) != value for key, value in fields.items()):
+                raise ValueError("Model configuration was not updated")
+            if ({k: v for k, v in parsed.items() if k != "assistant"}
+                    != {k: v for k, v in document.items() if k != "assistant"}):
+                raise ValueError("Unrelated configuration would change")
+        except ValueError:
+            raise QuarryError("Cannot update model configuration. Use an [assistant] table in config.toml.") from None
+        # Validate the complete replacement before touching either file.
         if api_key is not None:
             _atomic_write(_credentials_path(), json.dumps({"base_url": base_url, "api_key": api_key}) + "\n", private=True)
-        _atomic_write(path, "\n".join(lines) + "\n")
+        _atomic_write(path, text)
         if api_key is None:
             _credentials_path().unlink(missing_ok=True)
     return config_details()
