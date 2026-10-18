@@ -315,11 +315,11 @@ def test_foreign_origin_rejected(gui_server):
 @pytest.mark.integration
 def test_root_redirects_to_react_app(gui_server):
     """`/` (and `/index.html`) is the only landing page shipped now, so it
-    redirects to the React app at `/app/` rather than serving HTML itself."""
+    redirects to the React app at `/quarry/` rather than serving HTML itself."""
     import urllib.request
     with urllib.request.urlopen(gui_server.base + "/", timeout=10) as r:
         html = r.read().decode()
-    assert r.status == 200 and r.geturl() == gui_server.base + "/app/"
+    assert r.status == 200 and r.geturl() == gui_server.base + "/quarry/"
     assert "<title>Quarry</title>" in html
 
 
@@ -327,11 +327,11 @@ def test_root_redirects_to_react_app(gui_server):
 @pytest.mark.integration
 def test_gui_html_and_favicon_asset(gui_server):
     import urllib.request
-    with urllib.request.urlopen(gui_server.base + "/app/", timeout=10) as r:
+    with urllib.request.urlopen(gui_server.base + "/quarry/", timeout=10) as r:
         html = r.read().decode()
-    assert '<link rel="icon" type="image/svg+xml" href="/app/favicon.svg"' in html
+    assert '<link rel="icon" type="image/svg+xml" href="/quarry/favicon.svg"' in html
 
-    with urllib.request.urlopen(gui_server.base + "/app/favicon.svg", timeout=10) as r:
+    with urllib.request.urlopen(gui_server.base + "/quarry/favicon.svg", timeout=10) as r:
         favicon = r.read().decode()
         content_type = r.headers.get_content_type()
     assert content_type == "image/svg+xml"
@@ -934,3 +934,20 @@ def test_query_listing_skips_malformed_files(monkeypatch, tmp_path, caplog, brok
     assert len({q["queryId"] for q in listed}) == 2
     assert "Skipping saved query" in caplog.text
     assert str(bad) in caplog.text
+
+
+@pytest.mark.integration
+def test_quarry_route_has_no_workspace_segment(sqlite_gui_server):
+    import urllib.request
+    from quarry import workspace
+    base = sqlite_gui_server.base
+    name = workspace.WS.home.name
+    query = "?db=notes&env=prod&table=entries"
+    with urllib.request.urlopen(base + "/quarry" + query) as response:
+        assert response.geturl() == base + "/quarry/" + query
+        assert 'id="root"' in response.read().decode()
+    for path in ("/app/", "/app", "/quarry/brain/", "/quarry/yiminlab/",
+                 "/quarry/" + name + "/", "/quarry/../connections.toml"):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + path)
+        assert error.value.code == 404

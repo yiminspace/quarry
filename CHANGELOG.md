@@ -56,6 +56,10 @@ pre-1.0 history followed the earlier development policy.
 
 ### Changed
 
+- GUI URLs now use `/quarry/?db=…&env=…&table=…`, following the active
+  connection and tab without including workspace folder names.
+  The former `/app/` route is removed.
+
 - Align the tab bar's add icon, list chevron and tab count with consistent
   control heights and icon sizing.
 

@@ -1,5 +1,5 @@
 """Playwright browser e2e for the Quarry GUI frontend (the React app under
-web/, served at /app — `/` redirects there). Every test drives the *built*
+web/, served at /quarry — `/` redirects there). Every test drives the *built*
 bundle in a headless Chromium against the live `testpg` workspace, so run
 `cd web && npm run build` after changing web/src.
 

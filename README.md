@@ -438,6 +438,11 @@ docker volume. Requires a docker daemon; the image tag is overridable with
 
 ![Quarry GUI](site/assets/gui-dark.png)
 
+GUI links use `/quarry/?db=auth_db&env=prod&table=oauth_accounts`.
+The address follows the active tab using the configured logical database and
+environment; workspace folder names stay out of the URL. Opening a table-focus
+link restores selection without running SQL. `/app/` is no longer served.
+
 `qy gui` — a local, zero-build web GUI (Slate & Copper theme, light/dark):
 
 - Grouped sidebar tree with env switcher, explicit production styling, connection health dots

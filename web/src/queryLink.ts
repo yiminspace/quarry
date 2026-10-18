@@ -18,6 +18,7 @@ function normalizeEnv(env: string | null): string | null {
 
 export function encodeQueryLink(baseHref: string, payload: QueryLinkPayload): string {
   const url = new URL(baseHref);
+  url.pathname = "/quarry/";
   const params = new URLSearchParams(url.search);
   params.set("db", payload.db);
   params.set("sql", payload.sql);
