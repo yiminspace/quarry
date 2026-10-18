@@ -177,6 +177,13 @@ def _isolated_cache(tmp_path: Path, monkeypatch):
     cache._CACHE.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_assistant_history(tmp_path: Path, monkeypatch):
+    # Opening History may read assistant conversations even in an existing
+    # query-history test. Tests must never inspect the developer's sessions.
+    monkeypatch.setenv("QUARRY_AI_HOME", str(tmp_path / "assistant"))
+
+
 # The cross-process tunnel registry (issue #101 r1-1) is on-disk by design —
 # so it needs the same per-test isolation as the metadata cache above, or
 # tests would read/write the developer's real ~/.cache/quarry/tunnels.json.
@@ -474,11 +481,21 @@ def stub_events(ctx) -> None:
                                           body="retry: 86400000\n\n"))
 
 
+def english_browser_context(browser, **options):
+    """Pin the legacy suite to English without replacing a persisted choice.
+
+    Fresh-default language coverage deliberately uses a plain browser context.
+    """
+    ctx = browser.new_context(**options)
+    ctx.add_init_script("if (localStorage.getItem('qy_lang') === null) localStorage.setItem('qy_lang', 'en');")
+    return ctx
+
+
 @pytest.fixture()
 def page(_pw_browser, gui_url):
     """A Playwright page already navigated to a live GUI. Console errors are
     captured on the page object as `page._console_errors` for assertions."""
-    ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     stub_events(ctx)
     pg = ctx.new_page()
@@ -495,6 +512,23 @@ def page(_pw_browser, gui_url):
 @pytest.fixture()
 def page_sqlite(_pw_browser, sqlite_gui_url):
     """Browser against only SQLite connections; independent of DB_OK."""
+    ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
+    stub_cdn(ctx)
+    stub_events(ctx)
+    pg = ctx.new_page()
+    pg._console_errors = []
+    pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+    pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+    pg.goto(sqlite_gui_url, wait_until="networkidle")
+    try:
+        yield pg
+    finally:
+        ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite_default_language(_pw_browser, sqlite_gui_url):
+    """A fresh user context: no test language preference or model request."""
     ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     stub_events(ctx)
@@ -527,7 +561,7 @@ def page_sqlite_workspaces(_pw_browser, tmp_path: Path, monkeypatch):
         homes.append(str(home))
     with _running_gui(tmp_path, connections_toml="") as url:
         workspace.configure_workspace(os.pathsep.join(homes))
-        ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
         stub_cdn(ctx)
         stub_events(ctx)
         pg = ctx.new_page()

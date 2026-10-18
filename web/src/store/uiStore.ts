@@ -89,8 +89,8 @@ type UiState = {
 };
 
 /** UI preferences (panel sizes, max-rows cap, collapsed sidebar groups and
- * automatic execution), persisted independently. Language is NOT here — it is
- * fixed per page load (see i18n.ts), exactly like the legacy GUI. */
+ * automatic execution), persisted independently. Interface language is fixed
+ * per page load (see i18n.ts); reply language lives in the backend GUI config. */
 export const useUiStore = create<UiState>((set, get) => {
   return {
     sidebarWidth: readNumber(SIDEBAR_WIDTH_KEY, 244),
@@ -119,9 +119,9 @@ export const useUiStore = create<UiState>((set, get) => {
       set({ maxRows: n });
     },
     setEditorHeight: (n) => {
-      const clamped = Math.round(
-        Math.min(window.innerHeight * 0.7, Math.max(EDITOR_MIN, n)),
-      );
+      // The workbench fits the saved preference to its measured available
+      // space. Window resizing must not permanently reduce that preference.
+      const clamped = Math.round(Math.max(EDITOR_MIN, Number.isFinite(n) ? n : EDITOR_MIN));
       localStorage.setItem(EDITOR_HEIGHT_KEY, String(clamped));
       set({ editorHeight: clamped });
     },

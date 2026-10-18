@@ -8,6 +8,7 @@ type AcItem = { text: string; kind: AcKind };
 type AcRange = { from: number; to: number };
 
 type SqlEditorProps = {
+  embedded?: boolean;
   readOnly?: boolean;
   isProduction?: boolean;
   value: string;
@@ -110,7 +111,7 @@ function dedupCap(items: AcItem[], cap: number): AcItem[] {
  * the drag-to-resize bar under it, and the caret-anchored autocomplete box —
  * legacy DOM, ids and token classes throughout. */
 export default function SqlEditor({
-  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory, readOnly = false, isProduction = false,
+  value, onChange, onRun, db, env, isRedis, tables, resultColumns, navigateHistory, readOnly = false, isProduction = false, embedded = false,
 }: SqlEditorProps) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const hlRef = useRef<HTMLPreElement | null>(null);
@@ -289,7 +290,9 @@ export default function SqlEditor({
     const startY = e.clientY;
     const startHeight = editorHeight;
     const onMove = (moveEvt: MouseEvent): void => {
-      setEditorHeight(startHeight + (moveEvt.clientY - startY));
+      // The embedded workbench measures its own controls; keep the standalone
+      // editor's conservative bound for callers without that layout owner.
+      setEditorHeight(Math.min(window.innerHeight * 0.7, startHeight + (moveEvt.clientY - startY)));
     };
     const onUp = (): void => {
       window.removeEventListener("mousemove", onMove);
@@ -303,7 +306,7 @@ export default function SqlEditor({
 
   return (
     <>
-      <div className="vg-edwrap edwrap" style={{ height: editorHeight }}>
+      <div className="vg-edwrap edwrap" style={{ height: embedded ? "100%" : editorHeight }}>
         <pre
           id="hl"
           aria-hidden="true"
@@ -332,12 +335,12 @@ export default function SqlEditor({
           onKeyDown={onKeyDown}
         />
       </div>
-      <div
+      {!embedded && <div
         className="vg-hresizer hresizer"
         id="edresizer"
         title={t("drag_editor")}
         onMouseDown={startResize}
-      />
+      />}
       {/* Kept mounted with display:none when closed (like the legacy box). */}
       <div
         className="vg-acbox acbox"

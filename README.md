@@ -445,9 +445,13 @@ link restores selection without running SQL. `/app/` is no longer served.
 
 `qy gui` — a local, zero-build web GUI (Slate & Copper theme, light/dark):
 
+- Chinese by default; the language switch selects English and remembers your choice.
 - Grouped sidebar tree with env switcher, explicit production styling, connection health dots
 - **Multi-tab editor** — SQL and connection drafts persist when browser storage is available; result snapshots are bounded and large results remain in-session
 - SQL highlighting + local autocomplete (keywords / tables / columns)
+- **SQL assistant** — explain or change the current SQL in a collapsible editor
+  panel, with streaming replies and checkpoints; recover closed conversations
+  from History. Query execution stays on the existing Run control.
 - **EXPLAIN button** — one click to the query plan
 - Type-aware data grid: sorting, column resize, **keyboard navigation** (arrows + Enter), cell inspection with a **collapsible JSON tree**
 - CSV/JSON export, **searchable query history** (with connection + time)
@@ -457,9 +461,114 @@ link restores selection without running SQL. `/app/` is no longer served.
   `quarry-db` is out. Editable/dev installs are skipped automatically; set
   `QUARRY_UPDATE_CHECK=0` to disable it entirely.
 
+### SQL assistant
+
+Run `qy ai configure` for an interactive setup, or configure an
+OpenAI-compatible model endpoint with flags:
+
+```bash
+qy ai configure --base-url https://model.example/v1 --model your-model \
+  --api-key-env QUARRY_AI_API_KEY
+qy ai show
+qy ai explain --db planning --env dev --file query.sql
+qy ai sql --db planning --env dev 'Show the latest record per session'
+```
+
+Set the named key environment variable in the environment that starts `qy gui`
+or the CLI command. Alternatively, `--api-key-stdin` stores a key read from stdin
+in a separate file with owner-only permissions; `--no-key` supports local
+endpoints that require no authentication. `--bifrost` selects Bifrost Virtual
+Key authentication, and `--thinking disabled` requests non-thinking responses.
+Provider selection and fallback order are managed by the configured gateway;
+Quarry does not hard-code a second provider.
+
+Settings live in the `[assistant]` section of `~/.config/quarry/config.toml`.
+`QUARRY_CONFIG` overrides that path for both GUI and CLI. With stored
+authentication, the API key lives separately in `assistant-credentials.json`
+beside the config file, with owner-only permissions. `qy ai show` displays the
+effective settings with the key masked.
+`assistant-credentials.json` is Quarry's internal storage format, created
+automatically by `qy ai configure`; you do not need to write JSON yourself.
+Quarry does not register or issue API keys for you.
+
+Configuration is CLI-only: if a model is missing, the GUI
+keeps your message and shows the command to run. The endpoint must support
+Chat Completions streaming and tool calls for metadata discovery.
+
+Open the vertical **SQL 助手 / SQL Assistant** rail at the left of the SQL
+editor. Chat opens on the left, with the SQL editor and query controls on the
+right. The panel extends to the bottom of the query toolbar, with chat input
+pinned at the bottom. Chat begins at the top of the panel; the small arrow at
+the top of the divider hides it. The chat scrollbar stays narrow and next to
+the divider. Hiding the panel restores a full-width toolbar and gives
+the result grid more space. When expanded, the editor keeps
+enough height to leave the chat input visible even after resizing it. Drag the
+horizontal divider down to use the available height above the status bar;
+drag it back up to reveal the results again. The limit follows the window and
+toolbar size. Both dividers share grip sizing, colors and hover feedback; the
+vertical divider has its thin border on the left, and its bottom edge joins
+the toolbar border without a gap.
+
+Opening the panel does not send a model request. When SQL exists and the chat
+input is empty, a faint suggestion shows the complete explanation prompt.
+Press Tab to accept the displayed text, then Enter to request the explanation.
+
+Reply language is configured only through the CLI. By default it follows the
+system language of the machine running Quarry: Chinese resolves to Chinese,
+and other languages resolve to English. To inspect or change this GUI preference:
+
+```bash
+qy ai language          # Show the GUI preference and resolved reply language
+qy ai language zh       # Chinese GUI replies
+qy ai language en       # English GUI replies
+qy ai language system   # Follow the system language (default)
+```
+
+The choice is stored in `[gui.assistant] reply_language` in Quarry's config and
+applies to all GUI assistant replies, independently of interface language.
+The GUI reads changes when reopened or brought back into focus; it has no
+language-setting controls. Existing drafts, SQL and history are preserved.
+The legacy `auto` value is an alias for `system`. This preference does not
+affect CLI replies or model endpoint settings.
+
+Hand-written messages are sent unchanged. Send other messages
+with Enter; use Shift+Enter for a new line. The assistant can inspect the current
+connection's PostgreSQL, MySQL or SQLite table structures, including key
+relationships, to help with joins. It cannot join independent connections or
+run SQL. Use **Run** to execute a query through Quarry's existing read-only
+query path.
+
+Unsent messages stay with their tab when you hide the assistant or switch tabs.
+
+Explanations support Markdown headings, lists, emphasis, code blocks and
+tables, including streamed replies and reopened history. Headings use the
+theme accent, and SQL code blocks distinguish keywords, strings and numbers.
+Wide code and tables scroll within the chat panel. SQL shown in an explanation
+stays in the message; only a completed SQL edit updates the editor.
+
+Completed edits update the editor and provide **Restore previous SQL**. If you
+edit the query while a reply is arriving, the assistant keeps its proposal for
+explicit application. Restoring a checkpoint changes only the SQL; it keeps
+the conversation and marks that change as restored, without adding another
+restore action. It never rolls back database changes. Editing a saved query
+creates a draft rather than modifying the query file.
+
+Closing a tab does not delete its conversation. **History → Conversations**
+reopens the latest SQL, messages and checkpoints without executing the query.
+Conversations are stored on the machine running `qy gui`, independently of the
+browser's open tabs, in `assistant/history.sqlite3` next to Quarry's `config.toml`.
+`QUARRY_AI_HOME` can select a different conversation directory.
+
 ## Privacy and support boundaries
 
 Quarry does not upload connection credentials, queries or results to a Quarry service. Queries travel to the databases you configure. The GUI binds to localhost by default and checks local origins. Installed GUI packages periodically check PyPI for updates; set `QUARRY_UPDATE_CHECK=0` to disable this.
+
+The optional SQL assistant sends your SQL, conversation messages and relevant
+schema metadata to the model endpoint you configure. It does not automatically
+send query result rows or database/SSH credentials. Model credentials stay on
+the local backend; the browser has no model-key entry form. Conversations and
+SQL checkpoints are stored locally and may contain the SQL literals and text
+you entered.
 
 Neptune/openCypher is **experimental**, outside the stable database support commitment. Its endpoint and local empty-service tests do not verify real AWS/IAM behavior. See [COMPATIBILITY.md](COMPATIBILITY.md) for supported test environments, persistence limits and the final 1.0 acceptance checklist.
 

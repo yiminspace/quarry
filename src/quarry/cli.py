@@ -1,6 +1,6 @@
 """Quarry CLI — the `qy` / `quarry` command-line face over the core engine.
 
-Stable, deterministic. Same args -> same SQL -> same behavior. No LLM.
+Query commands are deterministic. Optional `ai` commands use a configured model.
 """
 
 from __future__ import annotations
@@ -1332,6 +1332,114 @@ def cmd_local_neptune_calls(args: argparse.Namespace) -> int:
 # argparse plumbing
 # ---------------------------------------------------------------------------
 
+def cmd_ai_configure(args: argparse.Namespace) -> int:
+    import getpass
+
+    from .assistant_config import config_details, configure_model, load_model_config
+
+    key = sys.stdin.read(8194).strip() if args.api_key_stdin else None
+    base_url, model = args.base_url, args.model
+    key_env, no_key, bifrost = args.api_key_env, args.no_key, args.bifrost
+    thinking = args.thinking
+    needs_input = not base_url or not model or not (key_env or args.api_key_stdin or no_key)
+    if needs_input:
+        if not sys.stdin.isatty():
+            raise QuarryError("Interactive configuration needs a terminal. Provide --base-url, --model and a key option; see `qy ai configure --help`.")
+        current = config_details()
+
+        def ask(label, default=""):
+            suffix = f" [{default}]" if default else ""
+            return input(f"{label}{suffix}: ").strip() or default
+
+        try:
+            base_url = base_url or ask("Base URL", current.get("base_url", ""))
+            model = model or ask("Model", current.get("model", ""))
+            if not (key_env or args.api_key_stdin or no_key):
+                key = getpass.getpass("API key (hidden; blank keeps the current key): ").strip()
+                if not key:
+                    key = None
+                    if current.get("auth") == "env":
+                        key_env = current.get("api_key_env")
+                    elif current.get("auth") == "none":
+                        no_key = True
+                    elif current.get("configured"):
+                        key = load_model_config().api_key
+                    else:
+                        raise QuarryError("An API key is required; for a local endpoint without authentication use --no-key.")
+            if not bifrost:
+                default = "y" if current.get("bifrost") else "n"
+                bifrost = ask("Use Bifrost virtual-key headers? (y/n)", default).lower() in ("y", "yes")
+            thinking = thinking or current.get("thinking", "default")
+        except (EOFError, KeyboardInterrupt):
+            raise QuarryError("Model configuration cancelled.") from None
+    result = configure_model(base_url=base_url, model=model,
+                             api_key_env=key_env, api_key=key,
+                             no_key=no_key, bifrost=bifrost,
+                             thinking=thinking or "default", timeout=args.timeout)
+    print(f"SQL assistant configured: {result['model']}")
+    if not result["configured"]:
+        print("API key is not available in this environment yet.", file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_ai_show(args: argparse.Namespace) -> int:
+    from .assistant_config import config_details
+
+    print(json.dumps(config_details(), indent=2, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_ai_language(args: argparse.Namespace) -> int:
+    from .assistant_config import gui_preferences, set_reply_language
+
+    result = set_reply_language(args.language) if args.language else gui_preferences()
+    print(json.dumps(result, indent=2))
+    return EXIT_OK
+
+
+def cmd_ai_generate(args: argparse.Namespace) -> int:
+    from . import assistant
+    from .assistant_config import load_model_config
+
+    load_model_config()  # fail before touching a database or creating history
+    sql = args.sql or ""
+    if args.file:
+        sql = sys.stdin.read(assistant.MAX_SQL + 1) if args.file == "-" else _read_sql_file(args.file)
+    explain = args.ai_cmd == "explain"
+    if explain and not sql.strip():
+        raise QuarryError("Provide SQL with --sql or --file (use --file - for stdin).")
+    conversation = assistant.create_conversation({"db": args.db, "env": args.env, "sql": sql})
+    body = {"conversationId": conversation["id"], "revision": conversation["revision"], "sql": sql,
+            "prompt": assistant.DEFAULT_EXPLAIN_PROMPT if explain else args.prompt, "explain": explain}
+    output = ""
+    proposal = None
+    completed = None
+    for event in assistant.stream_chat(body):
+        if event["type"] == "text_delta":
+            output += event["delta"]
+            if explain and args.format == "text":
+                print(event["delta"], end="", flush=True)
+        elif event["type"] == "sql_proposal":
+            proposal = event["sql"]
+        elif event["type"] == "error":
+            if explain and args.format == "text" and output:
+                print()
+            raise QuarryError(event["error"])
+        elif event["type"] == "done":
+            completed = event["conversation"]
+    if completed is None:
+        raise QuarryError("Assistant reply did not complete.")
+    if args.format == "json":
+        print(json.dumps({"conversationId": completed["id"], "text": output, "sql": proposal}, ensure_ascii=False))
+    elif explain:
+        print()
+    elif proposal:
+        print(proposal)
+    else:
+        print(output, file=sys.stderr)  # clarification is not SQL on stdout
+    return EXIT_OK
+
+
 def _positive_int(raw: str) -> int:
     """argparse `type=` for --timeout: reject 0/negative up front with a clear
     usage error, instead of silently reaching PG's `max(1, ...)` statement_timeout
@@ -1369,6 +1477,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skill-dir", default=None,
                         help="Expose query links at <skill-dir>/queries/<workspace-name> before running")
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
+
+    ai = sub.add_parser("ai", help="Explain and write SQL using a configured model")
+    ai_sub = ai.add_subparsers(dest="ai_cmd", required=True)
+    ai_config = ai_sub.add_parser("configure", help="Configure the model endpoint (CLI only)")
+    ai_config.add_argument("--base-url", help="OpenAI-compatible base URL, including /v1 when required")
+    ai_config.add_argument("--model")
+    auth = ai_config.add_mutually_exclusive_group()
+    auth.add_argument("--api-key-env", help="Read the key from this environment variable at request time")
+    auth.add_argument("--api-key-stdin", action="store_true", help="Read a key from stdin and save it privately on this computer")
+    auth.add_argument("--no-key", action="store_true", help="Use an endpoint that does not require an API key")
+    ai_config.add_argument("--bifrost", action="store_true", help="Send the configured key as x-bf-vk as well as Bearer")
+    ai_config.add_argument("--thinking", choices=["default", "disabled"])
+    ai_config.add_argument("--timeout", type=_positive_int, default=30, help="Model connect/read timeout in seconds (1–300)")
+    ai_config.set_defaults(func=cmd_ai_configure)
+    ai_sub.add_parser("show", help="Show model configuration with the API key masked").set_defaults(func=cmd_ai_show)
+    language = ai_sub.add_parser("language", help="Show or change the GUI assistant reply language (CLI replies are unaffected)")
+    language.add_argument("language", nargs="?", choices=["zh", "en", "system", "auto"],
+                          help="zh: Simplified Chinese; en: English; system: follow the Quarry server OS language (default); auto: legacy alias for system")
+    language.set_defaults(func=cmd_ai_language)
+    for action in ("explain", "sql"):
+        command = ai_sub.add_parser(action, help="Explain existing SQL" if action == "explain" else "Generate or revise SQL without executing it")
+        command.add_argument("--db", required=True, help="Target logical database or connection key")
+        command.add_argument("--env", default=None)
+        source = command.add_mutually_exclusive_group()
+        source.add_argument("--sql", help="Current SQL to explain or revise")
+        source.add_argument("--file", help="Read current SQL from a file; - reads stdin")
+        command.add_argument("--format", choices=["text", "json"] if action == "explain" else ["sql", "json"],
+                             default="text" if action == "explain" else "sql")
+        if action == "sql":
+            command.add_argument("prompt", help="Describe the query or change you want")
+        command.set_defaults(func=cmd_ai_generate)
 
     p_conn = sub.add_parser("connections", help="Manage DB connections (list/add/set/remove/test)")
     p_conn.add_argument("--format", choices=["table", "json"], default="table")

@@ -3,9 +3,10 @@ import { fetchRecordLink, type QueryColumn, type SavedQuery } from "./api";
 import { encodeQueryLink } from "./queryLink";
 import { cellPreview, cellText, MODAL_TEXT_CHUNK_CHARS } from "./cellValue";
 import { copy } from "./clip";
-import { t } from "./i18n";
+import { assistantStatusText, LANG, t } from "./i18n";
 import { useModalEscape } from "./modalStack";
 import type { HistEntry } from "./useSqlHistory";
+import { listConversations, type ConversationSummary } from "./assistantApi";
 
 type Row = Record<string, unknown>;
 
@@ -276,12 +277,26 @@ export function HistoryModal({
   history,
   onRecall,
   onClose,
+  onConversation,
 }: {
   history: HistEntry[];
   onRecall: (sql: string) => void;
   onClose: () => void;
+  onConversation: (id: string) => Promise<void>;
 }) {
   const [q, setQ] = useState("");
+  const [section, setSection] = useState<"queries" | "conversations">("queries");
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (section !== "conversations") return;
+    let alive = true;
+    setLoading(true);
+    listConversations().then((value) => { if (alive) setConversations(value.conversations); },
+      (failure) => { if (alive) setError(assistantStatusText(String(failure.message))); }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [section]);
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return history;
@@ -290,20 +305,25 @@ export function HistoryModal({
         h.sql.toLowerCase().includes(needle) || (h.db ?? "").toLowerCase().includes(needle),
     );
   }, [history, q]);
+  const shownConversations = conversations.filter((item) => `${item.title} ${item.db ?? ""} ${item.sql}`.toLowerCase().includes(q.toLowerCase()));
 
   return (
     <Modal onClose={onClose} boxStyle={{ width: "min(680px, 80%)" }}>
       <div className="vg-mh mh">
-        <i className="ti ti-history" /> {t("hist_title")} · {history.length}
+        <i className="ti ti-history" /> {t("hist_title")}
+      </div>
+      <div className="history-sections" role="tablist" aria-label={t("history_type")}>
+        <button type="button" role="tab" aria-selected={section === "queries"} data-testid="history-queries" onClick={() => { setSection("queries"); setQ(""); }}>{t("history_queries")}</button>
+        <button type="button" role="tab" aria-selected={section === "conversations"} data-testid="history-conversations" onClick={() => { setSection("conversations"); setQ(""); }}>{t("history_conversations")}</button>
       </div>
       <input
         className="vg-input hsearch"
         autoFocus
-        placeholder={t("hist_search")}
+        placeholder={section === "queries" ? t("hist_search") : t("conversations_search")}
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
-      <div id="hlist">
+      {section === "queries" ? <div id="hlist">
         {shown.length === 0 && <div className="vg-empty empty">{t("no_match")}</div>}
         {shown.map((h, i) => {
           const meta = [h.db ? h.db + (h.env ? `@${h.env}` : "") : "", fmtAgo(h.ts)]
@@ -331,7 +351,18 @@ export function HistoryModal({
             </div>
           );
         })}
-      </div>
+      </div> : <div className="conversation-list">
+        {loading && <p className="assistant-notice">{t("conversations_loading")}</p>}
+        {error && <p className="assistant-error" role="alert">{error}</p>}
+        {!loading && !error && !conversations.length && <p className="assistant-notice">{t("conversations_empty")}</p>}
+        {!loading && conversations.length > 0 && !shownConversations.length && <p className="assistant-notice">{t("conversations_no_match")}</p>}
+        {shownConversations.map((item) =>
+          <button type="button" className="conversation-item" data-testid="conversation-item" key={item.id}
+            onClick={() => { setError(""); void onConversation(item.id).catch((failure) => setError(assistantStatusText(String(failure.message)))); }}>
+            <span>{!item.title || item.title === "SQL conversation" ? t("assistant_conversation_title") : item.title}</span>
+            <small>{[item.db, item.env].filter(Boolean).join(" / ")} <time dateTime={new Date(item.updatedAt).toISOString()}>{new Date(item.updatedAt).toLocaleString(LANG === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></small>
+          </button>)}
+      </div>}
     </Modal>
   );
 }

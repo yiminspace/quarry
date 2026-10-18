@@ -17,7 +17,7 @@ import zipfile
 
 import pytest
 
-from conftest import REPO, TEST_DB_URL, _running_gui, requires_browser, stub_events
+from conftest import REPO, TEST_DB_URL, _running_gui, requires_browser, stub_events, english_browser_context
 from quarry import __version__
 from test_gui_browser import _select_testpg
 
@@ -25,7 +25,7 @@ pytestmark = [requires_browser, pytest.mark.browser]
 
 
 def _mk_page(browser, url):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
     stub_events(ctx)
     pg = ctx.new_page()
     pg._console_errors = []
@@ -92,7 +92,7 @@ def test_table_structure_modal_switching_tables_replaces_columns(_pw_browser, tm
     })();
     """
     with _running_gui(tmp_path) as base:
-        ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
         stub_events(ctx)
         page = ctx.new_page()
         try:
@@ -159,7 +159,7 @@ def test_stale_tables_response_does_not_overwrite(_pw_browser, tmp_path):
     })();
     """
     with _running_gui(tmp_path, extra_conn=extra) as base:
-        ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
         stub_events(ctx)
         page = ctx.new_page()
         try:

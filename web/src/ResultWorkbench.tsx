@@ -26,6 +26,10 @@ import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { defaultEnvFor, type PanelData } from "./Sidebar";
 import { groupKey, groupsWithQueries } from "./sidebarLayout";
 import SqlEditor from "./SqlEditor";
+import EditorWorkspace from "./EditorWorkspace";
+import SqlAssistant from "./SqlAssistant";
+import { useSqlAssistant } from "./useSqlAssistant";
+import { getConversation } from "./assistantApi";
 import RunControls from "./RunControls";
 import { useConnStore } from "./store/connStore";
 import {
@@ -195,12 +199,18 @@ export default function ResultWorkbench() {
   const querySql = activeSnapshot?.querySql ?? null;
 
   const { history, pushHist, keepDraft, navigateHistory } = useSqlHistory();
+  const previewNavigationRef = useRef<{ tabId: string; environmentSwitch: boolean } | null>(null);
+  const beforeAssistantWrite = useCallback((tabId: string) => {
+    if (previewNavigationRef.current?.tabId === tabId) previewNavigationRef.current = null;
+  }, []);
+  const assistant = useSqlAssistant(keepDraft, beforeAssistantWrite);
+  const closeAssistantTab = assistant.closeTab;
+  const assistantSession = assistant.sessions[activeTabId] ?? {};
 
   // key of the connection whose table panel is currently shown; used to drop
   // stale /api/tables responses after the user moved on.
   const panelKeyRef = useRef<string | null>(null);
   const tablesSeqRef = useRef(0);
-  const previewNavigationRef = useRef<{ tabId: string; environmentSwitch: boolean } | null>(null);
 
   const findItem = useCallback(
     (db: string): ConnItem | undefined =>
@@ -877,6 +887,7 @@ export default function ResultWorkbench() {
       // Closing a tab must never silently lose hand-written SQL.
       const dying = tab.sql.trim();
       if (dying) pushHist(dying, tab.db, tab.env);
+      closeAssistantTab(tab);
       const store = useTabsStore.getState();
       const wasActive = store.activeId === tab.id;
       store.closeTab(tab.id);
@@ -885,7 +896,7 @@ export default function ResultWorkbench() {
         revalidateTab(next.tabs.find((tb) => tb.id === next.activeId));
       }
     },
-    [pushHist, revalidateTab],
+    [pushHist, revalidateTab, closeAssistantTab],
   );
 
   // Cmd/Ctrl+Shift+W closes the active tab (real Cmd/Ctrl+W can't be
@@ -1074,11 +1085,31 @@ export default function ResultWorkbench() {
   };
 
   const openHistory = (): void => {
-    if (!history.length) {
-      toast(t("no_hist"), true);
-      return;
-    }
     setHistoryOpen(true);
+  };
+
+  const resumeConversation = async (id: string): Promise<void> => {
+    const conversation = await getConversation(id);
+    const state = useTabsStore.getState();
+    const existing = state.tabs.find((tab) => tab.conversationId === id);
+    if (existing) {
+      handleTabSwitch(existing);
+      assistant.attach(existing.id, conversation);
+    } else {
+      const item = conversation.db ? findItem(conversation.db) : undefined;
+      if (conversation.db && (conversation.connectionAvailable === false || !item || workspaceFor(conversation.db) !== (conversation.guiWorkspace ?? conversation.workspace) ||
+        !item.envs.some((env) => env.env === conversation.env))) {
+        throw new Error(t("assistant_connection_missing"));
+      }
+      state.addTab({ db: conversation.db, env: conversation.env });
+      const tabId = useTabsStore.getState().activeId;
+      state.updateTab(tabId, { sql: conversation.sql });
+      assistant.attach(tabId, conversation);
+      revalidateTab(useTabsStore.getState().tabs.find((tab) => tab.id === tabId));
+    }
+    // Restoring a conversation is navigation only, regardless of Auto-run.
+    previewNavigationRef.current = null;
+    setHistoryOpen(false);
   };
 
   const copyQueryLink = (): void => {
@@ -1195,22 +1226,14 @@ export default function ResultWorkbench() {
         </div>
         <TabBar isProduction={isProduction} onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
-        <SqlEditor
-          isProduction={isProduction}
-          readOnly={!!activeTab.savedQueryId}
-          value={sql}
-          onChange={(next) => {
-            previewNavigationRef.current = null;
-            setSql(next);
-          }}
-          onRun={() => void run()}
-          db={current?.db ?? null}
-          env={current?.env ?? null}
-          isRedis={!!current?.isRedis}
-          tables={panel.tables ?? []}
-          resultColumns={result?.columns.map((c) => c.name) ?? []}
-          navigateHistory={navigateHistory}
-        />
+        <EditorWorkspace open={!!assistantSession.open}
+          onOpen={() => void assistant.open(activeTab)} onClose={() => assistant.close(activeTabId)}
+          assistant={<SqlAssistant key={activeTabId} session={assistantSession} currentSql={activeTab.sql}
+            onDraftChange={(update) => assistant.setDraft(activeTabId, update)}
+            onSend={(prompt, explain) => assistant.send(useTabsStore.getState().tabs.find((tab) => tab.id === activeTabId) ?? activeTab, prompt, explain)}
+            onApply={(message) => void assistant.apply(activeTab, message)}
+            onRestore={(checkpointId) => void assistant.restore(activeTab, checkpointId)} />}
+          toolbar={
         <div className="vg-toolbar toolbar">
           <RunControls
             key={JSON.stringify([current ? workspaceFor(current.db) : null, current?.db, current?.env, current?.production, activeTabId])}
@@ -1275,6 +1298,25 @@ export default function ResultWorkbench() {
             <i className="ti ti-link" /> <span id="linkLbl">{t("copy_query_link")}</span>
           </button>
         </div>
+          }>
+        <SqlEditor
+          embedded
+          isProduction={isProduction}
+          readOnly={!!activeTab.savedQueryId}
+          value={sql}
+          onChange={(next) => {
+            previewNavigationRef.current = null;
+            setSql(next);
+          }}
+          onRun={() => void run()}
+          db={current?.db ?? null}
+          env={current?.env ?? null}
+          isRedis={!!current?.isRedis}
+          tables={panel.tables ?? []}
+          resultColumns={result?.columns.map((c) => c.name) ?? []}
+          navigateHistory={navigateHistory}
+        />
+        </EditorWorkspace>
         <div className="vg-gridwrap gridwrap" id="grid">
           {loading ? (
             <div className="vg-empty spin">
@@ -1447,7 +1489,7 @@ export default function ResultWorkbench() {
         />
       )}
       {historyOpen && (
-        <HistoryModal history={history} onRecall={recallHistory} onClose={() => setHistoryOpen(false)} />
+        <HistoryModal history={history} onRecall={recallHistory} onConversation={resumeConversation} onClose={() => setHistoryOpen(false)} />
       )}
       {paramModal && (
         <ParamModal

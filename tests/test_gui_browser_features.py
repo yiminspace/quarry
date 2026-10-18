@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 
-from conftest import _running_gui, requires_chromium, stub_cdn, stub_events, DB_OK, REDIS_OK, TEST_DB_URL
+from conftest import _running_gui, requires_chromium, stub_cdn, stub_events, english_browser_context, DB_OK, REDIS_OK, TEST_DB_URL
 from test_gui_browser import _run_result, _select_testpg, _set_sql
 from test_gui_browser import page_saved  # noqa: F401  (fixture reused below)
 
@@ -194,7 +194,7 @@ def test_app_uses_distinct_svg_favicon(page):
 # ---------------------------------------------------------------------------
 
 def _mk_page(browser, url):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     stub_events(ctx)
     pg = ctx.new_page()
@@ -210,12 +210,12 @@ def _console_clean(request):
     """Invariant: no page JS errors during any test in this module."""
     # Keep the legacy Postgres requirement, but do not gate SQLite's standalone
     # browser coverage on a server it never connects to.
-    if not {"page_sqlite", "page_sqlite_workspaces"}.intersection(request.fixturenames) and not DB_OK:
+    if not {"page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language"}.intersection(request.fixturenames) and not DB_OK:
         pytest.skip("quarry_test Postgres not reachable")
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces")
+                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -469,7 +469,7 @@ def page_dead(_pw_browser, tmp_path):
 @pytest.fixture()
 def page_clip(_pw_browser, gui_url):
     """A page with clipboard permissions granted (for copy-path tests)."""
-    ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
     ctx.grant_permissions(["clipboard-read", "clipboard-write"])
     stub_cdn(ctx)
     stub_events(ctx)
@@ -1128,10 +1128,11 @@ def test_load_more_keeps_active_sort_applied(page):
 # 7. History: empty toast, search filter
 # ---------------------------------------------------------------------------
 
-def test_history_empty_toast(page):
+def test_history_empty_keeps_conversations_accessible(page):
     page.locator("#histBtn").click()
-    page.wait_for_selector("#toast", state="visible")
-    assert page.locator(".modal").count() == 0
+    page.get_by_test_id("history-queries").wait_for()
+    assert page.locator(".modal .hitem").count() == 0
+    assert page.get_by_test_id("history-conversations").is_visible()
 
 
 def test_history_search_filters(page):
@@ -3036,7 +3037,7 @@ def test_query_deeplink_invalid_env_shows_notice_and_skips_autorun(page_envset):
 # ---------------------------------------------------------------------------
 
 def _mk_live_page(browser, url):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     pg = ctx.new_page()
     pg.goto(url, wait_until="load")
@@ -3116,7 +3117,7 @@ def test_server_upgrade_prompts_reload_banner(_pw_browser, tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 
 def _mk_update_page(browser, url, update_body):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     stub_events(ctx)
     ctx.route("**/api/update", lambda route: route.fulfill(
@@ -3195,7 +3196,7 @@ _WHATS_NEW_CHANGELOG = [
 
 
 def _mk_whats_new_context(browser):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
     stub_events(ctx)
     ctx.route("**/api/version", lambda route: route.fulfill(
@@ -3452,6 +3453,7 @@ def test_close_all_preserves_more_than_100_tab_drafts(page):
         [tabs],
     )
     page.reload(wait_until='networkidle')
+    page.wait_for_function("document.querySelectorAll('#tabs .tab').length === 105")
     assert page.locator('#tabs .tab').count() == 105
 
     page.locator('#tabList').click()
@@ -4445,3 +4447,1447 @@ def test_quarry_focus_url_restores_table_without_running(page_sqlite_workspaces)
     page.wait_for_function("document.querySelector('#sql').value === 'select * from \"records\"'")
     assert urlparse(page.url).path == "/quarry/"
     assert queries == []
+
+
+# SQL-assistant browser coverage uses the real local conversation store with a
+# deterministic model boundary. It never calls a configured provider or needs
+# PostgreSQL. API/schema/provider policies are covered at their own layer.
+class _AssistantBrowserStub:
+    def __init__(self, page, tmp_path, monkeypatch, *, configured=True):
+        from quarry import assistant_config, assistant_store
+        monkeypatch.setattr(assistant_config, "system_reply_language", lambda: "en")
+        self.store = assistant_store
+        monkeypatch.setenv('QUARRY_AI_HOME', str(tmp_path / 'assistant-browser'))
+        self.config_path = tmp_path / 'assistant-config.toml'
+        monkeypatch.setenv('QUARRY_CONFIG', str(self.config_path))
+        self.page = page
+        self.configured = configured
+        self.requests = []
+        self.preferences_requests = []
+        self.chats = []
+        self.pending = []
+        self.hold = False
+        self.proposal = None
+        self.response = 'This query selects the requested columns from entries.'
+        self.error = None
+        self.close_without_done = False
+        page.route('**/api/assistant/**', self._route)
+
+    def _route(self, route):
+        parsed = urlparse(route.request.url)
+        path = parsed.path.removeprefix('/api/assistant/')
+        data = route.request.post_data_json if route.request.method == 'POST' else {}
+        if path == 'preferences':
+            self.preferences_requests.append((route.request.method, data))
+            return route.continue_()
+        self.requests.append((path, data))
+        if path == 'config':
+            return route.fulfill(json={'configured': self.configured, 'model': 'fixture-model'})
+        if path == 'conversations':
+            if route.request.method == 'POST':
+                doc = self.store.create(db=data['db'], env=data.get('env'),
+                                        workspace=data.get('workspace'), sql=data.get('sql', ''),
+                                        fingerprint='fixture-connection')
+            elif parse_qs(parsed.query).get('id'):
+                doc = self.store.get(parse_qs(parsed.query)['id'][0])
+            else:
+                doc = {'conversations': self.store.list_conversations()}
+            return route.fulfill(json=doc)
+        if path == 'conversations/update':
+            return route.fulfill(json=self.store.update(data['id'], data['revision'], data['sql']))
+        if path == 'conversations/apply':
+            return route.fulfill(json=self.store.apply(
+                data['id'], data['revision'], data['sql'], data['messageId'],
+                explicit=data.get('explicit', False)))
+        if path == 'conversations/restore':
+            return route.fulfill(json=self.store.restore(data['id'], data['revision'], data['checkpointId']))
+        if path == 'cancel':
+            return route.fulfill(json={'cancelled': True})
+        if path == 'chat':
+            self.chats.append(data)
+            if self.hold:
+                self.pending.append(route)
+                return
+            return self.complete(route)
+        raise AssertionError(f'Unexpected assistant API: {route.request.method} {path}')
+
+    def events(self, data):
+        ident = {'requestId': data['requestId'], 'conversationId': data['conversationId']}
+        self.store.append_message(data['conversationId'], 'user', data['prompt'])
+        events = [dict(ident, type='request'), dict(ident, type='text_delta', delta=self.response)]
+        if self.error:
+            return events + [dict(ident, type='error', error=self.error)]
+        if self.close_without_done:
+            return events
+        extra = {'baseRevision': data['revision'], 'status': 'complete'}
+        if self.proposal and not data.get('explain'):
+            extra['sql'] = self.proposal
+        doc = self.store.append_message(data['conversationId'], 'assistant', self.response, **extra)
+        message = doc['messages'][-1]
+        if 'sql' in message:
+            events.append(dict(ident, type='sql_proposal', sql=message['sql'], messageId=message['id']))
+        events.append(dict(ident, type='done', conversation=doc))
+        return events
+
+    def complete(self, route=None):
+        route = route or self.pending.pop(0)
+        events = self.events(route.request.post_data_json)
+        route.fulfill(status=200, content_type='application/x-ndjson',
+                      body=''.join(json.dumps(event) + '\n' for event in events))
+
+
+def _assistant_ready(page, tmp_path, monkeypatch, *, sql='SELECT id, note FROM entries LIMIT 10', configured=True):
+    stub = _AssistantBrowserStub(page, tmp_path, monkeypatch, configured=configured)
+    page.reload(wait_until='networkidle')
+    _select_sqlite(page)
+    _set_sql(page, sql)
+    return stub
+
+
+def _assistant_send(page, prompt):
+    field = page.get_by_test_id('assistant-input')
+    field.fill(prompt)
+    field.press('Enter')
+
+
+def _assistant_explain(page):
+    field = page.get_by_test_id('assistant-input')
+    field.focus()
+    field.press('Tab')
+    field.press('Enter')
+
+
+def _assistant_query_requests(page):
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json)
+            if req.method == 'POST' and urlparse(req.url).path in ('/api/query', '/api/run') else None)
+    return requests
+
+
+def _assistant_scrollbar_styles(page):
+    return page.get_by_test_id('assistant-messages').evaluate('''el => {
+      // Chromium's generic pseudo-element computed style omits :vertical.
+      // Inspect that exact loaded rule while measuring the remaining chrome.
+      let verticalTrackTop;
+      const visit = rules => { for (const rule of rules) {
+        if (rule.selectorText?.split(',').map(s => s.trim()).includes('.assistant-messages::-webkit-scrollbar-track:vertical'))
+          verticalTrackTop = rule.style.marginTop;
+        if (rule.cssRules) visit(rule.cssRules);
+      }};
+      for (const sheet of document.styleSheets) { try { visit(sheet.cssRules); } catch { /* Cross-origin styles. */ } }
+      const thumb = getComputedStyle(el, '::-webkit-scrollbar-thumb');
+      return {
+        width: getComputedStyle(el, '::-webkit-scrollbar').width,
+        trackTop: verticalTrackTop,
+        thumb: thumb.backgroundColor,
+        thumbBorderLeft: thumb.borderLeftWidth,
+        thumbBorderRight: thumb.borderRightWidth,
+        thumbBackgroundClip: thumb.backgroundClip,
+        buttons: getComputedStyle(el, '::-webkit-scrollbar-button').display,
+        standardWidth: getComputedStyle(el).scrollbarWidth,
+        standardColor: getComputedStyle(el).scrollbarColor,
+      };
+    }''')
+
+
+def _assistant_controlled_stream(page):
+    """Deliver real incremental NDJSON chunks without calling a model."""
+    page.evaluate('''() => {
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, init) => {
+        if (String(url).endsWith('/api/assistant/chat')) {
+          window.__assistantRequest = JSON.parse(init.body);
+          const stream = new ReadableStream({start(controller) { window.__assistantController = controller; }});
+          return new Response(stream, {headers: {'Content-Type': 'application/x-ndjson'}});
+        }
+        return original(url, init);
+      };
+      window.__assistantChunk = events => window.__assistantController.enqueue(
+        new TextEncoder().encode(events.map(event => JSON.stringify(event)).join('\\n') + '\\n'));
+    }''')
+
+
+_ASSISTANT_MARKDOWN = '''## **Query plan**
+
+Read **only the requested rows** from `entries`.
+
+- Select the identifier.
+- Keep the note.
+
+1. Filter recent records.
+2. Sort by identifier.
+
+> A code example is an explanation.
+
+```sql
+SELECT count(*), 3 FROM entries
+WHERE note = 'sample' AND ready = true; -- Example
+```
+
+| Column | Meaning |
+| --- | --- |
+| id | Identifier |
+| note | Entry text |
+
+[SQL reference](https://www.sqlite.org/lang_select.html)
+'''
+
+
+def test_assistant_markdown_formats_reply_and_reopened_history_without_sql_changes(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    failed_requests = []
+    page.on('requestfailed', lambda req: failed_requests.append((req.url, req.failure)))
+    page.on('response', lambda response: failed_requests.append((response.url, response.status))
+            if response.status >= 400 else None)
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    stub.response = _ASSISTANT_MARKDOWN
+    page.get_by_test_id('assistant-open').click()
+    original = 'SELECT note FROM entries WHERE id = 17'
+    _set_sql(page, original)
+    queries = _assistant_query_requests(page)
+    prompt = '**Keep this literal**\n\n`SELECT 1`\n\n# Not a heading'
+    _assistant_send(page, prompt)
+    markdown = page.locator('.assistant-message-assistant .assistant-markdown')
+
+    def assert_reply():
+        markdown.locator('h2').wait_for()
+        assert markdown.locator('h2').inner_text() == 'Query plan'
+        assert markdown.locator('p strong').inner_text() == 'only the requested rows'
+        assert markdown.locator('p > code').inner_text() == 'entries'
+        assert markdown.locator('ul > li').count() == 2
+        assert markdown.locator('ol > li').count() == 2
+        assert markdown.locator('blockquote').inner_text().strip() == 'A code example is an explanation.'
+        code = markdown.locator('pre > code.language-sql')
+        assert code.inner_text().strip() == "SELECT count(*), 3 FROM entries\nWHERE note = 'sample' AND ready = true; -- Example"
+        assert code.locator('.hljs-keyword').count() >= 3
+        assert code.locator('.hljs-string').inner_text() == "'sample'"
+        assert code.locator('.hljs-number').inner_text() == '3'
+        assert code.locator('.hljs-comment').inner_text() == '-- Example'
+        assert markdown.locator('.assistant-table-scroll table th').all_text_contents() == ['Column', 'Meaning']
+        assert markdown.locator('table tbody tr').count() == 2
+        user = page.locator('.assistant-message-user')
+        assert user.inner_text() == prompt
+        assert user.locator('strong, code, h1, .assistant-markdown').count() == 0
+        assert page.locator('#sql').input_value() == original
+        assert page.get_by_test_id('assistant-apply').count() == 0
+        assert page.get_by_test_id('assistant-restore').count() == 0
+        assert queries == []
+
+    assert_reply()
+    conversation_id = stub.chats[0]['conversationId']
+    system_text = '**System message stays literal** <b>unchanged</b>'
+    stub.store.append_message(conversation_id, 'system', system_text)
+    page.locator('.tab.on .x').click()
+    page.locator('#queryEmptyState').wait_for()
+    page.reload(wait_until='networkidle')
+    try:
+        page.locator('#histBtn').wait_for(timeout=5000)
+    except Exception:
+        page.screenshot(path=str(tmp_path / 'assistant-history-reload-failure.png'))
+        print('History reload diagnostics:', json.dumps({
+            'url': page.url, 'body': page.locator('body').inner_text(),
+            'console': page._console_errors, 'requests': failed_requests,
+        }))
+        raise
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.click()
+    assert_reply()
+    system = page.locator('.assistant-message-system')
+    assert system.inner_text() == system_text
+    assert system.locator('strong, b, .assistant-markdown').count() == 0
+    assert len(stub.chats) == 1
+    page.screenshot(path=str(tmp_path / 'assistant-markdown-history.png'))
+
+
+def test_assistant_markdown_blocks_html_unsafe_urls_and_remote_images(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    image_requests = []
+    page.route('https://markdown-images.invalid/**', lambda route: (image_requests.append(route.request.url), route.abort()))
+    page.evaluate('window.__markdownExecuted = false')
+    stub.response = '''Safe **explanation**.
+
+<script>window.__markdownExecuted = true</script>
+
+<img src="https://markdown-images.invalid/raw.png" onerror="window.__markdownExecuted=true">
+
+<iframe src="https://markdown-images.invalid/frame"></iframe>
+
+[Unsafe script](javascript:alert%281%29)
+[Unsafe data](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)
+[Local route](/api/query)
+[Protocol relative](//markdown-images.invalid/link)
+
+![Diagram description](https://markdown-images.invalid/model.png)
+
+[SQL documentation](https://www.sqlite.org/lang_select.html)
+[Email](mailto:reader@example.com)
+'''
+    page.get_by_test_id('assistant-open').click()
+    _assistant_send(page, 'Explain this safely')
+    markdown = page.locator('.assistant-message-assistant .assistant-markdown')
+    markdown.get_by_text('Diagram description', exact=True).wait_for()
+    assert markdown.locator('script, img, iframe').count() == 0
+    assert page.evaluate('window.__markdownExecuted') is False
+    assert image_requests == []
+    assert markdown.locator('.assistant-image-alt').inner_text() == 'Diagram description'
+    assert markdown.locator('a').count() == 2
+    assert markdown.locator('a').evaluate_all("links => links.every(a => ['https:', 'mailto:'].includes(new URL(a.href).protocol) && a.target === '_blank' && a.relList.contains('noopener') && a.relList.contains('noreferrer'))")
+    for label in ('Unsafe script', 'Unsafe data', 'Local route', 'Protocol relative'):
+        assert markdown.get_by_text(label, exact=True).evaluate('el => el.tagName') == 'SPAN'
+    assert page.locator('#sql').input_value() == ''
+
+
+def test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    queries = _assistant_query_requests(page)
+    _assistant_controlled_stream(page)
+    _assistant_send(page, 'Explain a long SQL example')
+    page.wait_for_function('Boolean(window.__assistantRequest && window.__assistantController)')
+    request = page.evaluate('window.__assistantRequest')
+    ident = {key: request[key] for key in ('requestId', 'conversationId')}
+    composer_before = page.get_by_test_id('assistant-input').bounding_box()
+    first = '## Explanation\n\n**Read each step.**\n\n```sql\n' + '\n'.join(f'-- Step {i}: inspect columns' for i in range(35)) + '\nSELECT id'
+    page.evaluate('events => window.__assistantChunk(events)', [dict(ident, type='request'), dict(ident, type='text_delta', delta=first)])
+    stream = page.get_by_test_id('assistant-stream')
+    stream.locator('pre code.language-sql').wait_for()
+    assert stream.locator('h2').inner_text() == 'Explanation'
+    assert stream.locator('pre code').inner_text().endswith('SELECT id\n')
+    page.wait_for_function('''() => { const el = document.querySelector('[data-testid="assistant-messages"]');
+      return el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight < 10; }''')
+    tail = ' FROM entries;\n```\n\n> Read complete.\n\n- Keep the current editor SQL.\n'
+    page.evaluate('events => window.__assistantChunk(events)', [dict(ident, type='text_delta', delta=tail)])
+    stream.locator('blockquote').wait_for()
+    assert stream.locator('pre code').inner_text().endswith('SELECT id FROM entries;\n')
+    stub.response = first + tail
+    done = stub.events(request)[-1]
+    page.evaluate('event => { window.__assistantChunk([event]); window.__assistantController.close(); }', done)
+    stream.wait_for(state='detached')
+    markdown = page.locator('.assistant-message-assistant .assistant-markdown')
+    assert markdown.locator('blockquote').inner_text().strip() == 'Read complete.'
+    assert markdown.locator('ul > li').count() == 1
+    assert abs(page.get_by_test_id('assistant-input').bounding_box()['y'] - composer_before['y']) <= 2
+    assert page.get_by_test_id('assistant-messages').evaluate('el => el.scrollHeight - el.scrollTop - el.clientHeight') < 10
+    assert page.evaluate('window.scrollY') == 0
+    assert page.locator('#sql').input_value() == ''
+    assert queries == []
+
+
+def test_assistant_markdown_wide_code_and_tables_scroll_inside_narrow_panel(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    page.set_viewport_size({'width': 1000, 'height': 800})
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    stub.response = '## Wide examples\n\n```sql\nSELECT ' + ', '.join(f'column_{i}' for i in range(30)) + ' FROM entries;\n```\n\n'
+    stub.response += '| Identifier | Source column with a long name | Destination column with a long name | Description |\n| --- | --- | --- | --- |\n| 1 | account_identifier | customer_identifier | Explain the relationship |\n'
+    page.get_by_test_id('assistant-open').click()
+    _assistant_send(page, 'Explain the columns')
+    page.locator('.assistant-markdown table').wait_for()
+    panel = page.get_by_test_id('assistant-panel')
+    assert panel.bounding_box()['width'] < 340
+    for selector in ('.assistant-markdown pre', '.assistant-table-scroll'):
+        dimensions = page.locator(selector).evaluate('el => ({width:el.clientWidth, content:el.scrollWidth, overflow:getComputedStyle(el).overflowX})')
+        assert dimensions['content'] > dimensions['width']
+        assert dimensions['overflow'] == 'auto'
+        assert page.locator(selector).evaluate('el => { el.scrollLeft = 80; return el.scrollLeft; }') > 0
+    for selector in ('[data-testid="assistant-panel"]', '[data-testid="assistant-messages"]', '.assistant-markdown'):
+        assert page.locator(selector).evaluate('el => el.scrollWidth <= el.clientWidth + 1'), selector
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    page.screenshot(path=str(tmp_path / 'assistant-markdown-narrow.png'))
+
+
+@pytest.mark.parametrize('viewport_width', [1280, 1000])
+def test_assistant_layout_collapses_inside_editor_and_reopens(page_sqlite, tmp_path, monkeypatch, viewport_width):
+    page = page_sqlite
+    page.set_viewport_size({'width': viewport_width, 'height': 900})
+    _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    rail = page.get_by_test_id('assistant-open')
+    editor = page.get_by_test_id('editor-workspace')
+    rail_box, editor_box, grid_box = rail.bounding_box(), editor.bounding_box(), page.locator('#grid').bounding_box()
+    assert rail.inner_text() == 'SQL Assistant'
+    assert rail.locator('i').count() == 0
+    assert rail.get_attribute('aria-label') == 'Open SQL assistant'
+    assert abs(rail_box['y'] - editor_box['y']) <= 2
+    assert rail_box['y'] + rail_box['height'] <= editor_box['y'] + editor_box['height'] + 2
+    assert rail_box['width'] == 32
+    label_box = rail.locator('span').bounding_box()
+    assert label_box['y'] >= rail_box['y']
+    assert label_box['y'] + label_box['height'] <= rail_box['y'] + rail_box['height']
+    assert abs(rail_box['x'] - editor_box['x']) <= 1
+    assert rail_box['x'] + rail_box['width'] <= page.locator('.editor-input').bounding_box()['x']
+    rail.click()
+    panel = page.get_by_test_id('assistant-panel')
+    panel.wait_for()
+    expanded = editor.bounding_box()
+    assert expanded['height'] > editor_box['height']
+    assert page.locator('#grid').bounding_box()['height'] < grid_box['height']
+    assert not rail.is_visible()
+    assert panel.get_by_text('SQL Assistant', exact=True).count() == 0
+    assert panel.get_by_text('Current SQL', exact=True).count() == 0
+    assert panel.get_by_role('button', name=re.compile(r'Send|Maximize|Collapse', re.I)).count() == 0
+    assert panel.get_by_test_id('assistant-input').is_visible()
+    toolbar_box = page.locator('.toolbar').bounding_box()
+    panel_box = panel.bounding_box()
+    composer_box = page.get_by_test_id('assistant-input').bounding_box()
+    panel_bottom = panel_box['y'] + panel_box['height']
+    assert abs(panel_bottom - toolbar_box['y'] - toolbar_box['height']) <= 2
+    assert abs(panel_box['x'] - expanded['x']) <= 1
+    assert panel_box['x'] + panel_box['width'] <= toolbar_box['x']
+    close = page.get_by_test_id('assistant-close')
+    close_box = close.bounding_box()
+    icon_box = close.locator('.ti-chevrons-left').bounding_box()
+    assert abs(close_box['y'] - panel_box['y'] - 8) <= 1
+    assert close_box['height'] == 26 and close_box['width'] == 22
+    assert icon_box['width'] <= 16 and icon_box['height'] <= 16
+    assert close.locator('i').evaluate('el => getComputedStyle(el).borderTopWidth') == '0px'
+    divider_box = page.get_by_test_id('assistant-divider').bounding_box()
+    assert divider_box['width'] == page.locator('#edresizer').bounding_box()['height'] == 6
+    assert abs(close_box['x'] + close_box['width'] / 2 - divider_box['x'] - divider_box['width'] / 2) <= 1
+    assert abs(icon_box['y'] + icon_box['height'] / 2 - close_box['y'] - close_box['height'] / 2) <= 1
+    messages = page.get_by_test_id('assistant-messages')
+    assert abs(messages.bounding_box()['y'] - panel_box['y']) <= 1
+    assert abs(messages.bounding_box()['x'] + messages.bounding_box()['width'] - divider_box['x']) <= 1
+    assert messages.evaluate('el => getComputedStyle(el).marginRight') == '0px'
+    assert messages.evaluate('el => getComputedStyle(el).paddingTop') == '14px'
+    content_box = page.locator('.assistant-empty').bounding_box()
+    assert content_box['x'] + content_box['width'] <= close_box['x']
+    sql_text_left = page.locator('#sql').evaluate('el => el.getBoundingClientRect().left + parseFloat(getComputedStyle(el).paddingLeft)')
+    assert close_box['x'] + close_box['width'] <= sql_text_left
+    assert composer_box['x'] + composer_box['width'] <= panel_box['x'] + panel_box['width']
+    assert 0 <= panel_bottom - composer_box['y'] - composer_box['height'] <= 20
+    for selector in ('#runBtn', '#fmtBtn', '#expBtn', '#csvBtn', '#jsonBtn', '#maxRows', '#histBtn', '#linkBtn'):
+        box = page.locator(selector).bounding_box()
+        assert box['x'] >= toolbar_box['x']
+        assert box['x'] + box['width'] <= toolbar_box['x'] + toolbar_box['width'] + 1
+        assert box['y'] + box['height'] <= panel_bottom
+    assert page.locator('#grid').bounding_box()['y'] >= panel_bottom
+    assert abs(page.locator('#grid').bounding_box()['width'] - expanded['width']) <= 2
+    page.screenshot(path=str(tmp_path / 'assistant-expanded.png'))
+    page.get_by_test_id('assistant-close').click()
+    assert rail.is_visible()
+    assert editor.bounding_box()['height'] <= 90
+    toolbar_box = page.locator('.toolbar').bounding_box()
+    assert abs(toolbar_box['x'] - editor.bounding_box()['x']) <= 2
+    assert abs(toolbar_box['width'] - editor.bounding_box()['width']) <= 2
+    assert page.locator('#grid').bounding_box()['height'] >= grid_box['height'] - 2
+    page.screenshot(path=str(tmp_path / 'assistant-collapsed.png'))
+    print('Assistant screenshots:', tmp_path)
+    rail.click()
+    assert abs(editor.bounding_box()['height'] - expanded['height']) <= 2
+
+
+def test_assistant_unconfigured_preserves_input_and_only_shows_cli_hint(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    page.get_by_test_id('assistant-open').click()
+    assert stub.chats == []
+    assert 'Model not configured' not in page.get_by_test_id('assistant-panel').inner_text()
+    _assistant_send(page, 'Explain the join')
+    page.get_by_text(re.compile('Model not configured')).wait_for()
+    assert 'qy ai configure' in page.get_by_test_id('assistant-panel').inner_text()
+    assert page.get_by_test_id('assistant-input').input_value() == 'Explain the join'
+    assert page.get_by_role('button', name='Configure', exact=True).count() == 0
+    assert stub.chats == []
+
+
+def test_assistant_suggested_explanation_requires_tab_then_enter(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    queries = _assistant_query_requests(page)
+    before = page.locator('#sql').input_value()
+    page.get_by_test_id('assistant-open').click()
+    field = page.get_by_test_id('assistant-input')
+    ghost = page.get_by_test_id('assistant-ghost')
+    assert field.input_value() == ''
+    assert field.get_attribute('placeholder') == ''
+    assert ghost.is_visible()
+    suggestion = ghost.inner_text()
+    assert suggestion == 'Explain this SQL'
+    assert ghost.evaluate('el => getComputedStyle(el).pointerEvents') == 'none'
+    ghost_alignment = field.evaluate('''el => {
+      const ghost = el.parentElement.querySelector('[data-testid="assistant-ghost"]');
+      const inputRect = el.getBoundingClientRect(), ghostRect = ghost.getBoundingClientRect();
+      const inputStyle = getComputedStyle(el), ghostStyle = getComputedStyle(ghost);
+      return {
+        textX: inputRect.x + parseFloat(inputStyle.borderLeftWidth) + parseFloat(inputStyle.paddingLeft),
+        textY: inputRect.y + parseFloat(inputStyle.borderTopWidth) + parseFloat(inputStyle.paddingTop),
+        ghostX: ghostRect.x, ghostY: ghostRect.y,
+        matchingFont: inputStyle.fontSize === ghostStyle.fontSize && inputStyle.lineHeight === ghostStyle.lineHeight && inputStyle.fontFamily === ghostStyle.fontFamily
+      };
+    }''')
+    assert abs(ghost_alignment['textX'] - ghost_alignment['ghostX']) <= 1
+    assert abs(ghost_alignment['textY'] - ghost_alignment['ghostY']) <= 1
+    assert ghost_alignment['matchingFont']
+    assert stub.chats == []
+    assert stub.requests == []
+    field.hover()
+    assert page.get_by_test_id('assistant-suggestion-hint').count() == 0
+    assert page.get_by_test_id('assistant-panel').locator('kbd').count() == 0
+    assert not re.search(r'\b(Tab|Enter)\b', page.get_by_test_id('assistant-panel').inner_text())
+    field.focus()
+    field.press('Enter')
+    assert stub.chats == []
+    field.press('Tab')
+    assert field.input_value() == suggestion
+    assert ghost.count() == 0
+    assert field.evaluate('el => document.activeElement === el')
+    assert stub.chats == []
+    assert stub.requests == []
+    field.press('Enter')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert len(stub.chats) == 1 and stub.chats[0]['explain'] is True
+    assert stub.chats[0]['sql'] == before
+    assert page.get_by_test_id('assistant-apply').count() == 0
+    assert page.get_by_test_id('assistant-restore').count() == 0
+    page.get_by_test_id('assistant-close').click()
+    page.get_by_test_id('assistant-open').click()
+    page.wait_for_timeout(200)
+    assert len(stub.chats) == 1
+    assert page.locator('#sql').input_value() == before
+    assert queries == []
+
+
+@pytest.mark.parametrize('ui_language', ['en', 'zh'])
+def test_assistant_has_no_reply_language_settings_on_hover_or_focus(page_sqlite_default_language, tmp_path, monkeypatch, ui_language):
+    page = page_sqlite_default_language
+    page.evaluate("ui => { localStorage.setItem('qy_lang', ui); localStorage.setItem('qy_assistant_language', 'zh'); }", ui_language)
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    queries = _assistant_query_requests(page)
+    original = page.locator('#sql').input_value()
+    with page.expect_response('**/api/assistant/preferences') as response:
+        page.get_by_test_id('assistant-open').click()
+    assert response.value.json()['replyLanguage'] == 'system'
+    assert response.value.json()['resolvedReplyLanguage'] == 'en'
+    field = page.get_by_test_id('assistant-input')
+    before = [page.locator(selector).bounding_box() for selector in
+              ('[data-testid="assistant-input"]', '[data-testid="assistant-messages"]', '.toolbar')]
+    for action in (field.hover, field.focus):
+        action()
+        assert page.locator('[data-testid^="assistant-language"], .assistant-language-row').count() == 0
+        assert page.get_by_test_id('assistant-ghost').inner_text() == 'Explain this SQL'
+        after = [page.locator(selector).bounding_box() for selector in
+                 ('[data-testid="assistant-input"]', '[data-testid="assistant-messages"]', '.toolbar')]
+        assert before == after
+    field.fill('Keep this draft')
+    field.hover()
+    field.focus()
+    assert page.locator('[data-testid^="assistant-language"]').count() == 0
+    assert page.locator('#sql').input_value() == original
+    assert field.input_value() == 'Keep this draft'
+    assert stub.requests == [] and queries == []
+    assert all(method == 'GET' for method, _ in stub.preferences_requests)
+
+
+def test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state(page_sqlite, tmp_path, monkeypatch):
+    from quarry.assistant_config import set_reply_language
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    queries = _assistant_query_requests(page)
+    original = page.locator('#sql').input_value()
+    page.get_by_test_id('assistant-open').click()
+    _assistant_send(page, 'Explain the join without changing the query')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    field = page.get_by_test_id('assistant-input')
+    page.get_by_test_id('assistant-ghost').wait_for()
+    history = page.get_by_test_id('assistant-messages').inner_text()
+    field.focus()
+    field.press('Tab')
+    accepted = 'Explain this SQL'
+    assert field.input_value() == accepted
+    request_count = len(stub.requests)
+    set_reply_language('zh')
+    with page.expect_response('**/api/assistant/preferences'):
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+    assert field.input_value() == accepted
+    assert page.get_by_test_id('assistant-messages').inner_text() == history
+    assert len(stub.requests) == request_count
+    assert page.locator('#sql').input_value() == original
+    page.locator('#tabAdd').click()
+    page.get_by_test_id('assistant-open').click()
+    assert page.locator('#sql').input_value() == ''
+    assert page.get_by_test_id('assistant-ghost').count() == 0
+    field.fill('Keep this other tab draft')
+    page.locator('#tabs .tab').first.click()
+    assert field.input_value() == accepted
+    assert page.get_by_test_id('assistant-messages').inner_text() == history
+    field.press('Enter')
+    page.wait_for_function("() => document.querySelectorAll('.assistant-message-assistant:not([data-testid=assistant-stream])').length === 2")
+    assert len(stub.chats) == 2
+    assert stub.chats[1]['prompt'] == accepted and stub.chats[1]['explain'] is True
+    page.locator('#tabs .tab').nth(1).click()
+    assert field.input_value() == 'Keep this other tab draft'
+    assert page.locator('#sql').input_value() == ''
+    assert page.locator('[data-testid^="assistant-language"]').count() == 0
+    assert all(method == 'GET' for method, _ in stub.preferences_requests)
+    assert queries == []
+
+
+def test_assistant_reply_language_rereads_cli_and_system_changes(page_sqlite, tmp_path, monkeypatch):
+    from quarry import assistant_config
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    queries = _assistant_query_requests(page)
+    assistant_config.set_reply_language('zh')
+    page.get_by_test_id('assistant-open').click()
+    ghost = page.get_by_test_id('assistant-ghost')
+    page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === '解读当前 SQL'")
+    for language, prompt in [('en', 'Explain this SQL'), ('zh', '解读当前 SQL'), ('system', 'Explain this SQL')]:
+        assistant_config.set_reply_language(language)
+        with page.expect_response('**/api/assistant/preferences'):
+            if language == 'zh':
+                page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+            else:
+                page.evaluate("window.dispatchEvent(new Event('focus'))")
+        page.wait_for_function("prompt => document.querySelector('[data-testid=assistant-ghost]')?.textContent === prompt", arg=prompt)
+    # System resolution is owned by the backend, not the interface language.
+    monkeypatch.setattr(assistant_config, 'system_reply_language', lambda: 'zh')
+    page.get_by_test_id('assistant-close').click()
+    with page.expect_response('**/api/assistant/preferences'):
+        page.get_by_test_id('assistant-open').click()
+    page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === '解读当前 SQL'")
+    assistant_config.set_reply_language('en')
+    page.locator('.vg-lang-switch').click()
+    page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
+    with page.expect_response('**/api/assistant/preferences'):
+        page.get_by_test_id('assistant-open').click()
+    page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === 'Explain this SQL'")
+    page.reload(wait_until='networkidle')
+    with page.expect_response('**/api/assistant/preferences'):
+        page.get_by_test_id('assistant-open').click()
+    assert ghost.inner_text() == 'Explain this SQL'
+    assert page.locator('[data-testid^="assistant-language"]').count() == 0
+    assert stub.requests == [] and queries == []
+    assert all(method == 'GET' for method, _ in stub.preferences_requests)
+
+
+def test_assistant_explanation_suggestion_respects_drafts_empty_sql_and_composition(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    field = page.get_by_test_id('assistant-input')
+    assert field.get_attribute('placeholder') == 'Ask about your SQL…'
+    assert page.get_by_test_id('assistant-ghost').count() == 0
+    field.focus()
+    field.press('Tab')
+    assert field.input_value() == ''
+    _set_sql(page, 'SELECT id FROM entries LIMIT 10')
+    assert field.get_attribute('placeholder') == ''
+    assert page.get_by_test_id('assistant-ghost').inner_text() == 'Explain this SQL'
+    field.focus()
+    field.press('Shift+Tab')
+    assert field.input_value() == ''
+    field.focus()
+    field.evaluate('''el => {
+      el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+      el.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab', code:'Tab', keyCode:229, isComposing:true, bubbles:true, cancelable:true}));
+    }''')
+    assert field.input_value() == ''
+    field.evaluate("el => el.dispatchEvent(new CompositionEvent('compositionend', {bubbles:true}))")
+    field.fill('Keep my draft')
+    field.press('Tab')
+    assert field.input_value() == 'Keep my draft'
+    assert page.get_by_test_id('assistant-ghost').count() == 0
+    assert stub.chats == []
+    field.fill('')
+    field.press('Tab')
+    assert field.input_value() == 'Explain this SQL'
+    field.fill('Actually, include the note column')
+    field.press('Enter')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert len(stub.chats) == 1
+    assert stub.chats[0].get('explain') is False
+    assert stub.chats[0]['prompt'] == 'Actually, include the note column'
+
+
+def test_assistant_unsent_draft_and_explanation_intent_survive_hide_and_tab_switch(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    queries = _assistant_query_requests(page)
+    page.get_by_test_id('assistant-open').click()
+    field = page.get_by_test_id('assistant-input')
+    field.fill('Keep this unsent draft')
+    page.get_by_test_id('assistant-close').click()
+    page.get_by_test_id('assistant-open').click()
+    assert field.input_value() == 'Keep this unsent draft'
+    page.locator('#tabAdd').click()
+    page.get_by_test_id('assistant-open').click()
+    assert field.input_value() == ''
+    field.fill('A different tab draft')
+    page.locator('#tabs .tab').first.click()
+    assert field.input_value() == 'Keep this unsent draft'
+    field.fill('')
+    field.press('Tab')
+    assert field.input_value() == 'Explain this SQL'
+    page.get_by_test_id('assistant-close').click()
+    page.get_by_test_id('assistant-open').click()
+    assert field.input_value() == 'Explain this SQL'
+    page.locator('#tabs .tab').nth(1).click()
+    assert field.input_value() == 'A different tab draft'
+    page.locator('#tabs .tab').first.click()
+    assert field.input_value() == 'Explain this SQL'
+    assert stub.chats == []
+    field.press('Enter')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert len(stub.chats) == 1 and stub.chats[0]['explain'] is True
+    assert queries == []
+
+
+@pytest.mark.parametrize('late_result', ['history', 'error'])
+def test_assistant_late_history_load_cannot_replace_a_new_reply(page_sqlite, tmp_path, monkeypatch, late_result):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    stale = stub.store.get(stub.chats[0]['conversationId'])
+    page.reload(wait_until='networkidle')
+    pending = []
+
+    def hold_open_history(route):
+        if not pending:
+            pending.append(route)
+        else:
+            stub._route(route)
+
+    page.route('**/api/assistant/conversations?*', hold_open_history)
+    page.get_by_test_id('assistant-open').click()
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    stub.response = 'The newer explanation must remain visible.'
+    _assistant_send(page, 'Explain the selected columns in more detail')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    if late_result == 'history':
+        pending[0].fulfill(json=stale)
+    else:
+        pending[0].fulfill(status=503, json={'error': 'Old history lookup failed'})
+    page.wait_for_timeout(100)
+    assert page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).is_visible()
+    assert page.locator('.assistant-message').count() == 4
+    assert page.get_by_role('alert').count() == 0
+    assert len(stub.chats) == 2
+
+
+def test_assistant_late_history_error_preserves_configuration_error_and_draft(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    page.reload(wait_until='networkidle')
+    stub.configured = False
+    pending = []
+    page.route('**/api/assistant/conversations?*', lambda route: pending.append(route))
+    page.get_by_test_id('assistant-open').click()
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    prompt = 'Explain the current SQL again'
+    _assistant_send(page, prompt)
+    error = page.get_by_role('alert').filter(has_text='qy ai configure')
+    error.wait_for()
+    before = error.inner_text()
+    assert 'Model not configured' in before
+    pending[0].fulfill(status=500, json={'error': 'Stale history request failed'})
+    page.wait_for_timeout(100)
+    assert error.inner_text() == before
+    assert page.get_by_test_id('assistant-input').input_value() == prompt
+    assert 'Stale history request failed' not in page.get_by_test_id('assistant-panel').inner_text()
+    assert len(stub.chats) == 1
+
+
+def test_assistant_enter_shift_enter_and_ime_composition(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    field = page.get_by_test_id('assistant-input')
+    field.fill('Join entries')
+    field.press('Shift+Enter')
+    field.press('End')
+    field.type('with their owners')
+    assert field.input_value() == 'Join entries\nwith their owners'
+    field.evaluate("el => el.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true, bubbles: true, cancelable: true}))")
+    assert stub.chats == []
+    field.press('Enter')
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert len(stub.chats) == 1
+    assert stub.chats[0]['prompt'] == 'Join entries\nwith their owners'
+    assert field.input_value() == ''
+
+
+def test_assistant_apply_restore_preserves_drafts_and_only_run_executes(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='SELECT id FROM entries LIMIT 10')
+    queries = _assistant_query_requests(page)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    original = page.locator('#sql').input_value()
+    stub.proposal = 'SELECT id, note FROM entries LIMIT 3'
+    _assistant_send(page, 'Include note and show only three rows')
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    assert queries == []
+    assert page.get_by_test_id('assistant-restore').count() == 1
+    assert page.get_by_test_id('assistant-restore').inner_text().strip() == 'Restore previous SQL'
+    assert original in page.evaluate("JSON.parse(localStorage.qy_hist).map(h => h.sql)")
+    page.get_by_test_id('assistant-restore').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=original)
+    assert stub.proposal in page.evaluate("JSON.parse(localStorage.qy_hist).map(h => h.sql)")
+    assert 'Include note and show only three rows' in page.get_by_test_id('assistant-messages').inner_text()
+    assert queries == []
+    page.locator('#runBtn').click()
+    page.wait_for_selector('#grid tbody tr')
+    assert len(queries) == 1
+
+
+def test_assistant_restore_repeated_clicks_do_not_create_an_undo_chain(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    original = 'SELECT id FROM entries LIMIT 10'
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql=original)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    stub.proposal = 'SELECT id, note FROM entries LIMIT 3'
+    _assistant_send(page, 'Include note and show three rows')
+    page.get_by_test_id('assistant-restore').wait_for()
+    conversation_id = stub.chats[-1]['conversationId']
+    doc = stub.store.get(conversation_id)
+    # Pre-fix histories may contain an actionable-looking restore message.
+    stub.store.append_message(conversation_id, 'system', 'Previous SQL restored.',
+                              checkpointId=doc['checkpoints'][0]['id'])
+    page.reload(wait_until='networkidle')
+    page.get_by_test_id('assistant-open').click()
+    restore = page.get_by_test_id('assistant-restore')
+    restore.wait_for()
+    assert restore.count() == 1
+    assert page.locator('.assistant-message-system').count() == 0
+    visible_messages = page.locator('.assistant-message').count()
+    queries = _assistant_query_requests(page)
+    before = stub.store.get(conversation_id)
+    pending = []
+    page.route('**/api/assistant/conversations/restore', lambda route: pending.append(route))
+    restore.evaluate('el => { el.click(); el.click(); el.click(); }')
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    stub._route(pending.pop())
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=original)
+    page.get_by_test_id('assistant-restored').wait_for()
+    assert restore.count() == 0
+    after = stub.store.get(conversation_id)
+    assert page.locator('.assistant-message').count() == visible_messages
+    assert [cp['id'] for cp in after['checkpoints']] == [cp['id'] for cp in before['checkpoints']]
+    assert after['revision'] == before['revision'] + 1
+    # A later manual edit can use the original checkpoint again, without
+    # manufacturing a checkpoint or chat message for the restoration itself.
+    manual = 'SELECT note FROM entries WHERE id = 27'
+    _set_sql(page, manual)
+    restore.wait_for()
+    restore.click()
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    stub._route(pending.pop())
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=original)
+    assert page.get_by_test_id('assistant-restored').count() == 1
+    assert restore.count() == 0
+    final = stub.store.get(conversation_id)
+    assert page.locator('.assistant-message').count() == visible_messages
+    assert [cp['id'] for cp in final['checkpoints']] == [cp['id'] for cp in before['checkpoints']]
+    assert queries == []
+
+
+def test_assistant_panel_stays_above_result_headers_after_resizing(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    page.set_viewport_size({'width': 1280, 'height': 900})
+    _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    page.locator('#runBtn').click()
+    page.locator('#grid tbody tr').first.wait_for()
+    page.get_by_test_id('assistant-open').click()
+
+    def assert_boundaries():
+        page.wait_for_function('size => innerWidth === size.width && innerHeight === size.height', arg=page.viewport_size)
+        # Let the resize observer settle, then measure the shared row in one
+        # browser frame so a window resize cannot split the samples.
+        page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        boxes = page.evaluate('''() => Object.fromEntries(Object.entries({
+          panel: '[data-testid="assistant-panel"]', toolbar: '.toolbar',
+          header: '#grid thead th', composer: '[data-testid="assistant-input"]'
+        }).map(([name, selector]) => [name, document.querySelector(selector).getBoundingClientRect().toJSON()]))''')
+        panel, toolbar, header, composer = (boxes[key] for key in ('panel', 'toolbar', 'header', 'composer'))
+        bottom = panel['y'] + panel['height']
+        assert abs(bottom - toolbar['y'] - toolbar['height']) <= 2
+        assert bottom <= header['y'] + 1
+        assert composer['y'] >= panel['y'], {'panel': panel, 'composer': composer}
+        assert composer['y'] + composer['height'] <= bottom, {'panel': panel, 'composer': composer}
+        assert panel['x'] + panel['width'] <= page.viewport_size['width']
+        assert page.get_by_test_id('assistant-messages').evaluate('el => el.getBoundingClientRect().bottom <= el.parentElement.getBoundingClientRect().bottom')
+
+    assert_boundaries()
+    _drag(page, '#edresizer', 0, 80)
+    assert_boundaries()
+    page.set_viewport_size({'width': 1000, 'height': 700})
+    assert_boundaries()
+    _drag(page, '#edresizer', 0, -120)
+    assert_boundaries()
+    field = page.get_by_test_id('assistant-input')
+    box = field.bounding_box()
+    page.mouse.move(box['x'] + box['width'] - 3, box['y'] + box['height'] - 3)
+    page.mouse.down()
+    page.mouse.move(box['x'] + box['width'] - 3, box['y'] + box['height'] + 100, steps=5)
+    page.mouse.up()
+    assert field.bounding_box()['height'] == 140
+    assert_boundaries()
+    _drag(page, '#edresizer', 0, -600)
+    assert page.locator('.editor-input').bounding_box()['height'] == 200
+    assert_boundaries()
+    page.set_viewport_size({'width': 1280, 'height': 900})
+    assert_boundaries()
+    page.get_by_test_id('assistant-close').click()
+    toolbar = page.locator('.toolbar').bounding_box()
+    editor = page.get_by_test_id('editor-workspace').bounding_box()
+    assert abs(toolbar['width'] - editor['width']) <= 2
+    assert toolbar['y'] + toolbar['height'] <= page.locator('#grid thead th').first.bounding_box()['y']
+
+
+@pytest.mark.parametrize('has_results', [True, False])
+def test_assistant_editor_can_expand_to_status_bar_and_restore_results(page_sqlite, tmp_path, monkeypatch, has_results):
+    page = page_sqlite
+    page.set_viewport_size({'width': 1920, 'height': 1200})
+    _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    original = page.locator('#sql').input_value()
+    if has_results:
+        page.locator('#runBtn').click()
+        page.locator('#grid tbody tr').first.wait_for()
+        page.locator('#status').wait_for()
+    else:
+        assert page.locator('#status').is_hidden()
+    queries = _assistant_query_requests(page)
+    page.get_by_test_id('assistant-open').click()
+
+    def assert_bottom_controls_fit(*, near_status=False):
+        page.wait_for_function('''() => {
+          const panel = document.querySelector('[data-testid="assistant-panel"]').getBoundingClientRect();
+          const status = document.querySelector('#status');
+          const limit = status.offsetHeight ? status.getBoundingClientRect().top : document.querySelector('.vg-section').getBoundingClientRect().bottom;
+          return panel.bottom <= limit + 1 && limit <= window.innerHeight;
+        }''')
+        limit = page.evaluate('''() => { const status = document.querySelector('#status');
+          return status.offsetHeight ? status.getBoundingClientRect().top : document.querySelector('.vg-section').getBoundingClientRect().bottom;
+        }''')
+        workspace = page.get_by_test_id('editor-workspace').bounding_box()
+        panel = page.get_by_test_id('assistant-panel').bounding_box()
+        toolbar = page.locator('.toolbar').bounding_box()
+        composer = page.get_by_test_id('assistant-input').bounding_box()
+        bottom = workspace['y'] + workspace['height']
+        assert bottom <= limit + 1
+        assert abs(panel['y'] + panel['height'] - bottom) <= 1
+        assert abs(toolbar['y'] + toolbar['height'] - bottom) <= 1
+        assert composer['y'] >= panel['y']
+        assert composer['y'] + composer['height'] <= bottom
+        assert limit <= page.viewport_size['height']
+        if near_status:
+            assert limit - bottom <= 12, {'workspace': workspace, 'limit': limit}
+        for selector in ('#runBtn', '#fmtBtn', '#expBtn', '#csvBtn', '#jsonBtn', '#maxRows', '#histBtn', '#linkBtn'):
+            control = page.locator(selector).bounding_box()
+            assert control['y'] >= toolbar['y']
+            assert control['y'] + control['height'] <= bottom
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+
+    _drag(page, '#edresizer', 0, 2000)
+    assert_bottom_controls_fit(near_status=True)
+    assert page.locator('.editor-input').bounding_box()['height'] > 1200 * 0.7
+    saved_height = page.evaluate('localStorage.qy_edh')
+    expanded_toolbar_height = page.locator('.toolbar').bounding_box()['height']
+    page.screenshot(path=str(tmp_path / 'assistant-full-height.png'))
+
+    # A smaller viewport and wrapped toolbar must re-clamp the same saved
+    # height to the actual room, rather than hiding the footer or chat input.
+    page.set_viewport_size({'width': 1000, 'height': 700})
+    assert_bottom_controls_fit(near_status=True)
+    assert page.locator('.toolbar').bounding_box()['height'] > expanded_toolbar_height
+    assert page.evaluate('localStorage.qy_edh') == saved_height
+    page.screenshot(path=str(tmp_path / 'assistant-full-height-narrow.png'))
+
+    # Hiding and reopening in a smaller window must retain the user's larger
+    # preferred height, so returning to the original window restores it.
+    page.get_by_test_id('assistant-close').click()
+    assert page.locator('.editor-input').bounding_box()['height'] == 88
+    page.get_by_test_id('assistant-open').click()
+    assert_bottom_controls_fit(near_status=True)
+    assert page.evaluate('localStorage.qy_edh') == saved_height
+    page.set_viewport_size({'width': 1920, 'height': 1200})
+    page.wait_for_function('height => Math.abs(document.querySelector(".editor-input").getBoundingClientRect().height - Number(height)) <= 1', arg=saved_height)
+    assert_bottom_controls_fit(near_status=True)
+    page.set_viewport_size({'width': 1000, 'height': 700})
+    assert_bottom_controls_fit(near_status=True)
+
+    _drag(page, '#edresizer', 0, -400)
+    assert_bottom_controls_fit()
+    grid = page.locator('#grid').bounding_box()
+    assert grid['height'] > 100
+    if has_results:
+        header = page.locator('#grid thead th').first.bounding_box()
+        assert header['y'] >= page.get_by_test_id('assistant-panel').bounding_box()['y'] + page.get_by_test_id('assistant-panel').bounding_box()['height']
+        assert header['y'] + header['height'] <= page.locator('#status').bounding_box()['y']
+    _drag(page, '#edresizer', 0, 2000)
+    assert_bottom_controls_fit(near_status=True)
+    small_grid_height = page.locator('#grid').bounding_box()['height']
+    page.get_by_test_id('assistant-close').click()
+    assert page.locator('.editor-input').bounding_box()['height'] == 88
+    assert page.locator('#grid').bounding_box()['height'] > small_grid_height + 150
+    if has_results:
+        assert page.locator('#grid thead th').first.bounding_box()['y'] + header['height'] <= page.locator('#status').bounding_box()['y']
+    assert page.locator('#sql').input_value() == original
+    assert queries == []
+
+
+def test_assistant_inflight_manual_edit_requires_explicit_application(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    stub.proposal = 'SELECT id FROM entries LIMIT 3'
+    stub.hold = True
+    _assistant_send(page, 'Write a short query')
+    page.wait_for_timeout(100)
+    assert len(stub.pending) == 1
+    manual = 'SELECT note FROM entries WHERE id = 77'
+    _set_sql(page, manual)
+    stub.complete()
+    page.get_by_test_id('assistant-apply').wait_for()
+    assert page.locator('#sql').input_value() == manual
+    assert page.get_by_test_id('assistant-restore').count() == 0
+    page.get_by_test_id('assistant-apply').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    assert manual in page.evaluate("JSON.parse(localStorage.qy_hist).map(h => h.sql)")
+    page.get_by_test_id('assistant-restore').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=manual)
+
+
+@pytest.mark.parametrize('navigation', ['tab', 'close', 'environment'])
+def test_assistant_late_reply_cannot_overwrite_other_context(page_sqlite, tmp_path, monkeypatch, navigation):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    stub.proposal = 'SELECT id FROM entries LIMIT 7'
+    stub.hold = True
+    _assistant_send(page, 'Write seven rows')
+    page.wait_for_timeout(100)
+    assert len(stub.pending) == 1
+    if navigation == 'tab':
+        page.locator('#tabAdd').click()
+        _set_sql(page, 'SELECT 55 AS other_tab')
+    elif navigation == 'close':
+        page.locator('.tab.on .x').click()
+        page.locator('#queryEmptyState').wait_for()
+    else:
+        page.locator('#esw .ep[data-env="local"]').click()
+        _set_sql(page, 'SELECT 66 AS other_environment')
+    current = page.locator('#sql').input_value() if navigation != 'close' else None
+    stub.complete()
+    page.wait_for_timeout(250)
+    if navigation == 'close':
+        assert page.locator('#sql').count() == 0
+        assert page.locator('#tabs .tab').count() == 0
+    else:
+        assert page.locator('#sql').input_value() == current
+        if navigation == 'environment':
+            assert page.locator('#esw .ep.on').get_attribute('data-env') == 'local'
+
+
+def test_assistant_conversation_reopens_closed_tab_with_checkpoints(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    queries = _assistant_query_requests(page)
+    page.get_by_test_id('assistant-open').click()
+    stub.proposal = 'SELECT id FROM entries LIMIT 4'
+    _assistant_send(page, 'Find four entries')
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    page.get_by_test_id('assistant-restore').wait_for()
+    page.locator('.tab.on .x').click()
+    page.locator('#queryEmptyState').wait_for()
+    page.reload(wait_until='networkidle')
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').filter(has_text='Find four entries').click()
+    page.get_by_test_id('assistant-panel').wait_for()
+    assert page.locator('#sql').input_value() == stub.proposal
+    assert 'Find four entries' in page.get_by_test_id('assistant-messages').inner_text()
+    assert page.get_by_test_id('assistant-restore').count() == 1
+    assert queries == []
+    count = page.locator('#tabs .tab').count()
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').filter(has_text='Find four entries').click()
+    assert page.locator('#tabs .tab').count() == count
+    assert len(stub.chats) == 1
+
+
+@pytest.mark.parametrize('failure', ['provider', 'interrupted'])
+def test_assistant_failed_reply_cannot_apply_partial_sql(page_sqlite, tmp_path, monkeypatch, failure):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    queries = _assistant_query_requests(page)
+    page.get_by_test_id('assistant-open').click()
+    stub.response = 'Here is a draft: SELECT id FROM'
+    stub.proposal = 'SELECT id FROM entries LIMIT 2'
+    if failure == 'provider':
+        stub.error = 'Model temporarily unavailable. Try again.'
+    else:
+        stub.close_without_done = True
+    _assistant_send(page, 'Write a query')
+    page.get_by_text(re.compile('temporarily unavailable|interrupted')).wait_for()
+    assert page.locator('#sql').input_value() == ''
+    assert page.get_by_test_id('assistant-restore').count() == 0
+    assert page.get_by_test_id('assistant-apply').count() == 0
+    assert queries == []
+
+
+def test_assistant_stream_scroll_keeps_composer_fixed_and_respects_reader(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    # A controllable browser ReadableStream exercises incremental rendering,
+    # unlike route.fulfill(), which delivers its body all at once.
+    page.evaluate('''() => {
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, init) => {
+        if (String(url).endsWith('/api/assistant/chat')) {
+          window.__assistantRequest = JSON.parse(init.body);
+          const stream = new ReadableStream({start(controller) { window.__assistantController = controller; }});
+          return new Response(stream, {headers: {'Content-Type': 'application/x-ndjson'}});
+        }
+        return original(url, init);
+      };
+      window.__assistantChunk = events => window.__assistantController.enqueue(
+        new TextEncoder().encode(events.map(event => JSON.stringify(event)).join('\\n') + '\\n'));
+    }''')
+    _assistant_send(page, 'Explain this step by step')
+    page.wait_for_function('Boolean(window.__assistantRequest && window.__assistantController)')
+    request = page.evaluate('window.__assistantRequest')
+    ident = {key: request[key] for key in ('requestId', 'conversationId')}
+    messages = page.get_by_test_id('assistant-messages')
+    composer_before = page.get_by_test_id('assistant-input').bounding_box()
+    first = '\n\n'.join(f'Step {i}: Read the relevant table and verify the join keys before choosing the query.' for i in range(40))
+    page.evaluate('events => window.__assistantChunk(events)', [dict(ident, type='request'), dict(ident, type='text_delta', delta=first)])
+    page.wait_for_function('''() => { const el = document.querySelector('[data-testid="assistant-messages"]');
+      return el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight < 10; }''')
+    scrollbar = _assistant_scrollbar_styles(page)
+    assert scrollbar['trackTop'] == '38px'
+    assert scrollbar['width'] == '4px'
+    assert messages.evaluate('''(el, marginTop) => {
+      const scrollport = el.getBoundingClientRect();
+      const handle = document.querySelector('[data-testid="assistant-close"]').getBoundingClientRect();
+      const divider = document.querySelector('[data-testid="assistant-divider"]').getBoundingClientRect();
+      const trackTop = scrollport.top + parseFloat(marginTop);
+      const hit = document.elementFromPoint(scrollport.right - 2, trackTop + 2);
+      return Math.abs(scrollport.right - divider.left) <= 1 && trackTop >= handle.bottom
+        && !hit?.closest('[data-testid="assistant-close"]')
+        && getComputedStyle(el, '::-webkit-scrollbar').width === '4px';
+    }''', scrollbar['trackTop'])
+    assert page.locator('#sql').input_value() == ''
+    messages.evaluate('el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); }')
+    tail = '\n\nThe relationship is now clear.'
+    page.evaluate('events => window.__assistantChunk(events)', [dict(ident, type='text_delta', delta=tail)])
+    page.wait_for_function('''() => document.querySelector('[data-testid="assistant-messages"]').textContent.includes('The relationship is now clear.')''')
+    assert messages.evaluate('el => el.scrollTop') < 5
+    assert abs(page.get_by_test_id('assistant-input').bounding_box()['y'] - composer_before['y']) <= 2
+    assert page.evaluate('window.scrollY') == 0
+    stub.response = first + tail
+    done = stub.events(request)[-1]
+    page.evaluate('event => { window.__assistantChunk([event]); window.__assistantController.close(); }', done)
+
+
+def test_assistant_divider_restores_width_after_collapse(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    page.get_by_test_id('assistant-open').click()
+    panel = page.get_by_test_id('assistant-panel')
+    before = panel.bounding_box()['width']
+    divider = page.get_by_test_id('assistant-divider').bounding_box()
+    page.mouse.move(divider['x'] + divider['width'] / 2, divider['y'] + divider['height'] / 2)
+    page.mouse.down()
+    page.mouse.move(divider['x'] + 80, divider['y'] + divider['height'] / 2, steps=8)
+    page.mouse.up()
+    resized = panel.bounding_box()['width']
+    assert resized > before + 40
+    close = page.get_by_test_id('assistant-close')
+    assert close.evaluate('el => el.parentElement === document.querySelector("[data-testid=assistant-divider]").parentElement')
+    close_box = close.bounding_box()
+    x, y = close_box['x'] + close_box['width'] / 2, close_box['y'] + close_box['height'] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 6, y, steps=3)
+    page.mouse.up()
+    page.get_by_test_id('assistant-open').click()
+    assert abs(panel.bounding_box()['width'] - resized) <= 2
+    page.get_by_test_id('assistant-divider').focus()
+    page.get_by_test_id('assistant-divider').press('ArrowRight')
+    assert panel.bounding_box()['width'] > resized
+    page.get_by_test_id('assistant-divider').press('ArrowLeft')
+    assert abs(panel.bounding_box()['width'] - resized) <= 2
+    page.get_by_test_id('assistant-divider').press('Tab')
+    assert close.evaluate('el => document.activeElement === el')
+    close.press('Enter')
+    page.get_by_test_id('assistant-open').click()
+    assert abs(panel.bounding_box()['width'] - resized) <= 2
+
+
+def test_assistant_saved_query_edit_creates_draft_preserves_template(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _AssistantBrowserStub(page, tmp_path, monkeypatch)
+    template = 'SELECT id, note FROM entries LIMIT 10'
+    page.route('**/api/queries', lambda route: route.fulfill(json=[{
+        'name': 'entries-template', 'queryId': 'assistant-template', 'db': 'notes',
+        'desc': 'Recent entries template', 'sql': template, 'params': []}]))
+    page.reload(wait_until='networkidle')
+    _select_sqlite(page)
+    page.locator('.query-index-children [data-q="entries-template"]').click()
+    assert page.locator('#sql').get_attribute('readonly') is not None
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    queries = _assistant_query_requests(page)
+    stub.proposal = 'SELECT id, note FROM entries WHERE id > 20 LIMIT 5'
+    _assistant_send(page, 'Filter to id greater than twenty and limit to five')
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    assert page.locator('#sql').get_attribute('readonly') is None
+    tabs = page.evaluate('JSON.parse(localStorage.qy_tabs)')
+    assert next(tab for tab in tabs if tab.get('savedQueryId') == 'assistant-template')['sql'] == template
+    assert any(tab['sql'] == stub.proposal and not tab.get('savedQueryId') for tab in tabs)
+    assert queries == []
+
+
+def test_assistant_close_flushes_latest_manual_sql_to_history(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    latest = 'SELECT note FROM entries WHERE id = 221'
+    _set_sql(page, latest)
+    page.locator('.tab.on .x').click()
+    page.locator('#queryEmptyState').wait_for()
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.click()
+    page.wait_for_function('sql => document.querySelector("#sql")?.value === sql', arg=latest)
+    assert len(stub.chats) == 1
+
+
+def test_assistant_manual_edit_during_apply_roundtrip_remains_restorable(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    pending = []
+    page.route('**/api/assistant/conversations/apply', lambda route: pending.append(route))
+    stub.proposal = 'SELECT id FROM entries LIMIT 8'
+    _assistant_send(page, 'Show eight entries')
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    manual = 'SELECT note FROM entries WHERE id = 99'
+    _set_sql(page, manual)
+    stub._route(pending.pop())
+    page.get_by_test_id('assistant-apply').wait_for()
+    assert page.locator('#sql').input_value() == manual
+    assert page.get_by_test_id('assistant-restore').count() == 0
+    page.unroute('**/api/assistant/conversations/apply')
+    page.get_by_test_id('assistant-apply').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    page.get_by_test_id('assistant-restore').click()
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=manual)
+
+
+def test_assistant_history_search_empty_and_unavailable_connection(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, configured=False)
+    queries = _assistant_query_requests(page)
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_text('No conversations yet.', exact=True).wait_for()
+    page.keyboard.press('Escape')
+    for title in ('Daily orders report', 'Session analysis'):
+        stub.store.create(db='unavailable', env='dev', workspace='removed-workspace',
+                          sql='SELECT 1', fingerprint='removed', title=title)
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.wait_for()
+    assert page.get_by_test_id('conversation-item').count() == 2
+    search = page.locator('.modal .hsearch')
+    search.fill('orders')
+    assert page.get_by_test_id('conversation-item').count() == 1
+    assert 'Daily orders report' in page.get_by_test_id('conversation-item').inner_text()
+    search.fill('does-not-exist')
+    assert page.get_by_test_id('conversation-item').count() == 0
+    page.get_by_text('No matching conversations.', exact=True).wait_for()
+    search.fill('orders')
+    original = page.locator('#sql').input_value()
+    page.get_by_test_id('conversation-item').click()
+    page.get_by_text("This conversation's connection is no longer available.", exact=True).wait_for()
+    assert page.locator('#sql').input_value() == original
+    assert queries == []
+    page.get_by_test_id('history-queries').click()
+    assert search.input_value() == ''
+
+
+def test_assistant_existing_conversation_loads_when_model_is_unconfigured(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    page.get_by_test_id('assistant-open').click()
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    stub.configured = False
+    page.reload(wait_until='networkidle')
+    page.get_by_test_id('assistant-open').click()
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert len(stub.chats) == 1
+    _assistant_send(page, 'Explain another detail')
+    page.get_by_text(re.compile('Model not configured')).wait_for()
+    assert page.get_by_test_id('assistant-input').input_value() == 'Explain another detail'
+    assert stub.response in page.get_by_test_id('assistant-messages').inner_text()
+
+
+def test_assistant_close_during_conversation_creation_keeps_latest_sql(page_sqlite, tmp_path, monkeypatch):
+    page = page_sqlite
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql='')
+    page.get_by_test_id('assistant-open').click()
+    pending = []
+    page.route('**/api/assistant/conversations', lambda route: pending.append(route)
+               if route.request.method == 'POST' else stub._route(route))
+    _assistant_send(page, 'Help write a query')
+    page.wait_for_timeout(100)
+    assert len(pending) == 1
+    latest = 'SELECT id FROM entries WHERE id = 159'
+    _set_sql(page, latest)
+    page.locator('.tab.on .x').click()
+    page.locator('#queryEmptyState').wait_for()
+    stub._route(pending.pop())
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.click()
+    page.wait_for_function('sql => document.querySelector("#sql")?.value === sql', arg=latest)
+    assert stub.chats == []
+
+
+@pytest.mark.parametrize('action', ['apply', 'restore'])
+def test_assistant_edit_cancels_pending_environment_autorun(page_sqlite, tmp_path, monkeypatch, action):
+    page = page_sqlite
+    original = 'SELECT id FROM entries LIMIT 10'
+    stub = _assistant_ready(page, tmp_path, monkeypatch, sql=original)
+    if action == 'restore':
+        page.get_by_test_id('assistant-open').click()
+        _assistant_explain(page)
+        page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+        stub.proposal = 'SELECT id FROM entries LIMIT 2'
+        _assistant_send(page, 'Show two entries')
+        page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+        page.locator('#esw .ep[data-env="local"]').click()
+        page.wait_for_selector('#grid tbody tr')
+        # Reload clears the frontend metadata cache while preserving dev's
+        # conversation. Navigating back must wait for its new table request.
+        page.reload(wait_until='networkidle')
+    requests = _assistant_query_requests(page)
+    pending = []
+    page.route('**/api/tables?*', lambda route: pending.append(route))
+    destination = 'dev' if action == 'restore' else 'local'
+    page.locator(f'#esw .ep[data-env="{destination}"]').click()
+    page.wait_for_timeout(100)
+    assert pending
+    page.get_by_test_id('assistant-open').click()
+    if action == 'restore':
+        page.get_by_test_id('assistant-restore').click()
+        expected = original
+    else:
+        _assistant_explain(page)
+        page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+        stub.proposal = 'SELECT id, note FROM entries LIMIT 3'
+        _assistant_send(page, 'Include the note and show three')
+        expected = stub.proposal
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=expected)
+    for route in pending:
+        route.fulfill(json={'engine': 'sqlite', 'tables': ['entries'], 'capped': False})
+    page.locator('#tbl-panel [data-t="entries"]').wait_for()
+    page.wait_for_timeout(150)
+    assert requests == []
+    assert page.locator('#sql').input_value() == expected
+
+
+def test_fresh_default_language_is_chinese_and_switch_persists(page_sqlite_default_language, tmp_path, monkeypatch):
+    page = page_sqlite_default_language
+    _AssistantBrowserStub(page, tmp_path, monkeypatch, configured=False)
+    page.evaluate("localStorage.removeItem('qy_lang')")
+    page.reload(wait_until='networkidle')
+    assert page.locator('#runLbl').inner_text() == '运行'
+    assert page.locator('.vg-lang-switch').inner_text() == '中'
+    _select_sqlite(page)
+    assert re.search(r'[\u4e00-\u9fff]', page.get_by_test_id('assistant-open').inner_text())
+    page.locator('.vg-lang-switch').click()
+    page.wait_for_function("document.querySelector('#runLbl')?.textContent === 'Run'")
+    assert page.evaluate("localStorage.getItem('qy_lang')") == 'en'
+    assert page.get_by_test_id('assistant-open').inner_text() == 'SQL Assistant'
+    page.reload(wait_until='networkidle')
+    assert page.locator('#runLbl').inner_text() == 'Run'
+    page.locator('.vg-lang-switch').click()
+    page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
+    assert page.evaluate("localStorage.getItem('qy_lang')") == 'zh'
+    page.reload(wait_until='networkidle')
+    assert page.locator('#runLbl').inner_text() == '运行'
+
+
+@pytest.mark.parametrize('language', ['zh', 'en'])
+def test_assistant_localizes_explanation_checkpoint_configuration_and_history(page_sqlite_default_language, tmp_path, monkeypatch, language):
+    page = page_sqlite_default_language
+    page.evaluate('(language) => localStorage.setItem("qy_lang", language)', language)
+    stub = _assistant_ready(page, tmp_path, monkeypatch)
+    from quarry.assistant_config import set_reply_language
+    set_reply_language(language)
+    if language == 'zh':
+        stub.response = '这条查询从 entries 表读取 id 和 note，最多返回 10 行。'
+    page.get_by_test_id('assistant-open').click()
+    field = page.get_by_test_id('assistant-input')
+    suggestion = '解读当前 SQL' if language == 'zh' else 'Explain this SQL'
+    assert field.get_attribute('placeholder') == ''
+    assert page.get_by_test_id('assistant-ghost').inner_text() == suggestion
+    assert page.get_by_test_id('assistant-suggestion-hint').count() == 0
+    assert stub.chats == []
+    _assistant_explain(page)
+    page.get_by_test_id('assistant-messages').get_by_text(stub.response, exact=True).wait_for()
+    assert stub.chats[0]['prompt'] == suggestion
+    field = page.get_by_test_id('assistant-input')
+    if language == 'zh':
+        assert re.search(r'[\u4e00-\u9fff]', page.get_by_test_id('assistant-ghost').inner_text())
+        assert re.search(r'[\u4e00-\u9fff]', page.get_by_test_id('assistant-close').get_attribute('title'))
+    else:
+        assert page.get_by_test_id('assistant-ghost').inner_text() == suggestion
+    stub.proposal = 'SELECT note FROM entries LIMIT 2'
+    if language == 'zh':
+        stub.response = '### **查询已更新**\n\n只读取 `note`，最多返回 **2 行**。\n\n```sql\nSELECT note FROM entries LIMIT 2;\n```'
+    _assistant_send(page, '只显示两行' if language == 'zh' else 'Show two rows')
+    page.wait_for_function('sql => document.querySelector("#sql").value === sql', arg=stub.proposal)
+    restore_text = page.get_by_test_id('assistant-restore').inner_text()
+    assert ('恢复' in restore_text) if language == 'zh' else restore_text.strip() == 'Restore previous SQL'
+    field.hover()
+    assert page.get_by_test_id('assistant-ghost').inner_text() == suggestion
+    for mode in ('dark', 'light'):
+        if page.evaluate('document.documentElement.dataset.mode') != mode:
+            page.locator('.vg-switcher-mode').click()
+        page.mouse.move(500, 30)
+        page.screenshot(path=str(tmp_path / f'assistant-language-{language}-{mode}.png'))
+        page.get_by_test_id('assistant-close').click()
+        rail = page.get_by_test_id('assistant-open')
+        label = rail.locator('span')
+        assert label.inner_text() == ('SQL 助手' if language == 'zh' else 'SQL Assistant')
+        assert label.evaluate('el => getComputedStyle(el).writingMode') == 'vertical-rl'
+        page.screenshot(path=str(tmp_path / f'assistant-collapsed-{language}-{mode}.png'))
+        page.get_by_test_id('assistant-open').click()
+    stub.configured = False
+    prompt = '继续解读' if language == 'zh' else 'Explain another detail'
+    _assistant_send(page, prompt)
+    page.get_by_role('alert').filter(has_text='qy ai configure').wait_for()
+    assert field.input_value() == prompt
+    error = page.get_by_role('alert').filter(has_text='qy ai configure').inner_text()
+    assert ('Model not configured' not in error and re.search(r'[\u4e00-\u9fff]', error)) if language == 'zh' else 'Model not configured' in error
+    page.locator('#histBtn').click()
+    for testid in ('history-queries', 'history-conversations'):
+        text = page.get_by_test_id(testid).inner_text()
+        assert bool(re.search(r'[\u4e00-\u9fff]', text)) == (language == 'zh')
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').first.wait_for()
