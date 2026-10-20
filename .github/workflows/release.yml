@@ -36,7 +36,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 
@@ -107,7 +107,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
     steps:
       - name: Checkout exact release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
 

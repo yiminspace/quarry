@@ -63,7 +63,7 @@ jobs:
       QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
 
@@ -139,7 +139,7 @@ jobs:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
       QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
@@ -188,7 +188,7 @@ jobs:
     env:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
@@ -231,7 +231,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
       - uses: actions/setup-node@v4
