@@ -168,9 +168,17 @@ def tool_save_query(name: str, db: str, sql: str, desc: str = "",
         raise QuarryError("SQL is empty")
     if any(core.META_LINE_RE.match(line) for line in sql.splitlines()):
         raise QuarryError("SQL must not contain saved-query @metadata directives")
-    if not any(c.key == db or c.logical_db == db for c in core.load_connections().values()
+    conns = core.load_connections()
+    if not any(c.key == db or c.logical_db == db for c in conns.values()
                if c.source == str(ws.home)):
         raise QuarryError("database must belong to the selected workspace")
+    # Saved files store @db, not a workspace identity. Both the default target
+    # and every env-set member reachable through it must stay in this workspace.
+    resolved = core.resolve_connection(db)
+    if (resolved.source != str(ws.home)
+            or any(c.source != str(ws.home) for c in conns.values()
+                   if c.logical_db == resolved.logical_db)):
+        raise QuarryError("database resolves across workspaces; choose an unambiguous database key")
     if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
         raise QuarryError("tags must be an array of strings")
     clean_tags = [_single_line(t, "tag").strip() for t in (tags or [])]

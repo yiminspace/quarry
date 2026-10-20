@@ -149,3 +149,23 @@ def test_mcp_save_is_readable_by_cli_and_cli_save_by_mcp(home, capsys):
     assert args.func(args) == 0
     out, failed = call('describe_saved_query', name='from_cli')
     assert not failed and out['sql'] == 'SELECT 2;'
+
+
+@pytest.mark.parametrize(('first', 'second', 'db'), [
+    ('[sales]\nurl="sqlite:///first.db"\n',
+     '[sales_dev]\nurl="sqlite:///second.db"\ndb="sales"\nenv="dev"\n', 'sales'),
+    ('[sales_prod]\nurl="sqlite:///first.db"\ndb="sales"\nenv="prod"\n',
+     '[sales_dev]\nurl="sqlite:///second.db"\ndb="sales"\nenv="dev"\n', 'sales'),
+    ('[sales_prod]\nurl="sqlite:///first.db"\ndb="sales"\nenv="prod"\n',
+     '[sales_dev]\nurl="sqlite:///second.db"\ndb="sales"\nenv="dev"\n', 'sales_dev'),
+])
+def test_save_rejects_cross_workspace_resolution(home, first, second, db):
+    (home / 'connections.toml').write_text(first)
+    other = home / 'second'
+    other.mkdir()
+    (other / 'connections.toml').write_text(second)
+    workspace.configure_workspace(str(home) + os.pathsep + str(other))
+    payload, failed = call('save_query', name='collision', db=db, sql='SELECT 1', workspace=str(other))
+    assert failed and payload['code'] == core.EXIT_USAGE
+    assert 'resolves across workspaces' in payload['error']
+    assert not list(home.rglob('*.sql'))

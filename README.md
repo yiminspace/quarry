@@ -145,7 +145,8 @@ writes a query file without validation or execution; it accepts `name`, `db`,
 `sql`, optional `desc`, `tags`, parameter definitions (`name`, `type`, `required`,
 `default`), and `overwrite` (default false). With multiple workspaces, specify
 `workspace` using a path from `list_connections.workspaces`; the database must
-belong to that workspace and query names must be unique. File saving is available
+belong to that workspace, its env-set must not span workspaces, and query names
+must be unique. File saving is available
 without `--write`, which controls database writes only. `ping_connection` probes
 one `db`/optional `env`, returning `ok`, `elapsed_ms` and a sanitized failure
 category. Its `timeout` defaults to 10 seconds (1–30); connection setup and probe

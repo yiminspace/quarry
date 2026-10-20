@@ -136,7 +136,7 @@ my-workspace/
 `save_query` 接受 `name`、`db`、`sql` 及可选的 `desc`、`tags`、`params`
 （每项含 `name`、`type`、`required`、`default`），默认拒绝覆盖，显式
 `overwrite: true` 才覆盖。多个工作区时必须通过 `workspace` 选择
-`list_connections.workspaces` 中的路径，数据库须属于该工作区，查询名须唯一。
+`list_connections.workspaces` 中的路径，数据库须属于该工作区且环境组不可跨工作区，查询名须唯一。
 保存只写文件，不执行或验证 SQL，不需要数据库写入开关 `--write`。
 `ping_connection` 探测指定 `db`／可选 `env`，返回 `ok`、`elapsed_ms` 和脱敏的
 失败分类。`timeout` 默认为 10 秒，范围 1–30；建连与探测分别限时，并非总耗时上限。
