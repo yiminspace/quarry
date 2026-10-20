@@ -276,39 +276,7 @@ def cmd_connections_test(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def _ping_one(conn: core.Connection, timeout: int) -> dict[str, Any]:
-    """Probe a single connection's reachability. Never raises — any failure
-    (tunnel, auth, timeout, protocol) is captured in the returned dict so
-    `--all` can keep probing the remaining connections."""
-    engine = connection_engine(conn)
-    started = time.monotonic()
-    error: str | None = None
-    try:
-        if engine == "sqlite":
-            core.run_query(conn, "SELECT 1", timeout=timeout)
-        else:
-            _ping_remote(conn, engine, timeout)
-    except Exception as exc:  # noqa: BLE001 — any engine/tunnel failure means "unreachable"
-        error = str(exc)
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    return {"key": conn.key, "engine": engine, "ok": error is None, "elapsed_ms": elapsed_ms, "error": error}
-
-
-def _ping_remote(conn: core.Connection, engine: str, timeout: int) -> None:
-    with tunnel.open_tunnel(conn, engine, connect_timeout=timeout) as url:
-        if engine == "redis":
-            rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
-            if not (rows and rows[0]["value"].upper() == "PONG"):
-                raise QuarryError("no PONG")
-        elif engine == "neptune":
-            run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
-                               workspace_home=getattr(conn, "source", None) or workspace.WS.home)
-        elif engine == "mysql":
-            run_mysql_query(url, "SELECT 1", timeout=timeout)
-        else:
-            rc, _, errout = run_psql_capture(url, "SELECT 1", timeout=timeout)
-            if rc != 0:
-                msg, _ = core._psql_error_message(rc, errout)
-                raise QuarryError(msg)
+    return core.ping_connection(conn, timeout)
 
 
 def cmd_ping(args: argparse.Namespace) -> int:
@@ -810,25 +778,7 @@ def _parse_param_cli(spec: str) -> Param:
 
 
 def _format_query_file(q: Query) -> str:
-    lines: list[str] = [f"-- @name: {q.name}", f"-- @db: {q.db}"]
-    if q.desc:
-        lines.append(f"-- @desc: {q.desc}")
-    if q.tags:
-        lines.append(f"-- @tags: {', '.join(q.tags)}")
-    for p in q.params:
-        lines.append(f"-- @param: {p.to_meta_value()}")
-    for s in q.schema_sources:
-        lines.append(f"-- @schema-source: {s}")
-    if q.source_fingerprint:
-        lines.append(f"-- @source-fingerprint: {q.source_fingerprint}")
-    if q.saved_at:
-        lines.append(f"-- @saved-at: {q.saved_at}")
-    if q.last_validated:
-        lines.append(f"-- @last-validated: {q.last_validated}")
-    lines.append("")
-    lines.append(q.sql.rstrip() + ("" if q.sql.rstrip().endswith(";") else ";"))
-    lines.append("")
-    return "\n".join(lines)
+    return core.format_query_file(q)
 
 
 def cmd_save(args: argparse.Namespace) -> int:
@@ -842,18 +792,13 @@ def cmd_save(args: argparse.Namespace) -> int:
     if not sql:
         err("SQL is empty", exit_code=EXIT_USAGE)
     conn = core.resolve_connection(args.db)
-    target_dir = workspace.WS.queries_dir / args.db
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{args.name}.sql"
-    if target.exists() and not args.overwrite:
-        err(f"query '{args.name}' already exists at {target}; use --overwrite", exit_code=EXIT_USAGE)
     params = [_parse_param_cli(p) for p in (args.param or [])]
     tags = [t.strip() for t in (args.tags or "").split(",") if t.strip()]
     fingerprint, _ = compute_fingerprint(args.schema_source) if args.schema_source else (None, [])
     q = Query(name=args.name, db=args.db, desc=args.desc, tags=tags, params=params,
               schema_sources=list(args.schema_source or []), source_fingerprint=fingerprint,
               saved_at=now_iso(), last_validated=None, sql=sql)
-    target.write_text(_format_query_file(q), encoding="utf-8")
+    target = core.save_query(q, overwrite=args.overwrite)
     print(f"✓ saved {target}")
     if not args.no_validate:
         rc = core.validate_query(parse_query_file(target), conn)

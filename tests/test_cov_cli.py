@@ -276,8 +276,8 @@ class TestPingEngines:
             seen["cypher"] = cypher
             return [{"ok": 1}], 3
 
-        # cli.py calls the name imported into its own namespace
-        monkeypatch.setattr(cli, "run_neptune_cypher", fake_cypher)
+        # Ping probes are shared by CLI and MCP through core.
+        monkeypatch.setattr(core, "run_neptune_cypher", fake_cypher)
         rc = run_cli(wsdir, "ping", "graph")
         assert rc == EXIT_OK
         assert seen["cypher"] == "RETURN 1 AS ok"  # reuses `connections test`'s probe, not a new one
@@ -292,7 +292,7 @@ class TestPingEngines:
             seen["sql"] = sql
             return [], 0
 
-        monkeypatch.setattr(cli, "run_mysql_query", fake_query)
+        monkeypatch.setattr(core, "run_mysql_query", fake_query)
         rc = run_cli(wsdir, "ping", "shop")
         assert rc == EXIT_OK
         assert seen["sql"] == "SELECT 1"
@@ -305,7 +305,7 @@ class TestPingEngines:
         def fake_query(url, sql, *, timeout=30):
             raise core.QuarryError("mysql connection failed: nope", exit_code=EXIT_CONNECTION_ERROR)
 
-        monkeypatch.setattr(cli, "run_mysql_query", fake_query)
+        monkeypatch.setattr(core, "run_mysql_query", fake_query)
         rc = run_cli(wsdir, "ping", "shop")
         assert rc == 1  # ping's own 0/1 contract, not the wrapped EXIT_CONNECTION_ERROR
         out = capsys.readouterr().out
@@ -321,7 +321,7 @@ class TestPingEngines:
             seen["sql"] = sql
             return (0, "1", "")
 
-        monkeypatch.setattr(cli, "run_psql_capture", fake_capture)
+        monkeypatch.setattr(core, "run_psql_capture", fake_capture)
         rc = run_cli(wsdir, "ping", "pg")
         assert rc == EXIT_OK
         assert seen["sql"] == "SELECT 1"
@@ -330,7 +330,7 @@ class TestPingEngines:
         _write_conn(wsdir, "pg", "postgresql://localhost:5432/x", "postgres")
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
         monkeypatch.setattr(
-            cli, "run_psql_capture",
+            core, "run_psql_capture",
             lambda url, sql, *, timeout=30: (2, "", "FATAL: password authentication failed"))
         rc = run_cli(wsdir, "ping", "pg")
         assert rc == 1
@@ -363,7 +363,7 @@ class TestPingEngines:
             calls["n"] += 1
             return (0, "1", "") if calls["n"] == 1 else (2, "", "connection refused")
 
-        monkeypatch.setattr(cli, "run_psql_capture", fake_capture)
+        monkeypatch.setattr(core, "run_psql_capture", fake_capture)
         rc = run_cli(wsdir, "ping", "--all")
         assert rc == 1
         out = capsys.readouterr().out
@@ -380,7 +380,7 @@ class TestPingEngines:
     def test_json_format_single_connection_is_a_dict(self, wsdir, monkeypatch, capsys):
         _write_conn(wsdir, "pg", "postgresql://localhost:5432/x", "postgres")
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
-        monkeypatch.setattr(cli, "run_psql_capture", lambda url, sql, *, timeout=30: (0, "1", ""))
+        monkeypatch.setattr(core, "run_psql_capture", lambda url, sql, *, timeout=30: (0, "1", ""))
         rc = run_cli(wsdir, "ping", "pg", "--format", "json")
         assert rc == EXIT_OK
         obj = json.loads(capsys.readouterr().out)
@@ -389,7 +389,7 @@ class TestPingEngines:
     def test_json_format_all_is_a_list(self, wsdir, monkeypatch, capsys):
         _write_conn(wsdir, "pg", "postgresql://localhost:5432/x", "postgres")
         monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
-        monkeypatch.setattr(cli, "run_psql_capture", lambda url, sql, *, timeout=30: (0, "1", ""))
+        monkeypatch.setattr(core, "run_psql_capture", lambda url, sql, *, timeout=30: (0, "1", ""))
         rc = run_cli(wsdir, "ping", "--all", "--format", "json")
         assert rc == EXIT_OK
         obj = json.loads(capsys.readouterr().out)
@@ -404,7 +404,7 @@ class TestPingEngines:
             seen["timeout"] = timeout
             return (0, "1", "")
 
-        monkeypatch.setattr(cli, "run_psql_capture", fake_capture)
+        monkeypatch.setattr(core, "run_psql_capture", fake_capture)
         rc = run_cli(wsdir, "ping", "pg", "--timeout", "3")
         assert rc == EXIT_OK
         assert seen["timeout"] == 3
@@ -418,7 +418,7 @@ class TestPingEngines:
             seen["timeout"] = timeout
             return (0, "1", "")
 
-        monkeypatch.setattr(cli, "run_psql_capture", fake_capture)
+        monkeypatch.setattr(core, "run_psql_capture", fake_capture)
         rc = run_cli(wsdir, "ping", "pg")
         assert rc == EXIT_OK
         assert seen["timeout"] == core.DEFAULT_PING_TIMEOUT_SEC

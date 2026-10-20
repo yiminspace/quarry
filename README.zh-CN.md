@@ -130,7 +130,16 @@ my-workspace/
 
 ## MCP(agent 原生脸)
 
-`qy mcp` 用纯 stdlib 实现 MCP 协议(stdio),零 SDK 依赖。agent 拿到 6 个工具(`list_connections` / `list_tables` / `describe_table` / `exec_sql` / `list_saved_queries` / `run_saved_query`),安全栏与内核完全一致:server 不带 `--write` 一律只读;带了之后每次调用还要 `write: true`;prod 环境额外要求 `confirm_prod: true`。
+`qy mcp` 用纯 stdlib 实现 MCP 协议(stdio),零 SDK 依赖。agent 拿到 9 个工具(`list_connections` / `list_tables` / `describe_table` / `exec_sql` / `list_saved_queries` / `run_saved_query` / `describe_saved_query` / `save_query` / `ping_connection`),安全栏与内核完全一致:server 不带 `--write` 一律只读;带了之后每次调用还要 `write: true`;prod 环境额外要求 `confirm_prod: true`。
+
+`describe_saved_query` 返回已存查询的 SQL、参数和元信息，不执行查询。
+`save_query` 接受 `name`、`db`、`sql` 及可选的 `desc`、`tags`、`params`
+（每项含 `name`、`type`、`required`、`default`），默认拒绝覆盖，显式
+`overwrite: true` 才覆盖。多个工作区时必须通过 `workspace` 选择
+`list_connections.workspaces` 中的路径，数据库须属于该工作区且环境组不可跨工作区，查询名须唯一。
+保存只写文件，不执行或验证 SQL，不需要数据库写入开关 `--write`。
+`ping_connection` 探测指定 `db`／可选 `env`，返回 `ok`、`elapsed_ms` 和脱敏的
+失败分类。`timeout` 默认为 10 秒，范围 1–30；建连与探测分别限时，并非总耗时上限。
 
 ```bash
 # Claude Code

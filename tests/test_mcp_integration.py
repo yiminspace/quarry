@@ -47,11 +47,12 @@ def test_s_computes_required_from_req_and_pops_marker():
 @pytest.mark.unit
 def test_tools_payload_shape_and_required_fields():
     payload = mcp._tools_payload()
-    assert len(payload) == 6
+    assert len(payload) == 9
     names = [t["name"] for t in payload]
     assert names == [
         "list_connections", "list_tables", "describe_table",
         "exec_sql", "list_saved_queries", "run_saved_query",
+        "describe_saved_query", "save_query", "ping_connection",
     ]
     for t in payload:
         # only the protocol-facing keys are exposed; the internal "fn" is not
@@ -90,9 +91,9 @@ def test_dispatch_ping_returns_empty():
 
 
 @pytest.mark.unit
-def test_dispatch_tools_list_returns_six_tools():
+def test_dispatch_tools_list_returns_nine_tools():
     res = mcp._dispatch("tools/list", {})
-    assert len(res["tools"]) == 6
+    assert len(res["tools"]) == 9
     assert res["tools"] == mcp._tools_payload()
 
 
@@ -533,7 +534,7 @@ def test_serve_loop_processes_stream(wsdir, monkeypatch, restore_write_flag):
 
     by_id = {r["id"]: r for r in replies}
     assert by_id[1]["result"]["protocolVersion"] == "2025-06-18"
-    assert len(by_id[2]["result"]["tools"]) == 6
+    assert len(by_id[2]["result"]["tools"]) == 9
     exec_payload = json.loads(by_id[3]["result"]["content"][0]["text"])
     assert exec_payload["rows"] == [{"s": 7}]
 
