@@ -1,0 +1,135 @@
+import { describe, expect, it } from "vitest";
+import type { ConnItem, SavedQuery } from "./api";
+import { groupQueriesByDb, groupsWithQueries, itemsInEngineOrder, queryObjects } from "./sidebarLayout";
+
+it("associates joins and graph labels without matching comments or string values", () => {
+  expect(queryObjects("SELECT 'from fake' FROM customers JOIN orders ON true -- join hidden", "postgres")).toEqual(["customers", "orders"]);
+  expect(queryObjects('SELECT * FROM "public"."customers"', "postgres")).toEqual(["public.customers"]);
+  expect(queryObjects("MATCH (n:MindNode {id: 'x'}) OPTIONAL MATCH (n)-[r]->(a:Artifact) RETURN n", "neptune")).toEqual(["Artifact", "MindNode"]);
+  expect(queryObjects("MATCH (n) RETURN labels(n)", "neptune")).toEqual([]);
+});
+
+function item(db: string, engine: string, keys: string[] = [db]): ConnItem {
+  return {
+    db,
+    is_env_set: keys.length > 1,
+    engine,
+    envs: keys.map((key) => ({
+      env: null,
+      key,
+      engine,
+      region: null,
+      ssh: false,
+      proxied: false,
+    })),
+  };
+}
+
+function query(name: string, db: string): SavedQuery {
+  return { name, db, desc: null, sql: "select 1", params: [] };
+}
+
+describe("itemsInEngineOrder", () => {
+  it("keeps registration order inside each engine and orders engines postgres→mysql→sqlite→redis→neptune", () => {
+    expect(
+      itemsInEngineOrder([
+        item("brain_redis", "redis"),
+        item("local_file", "sqlite"),
+        item("planning", "postgres"),
+        item("userly", "mysql"),
+        item("matrix_runtime", "postgres"),
+        item("graph", "neptune"),
+      ]).map((i) => i.db),
+    ).toEqual(["planning", "matrix_runtime", "userly", "local_file", "brain_redis", "graph"]);
+  });
+
+  it("passes through a single-engine group without reordering", () => {
+    expect(
+      itemsInEngineOrder([item("shop", "postgres"), item("blog", "postgres")]).map((i) => i.db),
+    ).toEqual(["shop", "blog"]);
+  });
+});
+
+describe("groupQueriesByDb", () => {
+  it("maps connection-key @db values onto the logical db and does not split by env", () => {
+    const items = [
+      item("matrix_runtime", "postgres", ["west2_matrix_runtime", "tokyo_matrix_runtime"]),
+      item("neptune", "neptune", ["west2_neptune_dev"]),
+    ];
+    const sections = groupQueriesByDb(
+      [
+        query("session-list", "west2_matrix_runtime"),
+        query("session-finder-tokyo", "tokyo_matrix_runtime"),
+        query("neptune-list", "west2_neptune_dev"),
+      ],
+      items,
+    );
+    expect(sections.map((s) => s.db)).toEqual(["matrix_runtime", "neptune"]);
+    expect(sections[0].queries.map((q) => q.name)).toEqual([
+      "session-list",
+      "session-finder-tokyo",
+    ]);
+  });
+
+  it("keeps unmatched @db values as their own source group", () => {
+    const sections = groupQueriesByDb(
+      [query("orphan", "gone_db")],
+      [item("testpg", "postgres")],
+    );
+    expect(sections.map((s) => s.db)).toEqual(["gone_db"]);
+  });
+
+  it("lets an exact connection key beat another item's logical db, in either order", () => {
+    const shop = item("shop", "postgres", ["shop_dev", "shop_prod"]);
+    const colliding = item("shop_dev", "redis", ["analytics"]);
+    const queries = [
+      query("legacy-shop-dev", "shop_dev"),
+      query("analytics-q", "analytics"),
+    ];
+    for (const items of [
+      [shop, colliding],
+      [colliding, shop],
+    ]) {
+      const sections = groupQueriesByDb(queries, items);
+      const byDb = Object.fromEntries(sections.map((s) => [s.db, s.queries.map((q) => q.name)]));
+      expect(byDb.shop).toEqual(["legacy-shop-dev"]);
+      expect(byDb.shop_dev).toEqual(["analytics-q"]);
+    }
+  });
+});
+
+
+describe("groupsWithQueries", () => {
+  it("uses file workspace even when @db belongs elsewhere, and retains query-only workspaces", () => {
+    const groups = [
+      { ws: "/one", group: "One", items: [item("db", "postgres")] },
+      { ws: "/two", group: "Two", items: [] },
+    ];
+    const result = groupsWithQueries(groups, [
+      { ...query("same", "db"), ws: "/one", queryId: "one" },
+      { ...query("same", "db"), ws: "/two", queryId: "two" },
+      { ...query("orphan", "gone"), ws: "/three", queryId: "three" },
+    ]);
+    expect(result.map((g) => [g.ws, g.queries.map((q) => q.queryId)])).toEqual([
+      ["/one", ["one"]], ["/two", ["two"]], ["/three", ["three"]],
+    ]);
+    expect(groups).not.toHaveProperty("0.queries");
+  });
+
+  it("assigns queries only once when multiple groups share a workspace", () => {
+    const result = groupsWithQueries([
+      { ws: "/one", group: "First", items: [] },
+      { ws: "/one", group: "Second", items: [item("db", "postgres", ["db_dev"])] },
+    ], [{ ...query("q", "db_dev"), ws: "/one" }, { ...query("unknown", "gone"), ws: "/one" }]);
+    expect(result.map((g) => g.queries.map((q) => q.name))).toEqual([["unknown"], ["q"]]);
+  });
+});
+
+
+it("places exact connection keys before colliding logical names across workspace groups", () => {
+  const result = groupsWithQueries([
+    { ws: "/one", group: "Logical", items: [item("db_dev", "redis", ["redis"])] },
+    { ws: "/one", group: "Exact", items: [item("db", "postgres", ["db_dev"])] },
+  ], [{ ...query("q", "db_dev"), ws: "/one" }]);
+  expect(result.map((g) => g.queries.length)).toEqual([0, 1]);
+});

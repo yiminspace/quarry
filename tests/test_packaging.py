@@ -1,6 +1,6 @@
 """Unit tests for the packaging config that governs `pip install -e .`.
 
-Regression guard for https://github.com/Wangggym/quarry/issues/42: without
+Regression guard for https://github.com/yiminspace/quarry/issues/42: without
 `dev-mode-exact`, hatchling's editable install just appends the source
 directory to sys.path. If that directory later disappears (e.g. a git
 worktree gets removed), `import quarry.cli` fails with a bare, unhelpful

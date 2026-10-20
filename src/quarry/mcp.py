@@ -13,7 +13,7 @@ transport). Logs go to stderr; stdout carries only protocol messages.
 Write policy (graduated, mirrors the CLI):
   - server default            -> every write/DDL is blocked (exit code 8)
   - server started --write    -> a call may pass {"write": true}
-  - target env is prod        -> the call must ALSO pass {"confirm_prod": true}
+  - target connection is production        -> the call must ALSO pass {"confirm_prod": true}
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import json
 import sys
 from typing import Any
 
-from . import core, tunnel, workspace
+from . import cache, core, workspace
 from .core import EXIT_SAFETY_BLOCKED, QuarryError
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -47,38 +47,37 @@ def tool_list_connections() -> dict:
 
 
 def tool_list_tables(db: str, env: str | None = None) -> dict:
+    """Table (or, for redis, key) list for a db@env, backed by the shared
+    metadata cache (issue #97) so a repeat call — from this or any other
+    Quarry face, including the GUI's own table panel — skips the DB round
+    trip. Redis goes through the same cached (per-key type/TTL) entry the
+    GUI populates and just projects out the key names, rather than always
+    re-scanning; the key list is capped at 400 (cache.py's cap), same as
+    the GUI's."""
     conn = core.resolve_connection(db, env)
-    engine = core.connection_engine(conn)
-    if engine == "redis":
-        from . import redis_engine
-        with tunnel.open_tunnel(conn, engine) as url:
-            return {"engine": "redis", "keys": redis_engine.scan_keys(url, count=1000)}
-    if engine == "neptune":
-        return {"engine": "neptune", "tables": []}
-    schema = "DATABASE()" if engine == "mysql" else "'public'"
-    # alias AS table_name: MySQL 8 returns information_schema headers uppercase.
-    sql = ("SELECT table_name AS table_name FROM information_schema.tables "
-           f"WHERE table_schema = {schema} ORDER BY table_name")
-    res = core.run_query(conn, sql, max_rows=5000)
-    return {"engine": engine,
-            "tables": [r.get("table_name") for r in res.rows if r.get("table_name")]}
+    res = core.cached_tables(conn, db, env, default_timeout=core.MCP_EXECUTE_TIMEOUT_SEC)
+    notice = {"capped": True} if res.get("capped") else {}
+    if res["engine"] == "redis":
+        return {"engine": "redis", "keys": [k.get("key") for k in res.get("keys", [])], **notice}
+    return {"engine": res["engine"], "tables": res.get("tables", []), **notice}
 
 
 def tool_describe_table(db: str, table: str, env: str | None = None) -> dict:
+    """Column metadata for one table, backed by the shared metadata cache
+    (issue #97). `columns` gains a `character_maximum_length` field
+    (additive) now that this shares core.cached_columns with the GUI/CLI."""
     conn = core.resolve_connection(db, env)
     engine = core.connection_engine(conn)
     if engine in ("redis", "neptune"):
         raise QuarryError(f"describe_table is not supported for engine={engine}")
-    safe = "".join(ch for ch in table if ch.isalnum() or ch in "_$")
+    # SQLite identifiers may contain spaces, punctuation, or dots. Its metadata
+    # lookup binds the name as a value, so preserve the exact identifier.
+    safe = table if engine == "sqlite" else "".join(ch for ch in table if ch.isalnum() or ch in "_$")
     if not safe:
         raise QuarryError("invalid table name")
-    schema = "DATABASE()" if engine == "mysql" else "'public'"
-    sql = ("SELECT column_name, data_type, is_nullable, column_default "
-           "FROM information_schema.columns "
-           f"WHERE table_schema = {schema} AND table_name = '{safe}' "
-           "ORDER BY ordinal_position")
-    res = core.run_query(conn, sql, max_rows=2000)
-    return {"table": safe, "engine": engine, "columns": res.rows}
+    res = core.cached_columns(conn, db, env, safe, raise_errors=True,
+                              default_timeout=core.MCP_EXECUTE_TIMEOUT_SEC)
+    return {"table": safe, "engine": engine, "columns": res["rows"]}
 
 
 def _check_write_policy(conn, write: bool, confirm_prod: bool) -> bool:
@@ -90,9 +89,9 @@ def _check_write_policy(conn, write: bool, confirm_prod: bool) -> bool:
             "writes are disabled: this MCP server was started without --write",
             exit_code=EXIT_SAFETY_BLOCKED,
         )
-    if (conn.env or "").lower() == "prod" and not confirm_prod:
+    if conn.production and not confirm_prod:
         raise QuarryError(
-            'target env is prod — retry with {"confirm_prod": true} to confirm',
+            'target connection is production — retry with {"confirm_prod": true} to confirm',
             exit_code=EXIT_SAFETY_BLOCKED,
         )
     return True
@@ -103,7 +102,8 @@ def tool_exec_sql(db: str, sql: str, env: str | None = None, max_rows: int = 500
     conn = core.resolve_connection(db, env)
     allow_write = _check_write_policy(conn, write, confirm_prod)
     res = core.run_query(conn, sql, allow_write=allow_write,
-                         max_rows=int(max_rows), with_types=True)
+                         max_rows=int(max_rows), with_types=True,
+                         default_timeout=core.MCP_EXECUTE_TIMEOUT_SEC)
     return res.to_dict()
 
 
@@ -121,7 +121,8 @@ def tool_run_saved_query(name: str, params: dict | None = None,
     conn = core.resolve_connection(q.db, env)
     resolved = core.resolve_params(q, {k: str(v) for k, v in (params or {}).items()})
     res = core.run_query(conn, q.sql, params=resolved,
-                         max_rows=int(max_rows), with_types=True)
+                         max_rows=int(max_rows), with_types=True,
+                         default_timeout=core.MCP_EXECUTE_TIMEOUT_SEC)
     return res.to_dict()
 
 
@@ -163,7 +164,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": ("Execute SQL (or a redis command) against a database and get a "
                         "structured result {columns, rows, rowCount, truncated, elapsedMs}. "
                         "READ-ONLY by default: writes/DDL fail with code 8 unless you pass "
-                        "write=true AND the server was started with --write; a prod env "
+                        "write=true AND the server was started with --write; a configured production connection "
                         "additionally requires confirm_prod=true. SELECTs without LIMIT get "
                         "an automatic LIMIT (max_rows, default 500)."),
         "inputSchema": _s(
@@ -259,6 +260,7 @@ def serve(ws_path: str | None = None, allow_write: bool = False) -> int:
     global _ALLOW_WRITE_FLAG
     _ALLOW_WRITE_FLAG = allow_write
     workspace.configure_workspace(ws_path)
+    cache.load()
     homes = ", ".join(str(w.home) for w in workspace.WS_LIST)
     print(f"quarry mcp: serving on stdio (workspace(s): {homes}, "
           f"writes {'ENABLED' if allow_write else 'disabled'})", file=sys.stderr, flush=True)

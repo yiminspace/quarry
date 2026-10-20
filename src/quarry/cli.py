@@ -1,6 +1,6 @@
 """Quarry CLI — the `qy` / `quarry` command-line face over the core engine.
 
-Stable, deterministic. Same args -> same SQL -> same behavior. No LLM.
+Query commands are deterministic. Optional `ai` commands use a configured model.
 """
 
 from __future__ import annotations
@@ -9,13 +9,16 @@ import argparse
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-from . import core, local, local_sync, redis_engine, tunnel, workspace
+from . import cache, core, keepalive, local, local_sync, proxy, redis_engine, sqlite_engine, tunnel, workspace
 from .core import (
+    DEFAULT_PING_TIMEOUT_SEC,
     EXIT_CONNECTION_ERROR,
     EXIT_FINGERPRINT_MISSING,
     EXIT_FINGERPRINT_STALE,
@@ -77,26 +80,84 @@ def cmd_connections_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _connections_upsert(key, *, url, region, env, notes, engine, require_new) -> None:
+def _apply_ssh_args(fields: dict[str, Any], args: argparse.Namespace) -> None:
+    if getattr(args, "ssh_host", None):
+        fields["ssh_host"] = args.ssh_host
+    if getattr(args, "ssh_user", None):
+        fields["ssh_user"] = args.ssh_user
+    if getattr(args, "ssh_key", None):
+        fields["ssh_key"] = args.ssh_key
+    if getattr(args, "ssh_port", None):
+        fields["ssh_port"] = args.ssh_port
+
+
+def _apply_connection_identity(
+    key: str, fields: dict[str, Any], args: argparse.Namespace,
+    data: dict[str, dict[str, object]],
+) -> None:
+    """Apply explicit db/group metadata, or inherit it from an existing env sibling.
+
+    `connections add shop_prod --env prod` should join an existing `db = shop`
+    env-set without requiring callers to repeat easy-to-forget display metadata.
+    Explicit --db/--group always win.
+    """
+    requested_db = getattr(args, "db", None)
+    requested_group = getattr(args, "group", None)
+    if requested_db:
+        fields["db"] = requested_db
+    if requested_group:
+        fields["group"] = requested_group
+    if requested_db and requested_group:
+        return
+
+    candidates = [requested_db or key]
+    env = getattr(args, "env", None)
+    suffix = f"_{env}" if env else ""
+    if not requested_db and suffix and key.endswith(suffix) and key != suffix:
+        candidates.append(key[:-len(suffix)])
+
+    for logical_db in candidates:
+        siblings = [
+            value for sibling_key, value in data.items()
+            if (value.get("db") or sibling_key) == logical_db and sibling_key != key
+        ]
+        if not siblings:
+            continue
+        if not requested_db:
+            fields["db"] = logical_db
+        sibling_groups = {str(v["group"]) for v in siblings if v.get("group")}
+        if not requested_group and len(sibling_groups) == 1:
+            fields["group"] = next(iter(sibling_groups))
+        return
+
+
+def _connections_upsert(key, *, url, region, env, notes, engine, args, require_new) -> None:
     if not core.CONN_KEY_RE.match(key):
         err(f"invalid key '{key}' (letters, digits, underscore; must start with letter)", exit_code=EXIT_USAGE)
     header, data = core._read_connections_file_parts()
     if require_new and key in data:
         err(f"connection '{key}' already exists; use `qy connections set` to update", exit_code=EXIT_USAGE)
-    fields: dict[str, str] = {"url": url, "engine": core.infer_engine(url, engine)}
+    fields: dict[str, Any] = {"url": url, "engine": core.infer_engine(url, engine)}
     if region:
         fields["region"] = region
     if env:
         fields["env"] = env
     if notes:
         fields["notes"] = notes
+    if getattr(args, "timeout", None) is not None:
+        fields["timeout"] = args.timeout
+    _apply_connection_identity(key, fields, args, data)
+    if getattr(args, "production", None) is not None:
+        fields["production"] = args.production
+    _apply_ssh_args(fields, args)
+    core.check_connection_write(key, fields, data, force=getattr(args, "force", False))
     data[key] = fields
     core._write_connections_file(header, data)
 
 
 def cmd_connections_add(args: argparse.Namespace) -> int:
     _connections_upsert(args.key, url=args.url, region=args.region, env=args.env,
-                        notes=args.notes, engine=args.engine, require_new=True)
+                        notes=args.notes, engine=args.engine, args=args, require_new=True)
     print(f"✓ added connection [{args.key}] → {workspace.WS.connections_file}")
     return EXIT_OK if args.no_test else _connections_test(args.key)
 
@@ -121,6 +182,13 @@ def cmd_connections_set(args: argparse.Namespace) -> int:
         fields["engine"] = core.infer_engine(fields["url"], existing.get("engine"))
     if "url" not in fields:
         err("'url' is required for a new connection", exit_code=EXIT_USAGE)
+    if args.timeout is not None:
+        fields["timeout"] = args.timeout
+    _apply_connection_identity(args.key, fields, args, data)
+    if getattr(args, "production", None) is not None:
+        fields["production"] = args.production
+    _apply_ssh_args(fields, args)
+    core.check_connection_write(args.key, fields, data, force=getattr(args, "force", False))
     data[args.key] = fields
     core._write_connections_file(header, data)
     print(f"✓ {'updated' if existing else 'added'} connection [{args.key}] → {workspace.WS.connections_file}")
@@ -148,22 +216,29 @@ def _connections_test(key: str, timeout: int = 10, env: str | None = None) -> in
     engine = connection_engine(conn)
     tag = " (SSH)" if conn.ssh_host else ""
     try:
+        if engine == "sqlite":
+            result = core.run_query(conn, "SELECT sqlite_version() AS version", timeout=timeout)
+            print(f"✓ {key}: connected to SQLite")
+            if result.rows:
+                print(f"  {result.rows[0]['version']}")
+            return EXIT_OK
         with tunnel.open_tunnel(conn, engine) as url:
             if engine == "redis":
-                rows = redis_engine.run_redis(url, "PING", timeout=timeout)
+                rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
                 ok = rows and rows[0]["value"].upper() == "PONG"
                 if not ok:
                     err("connection test failed: no PONG")
                     return EXIT_CONNECTION_ERROR
-                size = redis_engine.run_redis(url, "DBSIZE", timeout=timeout)
+                size, _ = redis_engine.run_redis(url, "DBSIZE", timeout=timeout)
                 print(f"✓ {key}: connected to Redis{tag} — {size[0]['value'] if size else '?'} keys")
                 return EXIT_OK
             if engine == "neptune":
-                run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout)
+                run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
+                                   workspace_home=getattr(conn, "source", None) or workspace.WS.home)
                 print(f"✓ {key}: connected to Neptune ({core.normalize_neptune_endpoint(conn.url)})")
                 return EXIT_OK
             if engine == "mysql":
-                rows = run_mysql_query(url, "SELECT DATABASE() AS db_name, VERSION() AS version", timeout=timeout)
+                rows, _ = run_mysql_query(url, "SELECT DATABASE() AS db_name, VERSION() AS version", timeout=timeout)
                 row = rows[0] if rows else {}
                 print(f"✓ {key}: connected to {row.get('db_name', '?')} (mysql){tag}")
                 if row.get("version"):
@@ -188,6 +263,88 @@ def _connections_test(key: str, timeout: int = 10, env: str | None = None) -> in
 
 def cmd_connections_test(args: argparse.Namespace) -> int:
     return _connections_test(args.key, env=getattr(args, "env", None))
+
+
+# ---------------------------------------------------------------------------
+# ping (issue #110) — a lightweight, engine-appropriate reachability probe.
+# Unlike `connections test` (which prints a rich "connected to <db>" line and
+# maps failures onto the engine's own exit-code contract), `ping` is meant for
+# scripting/preflight: one probe statement per engine (`select 1` for PG/
+# MySQL, `PING` for Redis, `connections test`'s existing Neptune probe — no
+# new probe protocol per engine), a plain ok/fail + elapsed time, and a
+# uniform exit code regardless of *why* a connection failed.
+# ---------------------------------------------------------------------------
+
+def _ping_one(conn: core.Connection, timeout: int) -> dict[str, Any]:
+    """Probe a single connection's reachability. Never raises — any failure
+    (tunnel, auth, timeout, protocol) is captured in the returned dict so
+    `--all` can keep probing the remaining connections."""
+    engine = connection_engine(conn)
+    started = time.monotonic()
+    error: str | None = None
+    try:
+        if engine == "sqlite":
+            core.run_query(conn, "SELECT 1", timeout=timeout)
+        else:
+            _ping_remote(conn, engine, timeout)
+    except Exception as exc:  # noqa: BLE001 — any engine/tunnel failure means "unreachable"
+        error = str(exc)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return {"key": conn.key, "engine": engine, "ok": error is None, "elapsed_ms": elapsed_ms, "error": error}
+
+
+def _ping_remote(conn: core.Connection, engine: str, timeout: int) -> None:
+    with tunnel.open_tunnel(conn, engine, connect_timeout=timeout) as url:
+        if engine == "redis":
+            rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
+            if not (rows and rows[0]["value"].upper() == "PONG"):
+                raise QuarryError("no PONG")
+        elif engine == "neptune":
+            run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
+                               workspace_home=getattr(conn, "source", None) or workspace.WS.home)
+        elif engine == "mysql":
+            run_mysql_query(url, "SELECT 1", timeout=timeout)
+        else:
+            rc, _, errout = run_psql_capture(url, "SELECT 1", timeout=timeout)
+            if rc != 0:
+                msg, _ = core._psql_error_message(rc, errout)
+                raise QuarryError(msg)
+
+
+def cmd_ping(args: argparse.Namespace) -> int:
+    if bool(args.key) == bool(args.all):
+        err("specify a connection or --all, not both/neither", exit_code=EXIT_USAGE)
+    timeout = args.timeout or DEFAULT_PING_TIMEOUT_SEC
+
+    if args.all:
+        conns = list(core.load_connections().values())
+        if not conns:
+            print("(no configured connections)")
+            return EXIT_OK
+    else:
+        conns = [core.resolve_connection(args.key, args.env)]
+
+    results = [_ping_one(c, timeout) for c in conns]
+    all_ok = all(r["ok"] for r in results)
+
+    if args.format == "json":
+        json.dump(results if args.all else results[0], sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        for r in results:
+            if r["ok"]:
+                print(f"✓ {r['key']} ({r['engine']}): ok — {r['elapsed_ms']}ms")
+            else:
+                print(f"✗ {r['key']} ({r['engine']}): fail — {r['elapsed_ms']}ms — {r['error']}")
+        if args.all:
+            reachable = sum(1 for r in results if r["ok"])
+            print(f"— {reachable}/{len(results)} reachable")
+
+    # Deliberately plain 0/1 (not EXIT_CONNECTION_ERROR / EXIT_SQL_ERROR): ping
+    # is a reachability probe, not a query — callers scripting a preflight
+    # check only need "all reachable?" (issue #110), not the engine-error
+    # exit-code table `connections test`/`exec` expose.
+    return EXIT_OK if all_ok else 1
 
 
 # ---------------------------------------------------------------------------
@@ -300,34 +457,21 @@ def cmd_describe_table(args: argparse.Namespace) -> int:
     engine = connection_engine(conn)
     if engine in ("neptune", "redis"):
         err(f"describe-table is not supported for engine={engine}", exit_code=EXIT_USAGE)
-    with tunnel.open_tunnel(conn, engine) as url:
-        if engine == "mysql":
-            sql = """
-                SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
-                FROM information_schema.columns
-                WHERE table_schema = DATABASE() AND table_name = :'table'
-                ORDER BY ordinal_position
-            """
-            try:
-                rows = run_mysql_query(url, sql, params={"table": args.table}, timeout=15)
-            except Exception as exc:
-                err(f"mysql failed: {exc}", exit_code=EXIT_SQL_ERROR)
-            if args.format == "text":
-                if not rows:
-                    print(f"(table {args.table} not found or has no columns)")
-                    return EXIT_OK
-                headers = list(rows[0].keys())
-                widths = [max(len(str(row.get(h, ""))) for row in rows + [{h: h for h in headers}]) for h in headers]
-                print("  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
-                print("  ".join("-" * w for w in widths))
-                for row in rows:
-                    print("  ".join(str(row.get(h, "")).ljust(widths[i]) for i, h in enumerate(headers)))
-                return EXIT_OK
-            json.dump({"table": args.table, "columns": rows}, sys.stdout, indent=2, ensure_ascii=False)
-            sys.stdout.write("\n")
-            return EXIT_OK
 
-        if args.format == "text":
+    # postgres --format text is a raw `psql \d+` structural dump (indexes,
+    # constraints, etc.) — richer than the columns cache stores, so it's kept
+    # under its own cache key (issue #97) rather than going through
+    # core.cached_columns, but it's still cached: this is `qy schema`'s
+    # default (unflagged) form, so it must skip the DB round trip on a
+    # repeat call just like the JSON/mysql paths do.
+    if engine == "postgres" and args.format == "text":
+        env = getattr(args, "env", None)
+        key = f"schema-text:{args.db_key}@{env}:{args.table}"
+        cached = cache.get(key)
+        if cached is not None:
+            sys.stdout.write(cached["text"])
+            return EXIT_OK
+        with tunnel.open_tunnel(conn, engine) as url:
             cmd = [resolve_psql(), url, "--no-psqlrc", "-c", f'\\d+ "{args.table}"']
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
@@ -336,24 +480,29 @@ def cmd_describe_table(args: argparse.Namespace) -> int:
                 return EXIT_CONNECTION_ERROR
             if proc.returncode != 0:
                 err(f"psql failed: {proc.stderr.strip()}", exit_code=EXIT_SQL_ERROR)
+            cache.put(key, {"text": proc.stdout})
             sys.stdout.write(proc.stdout)
-            return EXIT_OK
-
-        sql = f"""
-            SELECT json_agg(row_to_json(c))::text FROM (
-                SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
-                FROM information_schema.columns
-                WHERE table_name = '{args.table}'
-                ORDER BY ordinal_position
-            ) c
-        """
-        rc, out, errout = run_psql_capture(url, sql, timeout=15)
-        if rc != 0:
-            err(f"psql failed: {errout.strip()}", exit_code=EXIT_SQL_ERROR)
-        text = out.strip() or "[]"
-        json.dump({"table": args.table, "columns": json.loads(text)}, sys.stdout, indent=2, ensure_ascii=False)
-        sys.stdout.write("\n")
         return EXIT_OK
+
+    res = core.cached_columns(conn, args.db_key, getattr(args, "env", None), args.table,
+                               raise_errors=True)
+    rows = res["rows"]
+
+    if args.format == "text":
+        if not rows:
+            print(f"(table {args.table} not found or has no columns)")
+            return EXIT_OK
+        headers = list(rows[0].keys())
+        widths = [max(len(str(row.get(h, ""))) for row in rows + [{h: h for h in headers}]) for h in headers]
+        print("  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
+        print("  ".join("-" * w for w in widths))
+        for row in rows:
+            print("  ".join(str(row.get(h, "")).ljust(widths[i]) for i, h in enumerate(headers)))
+        return EXIT_OK
+
+    json.dump({"table": args.table, "columns": rows}, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return EXIT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -362,9 +511,11 @@ def cmd_describe_table(args: argparse.Namespace) -> int:
 
 def _confirm_prod_write(conn, sql, args) -> bool:
     """prod safety: a write against a prod connection needs explicit confirmation."""
-    if (conn.env or "").lower() != "prod":
+    if not conn.production:
         return True
-    if not getattr(args, "write", False) or core.is_read_only(sql):
+    # An apparently read-only SELECT can call a writing function once the
+    # database read-only transaction is lifted. Confirm every prod write opt-in.
+    if not getattr(args, "write", False):
         return True
     if getattr(args, "yes", False):
         return True
@@ -384,15 +535,42 @@ def _read_sql_file(path: str) -> str:
 def _execute(conn, sql, psql_vars, args) -> int:
     if not _confirm_prod_write(conn, sql, args):
         err("aborted", exit_code=EXIT_USAGE)
+    use_proxy = False if getattr(args, "no_proxy", False) else None
+    notice = core.proxy_fallback_notice(conn, use_proxy=use_proxy)
+    if notice:
+        err(notice)
+    if keepalive.should_hint_keeper_down(conn) and tunnel.tunnel_fact_for(conn, core.connection_engine(conn)) is None:
+        err(f"connection [{conn.key}]: keep-alive is enabled but not running; run `qy up` for warm shared tunnels.")
+    stats: dict[str, Any] = {}
     try:
         return core.execute_sql(
             conn=conn, sql=sql, psql_vars=psql_vars, fmt=args.format,
             allow_write=getattr(args, "write", False),
             max_rows=getattr(args, "max_rows", None),
+            timeout=getattr(args, "timeout", None),
+            use_proxy=use_proxy,
+            stats=stats,
         )
     except QuarryError as exc:
+        if exc.exit_code == EXIT_CONNECTION_ERROR:
+            try:
+                hint = local.connection_failure_hint(conn)
+            except (QuarryError, OSError, ValueError):
+                hint = None
+            if hint:
+                err(hint)
         err(str(exc), exit_code=exc.exit_code)
         return exc.exit_code
+    finally:
+        # issue #105: a one-line "elapsed · download size · avg speed" stderr
+        # summary, printed only on success — `stats` stays empty if execute_sql
+        # raised before finishing (e.g. a blocked write or a psql error), and
+        # this never touches stdout, so `--format json/csv/ndjson` piping stays
+        # data-only.
+        if "elapsed_ms" in stats:
+            err(core.format_query_stats(
+                stats["elapsed_ms"], stats["download_bytes"], stats["size_is_estimated"],
+            ))
 
 
 # Match only a real trailing-style LIMIT clause (count / ALL / :param), optionally
@@ -443,16 +621,53 @@ def _last_toplevel_limit(sql: str) -> re.Match[str] | None:
     return found
 
 
-def _override_limit(sql: str, limit: int) -> str:
+def _sqlite_limit_bounds(sql: str) -> tuple[int, int] | None:
+    """Locate SQLite's final LIMIT clause without matching quoted identifiers.
+
+    SQLite accepts expressions, negative counts and LIMIT offset,count. The
+    clause is last in its statement, so replacing it need not parse expressions.
+    """
+    skeleton = sqlite_engine.skeleton(sql)
+    depths = _paren_depths(skeleton)
+    limits = [m for m in re.finditer(r"(?<![:\w$@.])\blimit\b", skeleton, re.I)
+              if depths[m.start()] == 0]
+    if not limits:
+        return None
+    start = limits[-1].start()
+    end = skeleton.find(";", start)
+    return start, len(sql) if end < 0 else end
+
+
+def _override_limit(sql: str, limit: int, engine: str = "postgres") -> str:
     """Replace the outer LIMIT clause with `LIMIT <limit>`, else append one."""
+    if engine == "sqlite":
+        bounds = _sqlite_limit_bounds(sql)
+        if bounds:
+            start, end = bounds
+            return sql[:start] + f"LIMIT {limit}" + sql[end:]
+        skeleton = sqlite_engine.skeleton(sql)
+        semi = skeleton.find(";")
+        # A terminal semicolon can precede comments. Remove only that SQL
+        # token; semicolons in strings/identifiers/comments remain untouched.
+        inner = sql[:semi] + sql[semi + 1:] if semi >= 0 and not skeleton[semi + 1:].strip() else sql
+        if (core.is_query_read_only(sql, engine)
+                and re.search(r"\bvalues\b", core._top_level_sql(skeleton), re.I)):
+            return f"SELECT * FROM (\n{inner}\n) LIMIT {limit}"
+        return inner + f"\nLIMIT {limit}"
     m = _last_toplevel_limit(sql)
     if m:
         return sql[: m.start()] + f"LIMIT {limit}" + sql[m.end():]
     return _strip_trailing_semicolons(sql) + f"\nLIMIT {limit}"
 
 
-def _strip_limit(sql: str) -> str:
+def _strip_limit(sql: str, engine: str = "postgres") -> str:
     """Remove the outer LIMIT[/OFFSET] clause (for --full)."""
+    if engine == "sqlite":
+        bounds = _sqlite_limit_bounds(sql)
+        if bounds:
+            start, end = bounds
+            return (sql[:start] + sql[end:]).rstrip()
+        return sql
     m = _last_toplevel_limit(sql)
     if not m:
         return sql
@@ -470,17 +685,103 @@ def cmd_exec(args: argparse.Namespace) -> int:
     return _execute(conn, sql, psql_vars, args)
 
 
+def cmd_speedtest(args: argparse.Namespace) -> int:
+    """Measure the current DB/tunnel path without printing the generated payload."""
+    if args.bytes <= 0 or args.bytes > 100_000_000:
+        err("--bytes must be between 1 and 100000000", exit_code=EXIT_USAGE)
+    if args.runs <= 0 or args.runs > 20:
+        err("--runs must be between 1 and 20", exit_code=EXIT_USAGE)
+
+    conn = core.resolve_connection(args.db_key, args.env)
+    engine = core.connection_engine(conn)
+    if engine not in ("postgres", "mysql"):
+        err(
+            f"speedtest supports postgres/mysql connections, got {engine}",
+            exit_code=EXIT_USAGE,
+        )
+
+    sql = f"SELECT repeat('x', {args.bytes}) AS payload"
+    runs: list[dict[str, Any]] = []
+    for index in range(1, args.runs + 1):
+        result = core.run_query(
+            conn,
+            sql,
+            max_rows=1,
+            timeout=args.timeout,
+            with_types=False,
+            use_proxy=None,
+        )
+        elapsed_sec = result.elapsed_ms / 1000 or 0.001
+        speed_bps = result.download_bytes / elapsed_sec
+        runs.append({
+            "run": index,
+            "elapsedMs": result.elapsed_ms,
+            "downloadBytes": result.download_bytes,
+            "bytesPerSecond": int(speed_bps),
+        })
+
+    elapsed_values = [item["elapsedMs"] for item in runs]
+    speed_values = [item["bytesPerSecond"] for item in runs]
+    summary: dict[str, Any] = {
+        "db": conn.logical_db,
+        "connection": conn.key,
+        "env": conn.env,
+        "engine": engine,
+        "payloadBytes": args.bytes,
+        "sizeIsEstimated": True,
+        "runs": runs,
+        "medianElapsedMs": int(statistics.median(elapsed_values)),
+        "medianBytesPerSecond": int(statistics.median(speed_values)),
+    }
+    fact = tunnel.tunnel_fact_for(conn, engine)
+    if fact:
+        summary["tunnel"] = {
+            "localPort": fact["local_port"],
+            "proxied": fact["proxied"],
+            "proxy": fact["proxy"],
+        }
+
+    if args.format == "json":
+        json.dump(summary, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return EXIT_OK
+
+    target = f"{conn.logical_db}@{conn.env}" if conn.env else conn.logical_db
+    print(
+        f"target: {target} ({engine}) · payload {core.format_bytes(args.bytes)} "
+        f"· {args.runs} run{'s' if args.runs != 1 else ''}"
+    )
+    for item in runs:
+        print(
+            f"run {item['run']}: "
+            f"{core.format_query_stats(item['elapsedMs'], item['downloadBytes'], True)}"
+        )
+    print(
+        f"median: {summary['medianElapsedMs']}ms · "
+        f"avg speed ≈{core.format_bytes(summary['medianBytesPerSecond'])}/s"
+    )
+    tunnel_info = summary.get("tunnel")
+    if tunnel_info:
+        route = (
+            f"proxy {tunnel_info['proxy']}"
+            if tunnel_info["proxied"]
+            else "direct"
+        )
+        print(f"tunnel: {route} · local port {tunnel_info['localPort']}")
+    return EXIT_OK
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     q = core.load_query(args.name)
     conn = core.resolve_connection(q.db, getattr(args, "env", None))
     psql_vars = core.resolve_params(q, collect_args_params(args))
     sql = q.sql
     if args.full:
-        sql = _strip_limit(sql)
+        sql = _strip_limit(sql, connection_engine(conn))
     elif args.limit is not None:
-        sql = _override_limit(sql, args.limit)
+        sql = _override_limit(sql, args.limit, connection_engine(conn))
     if args.strict:
-        rc = core.validate_query(q, conn)
+        rc = core.validate_query(q, conn, use_proxy=(False if getattr(args, "no_proxy", False) else None))
         if rc != EXIT_OK:
             err(f"strict mode: query '{q.name}' failed validation", exit_code=EXIT_STRICT_DRIFT)
     return _execute(conn, sql, psql_vars, args)
@@ -531,6 +832,10 @@ def _format_query_file(q: Query) -> str:
 
 
 def cmd_save(args: argparse.Namespace) -> int:
+    for label, value in (("query name", args.name), ("database key", args.db)):
+        if (not value or value in (".", "..") or "/" in value or "\\" in value
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            err(f"{label} must be a single non-empty filename component", exit_code=EXIT_USAGE)
     if not args.sql and not args.file:
         err("must provide --sql or --file", exit_code=EXIT_USAGE)
     sql = (args.sql if args.sql else _read_sql_file(args.file)).strip()
@@ -656,6 +961,114 @@ def cmd_workspace_remove(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_proxy_status(args: argparse.Namespace) -> int:
+    info = proxy.discover_proxy()
+    ws_list = workspace.WS_LIST
+    tunnels = tunnel.list_tunnels()
+    if getattr(args, "format", "text") == "json":
+        out = {
+            "discovered": ({"host": info.host, "port": info.port, "source": info.source} if info else None),
+            "workspaces": [{"home": str(w.home), "enabled": workspace.is_proxy_enabled(w.home)} for w in ws_list],
+            "tunnels": tunnels,
+        }
+        json.dump(out, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return EXIT_OK
+    if info:
+        source_label = "系统设置(scutil)" if info.source == "system" else "环境变量(ALL_PROXY/HTTPS_PROXY)"
+        print(f"探测到代理: {info.host}:{info.port}  (来源: {source_label})")
+    else:
+        print("未探测到代理(scutil --proxy 与 ALL_PROXY/HTTPS_PROXY 均无)")
+    print("workspace 启用状态:")
+    for w in ws_list:
+        mark = "✓ 已启用" if workspace.is_proxy_enabled(w.home) else "· 未启用"
+        print(f"  {mark}  {w.home}")
+    print("活跃隧道:")
+    if not tunnels:
+        print("  (无)")
+    else:
+        for t in tunnels:
+            proxied_label = f"是 → {t['proxy']}" if t["proxied"] else "否(直连)"
+            alive_label = "存活" if t["alive"] else "已退出"
+            print(f"  {t['ssh_target']} → {t['db_target']}  本地端口 {t['local_port']}  "
+                  f"经代理: {proxied_label}  状态: {alive_label}")
+    return EXIT_OK
+
+
+def _proxy_target_workspace(args: argparse.Namespace) -> Path:
+    return Path(args.workspace).expanduser().resolve() if getattr(args, "workspace", None) else workspace.WS.home
+
+
+def cmd_proxy_on(args: argparse.Namespace) -> int:
+    target = _proxy_target_workspace(args)
+    cfg = workspace.set_proxy_enabled(str(target), True)
+    print(f"✓ 已为 workspace {target} 开启代理 → {cfg}")
+    return EXIT_OK
+
+
+def cmd_proxy_off(args: argparse.Namespace) -> int:
+    target = _proxy_target_workspace(args)
+    cfg = workspace.set_proxy_enabled(str(target), False)
+    print(f"✓ 已为 workspace {target} 关闭代理 → {cfg}")
+    return EXIT_OK
+
+
+def _keepalive_target_workspace(args: argparse.Namespace) -> Path:
+    return Path(args.workspace).expanduser().resolve() if getattr(args, "workspace", None) else workspace.WS.home
+
+
+def cmd_keepalive_up(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    started, pid = keepalive.start(target)
+    action = "started" if started else "already running"
+    print(f"✓ keep-alive {action} for workspace {target} (pid={pid})")
+    return EXIT_OK
+
+
+def cmd_keepalive_down(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    stopped = keepalive.stop(target)
+    print(f"✓ keep-alive {'stopped' if stopped else 'already down'} for workspace {target}")
+    return EXIT_OK
+
+
+def cmd_keepalive_status(args: argparse.Namespace) -> int:
+    target = _keepalive_target_workspace(args)
+    data = keepalive.status(target)
+    if getattr(args, "format", "text") == "json":
+        json.dump(data, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return EXIT_OK
+    keeper = data.get("keeper") or {}
+    print(f"workspace: {data.get('workspace')}")
+    print(f"keep_alive: {'on' if data.get('enabled') else 'off'}")
+    print(f"reconnect: {'on' if data.get('reconnect') else 'off'}")
+    running = keeper.get("running")
+    pid = keeper.get("pid")
+    print(f"keeper: {'running' if running else 'down'}{f' (pid={pid})' if pid else ''}")
+    if data.get("state") == "blocked":
+        reason = data.get("lastError")
+        print(f"configuration: blocked{f'  error: {reason}' if reason else ''}")
+    tunnels = data.get("tunnels") or []
+    if not tunnels:
+        print("tunnels: (none)")
+        return EXIT_OK
+    print("tunnels:")
+    for item in tunnels:
+        state = item.get("state", "down")
+        conn_label = item.get("connection")
+        env = item.get("env")
+        last = item.get("lastError")
+        port = item.get("localPort")
+        line = f"  {conn_label}{('@' + env) if env else ''}: {state}"
+        if port:
+            line += f"  local:{port}"
+        if last and state in {"down", "reconnecting", "blocked"}:
+            line += f"  error: {last}"
+        print(line)
+    return EXIT_OK
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from . import gui
     # workspace already configured in main(); pass through so the server keeps it.
@@ -704,8 +1117,17 @@ def cmd_audit(args: argparse.Namespace) -> int:
 # local — dev containers (qy local up/down/status)
 # ---------------------------------------------------------------------------
 
-def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local.EngineSpec, str | None]:
-    """Map an `up <key>` argument to (logical_db, EngineSpec, group).
+_SQLITE_LOCAL_GUIDANCE = (
+    "SQLite opens an existing local database file and needs no Docker service; "
+    "configure a file with `qy connections add <key> --engine sqlite "
+    "--url sqlite:///data.db --env local`"
+)
+
+
+def _resolve_local_target(
+    arg: str, engine_flag: str | None,
+) -> tuple[str, local.EngineSpec, str | None, str | None]:
+    """Map an `up <key>` argument to logical db, engine, group, and source workspace.
 
     If the argument matches an existing connection (by key or logical db) the
     engine + group come from it; otherwise it is treated as a brand-new logical
@@ -726,54 +1148,102 @@ def _resolve_local_target(arg: str, engine_flag: str | None) -> tuple[str, local
     if match is not None:
         logical = match.logical_db
         eng = connection_engine(match)
+        if eng == "sqlite":
+            err(_SQLITE_LOCAL_GUIDANCE, exit_code=EXIT_USAGE)
         if eng not in local.SPECS:
-            err(f"engine '{eng}' has no local-container support (postgres/redis only)",
+            err(f"engine '{eng}' has no local support (postgres/redis/neptune only)",
                 exit_code=EXIT_USAGE)
         if engine_flag not in (None, "all") and engine_flag != eng:
             err(f"connection '{arg}' is engine {eng}, not {engine_flag}", exit_code=EXIT_USAGE)
-        spec = local.SPECS[eng]
+        spec = local.configured_spec(eng)
         group = match.group
+        source = match.source
     else:
+        if arg.endswith(f"_{local.LOCAL_ENV}"):
+            base = arg.removesuffix(f"_{local.LOCAL_ENV}")
+            err(
+                f"unknown connection '{arg}'. Names ending in '_local' are reserved for "
+                f"generated local connections; use `qy local up {base}` instead.",
+                exit_code=EXIT_USAGE,
+            )
         logical = arg
         eng = engine_flag if engine_flag not in (None, "all") else "postgres"
-        spec = local.SPECS[eng]
+        spec = local.configured_spec(eng)
         group = None
+        source = str(workspace.WS.home)
     if not local.SAFE_DB_RE.match(logical):
         err(f"'{logical}' is not a valid local db name (letters, digits, underscore; "
             "must start with a letter)", exit_code=EXIT_USAGE)
-    return logical, spec, group
+    return logical, spec, group, source
 
 
 def cmd_local_up(args: argparse.Namespace) -> int:
+    if args.engine == "sqlite":
+        err(_SQLITE_LOCAL_GUIDANCE, exit_code=EXIT_USAGE)
+    fixture = getattr(args, "fixture", None)
+    if fixture is not None and (args.engine not in (None, "neptune") or (args.key is None and args.engine != "neptune")):
+        err("--fixture requires a single local Neptune target (--engine neptune)", exit_code=EXIT_USAGE)
     if args.key:
-        logical, spec, group = _resolve_local_target(args.key, args.engine)
-        image = args.image or local.stored_local_image(logical)
-        state = local.start_container(spec, image=image)
-        actual_image = local.container_image(spec.container) or image or spec.default_image
-        print(f"✓ local {spec.engine} container {_state_word(state)} "
-              f"(port {spec.port}, image {actual_image})")
+        logical, spec, group, source = _resolve_local_target(args.key, args.engine)
+        if fixture is not None and spec.engine != "neptune":
+            err("--fixture requires a local Neptune target", exit_code=EXIT_USAGE)
+        image = (None if spec.engine == "neptune" else args.image
+                 or local.stored_local_image(
+                     logical, group=group, workspace_home=source))
+        if getattr(args, "port", None) is not None:
+            spec, state = local.start_on_port(spec, args.port, image=image)
+        elif fixture is not None:
+            state = local.start_neptune_empty(spec, fixture=Path(fixture))
+        else:
+            state = local.start_container(spec, image=image)
+        if spec.engine == "neptune":
+            backend = "mock" if fixture is not None else "empty"
+            print(f"✓ local Neptune {backend} endpoint {_state_word(state)} (HTTPS port {spec.port})")
+        else:
+            actual_image = local.container_image(spec.container) or image or spec.default_image
+            print(f"✓ local {spec.engine} container {_state_word(state)} "
+                  f"(port {spec.port}, image {actual_image})")
         # Register the connection right away so it reflects the container that
         # now exists even if the readiness wait below times out.
-        redis_db = local.source_redis_db(logical) if spec.engine == "redis" else None
-        key, created = local.register_local_connection(
-            logical, spec, image=args.image, group=group, redis_db=redis_db)
-        if created:
-            print(f"✓ registered connection [{key}] (env=local) → {workspace.WS.connections_file}")
+        redis_db = (local.source_redis_db(
+            logical, group=group, workspace_home=source)
+            if spec.engine == "redis" else None)
+        registration = local.register_local_connection(
+            logical, spec, image=args.image, group=group, redis_db=redis_db,
+            workspace_home=source, neptune_backend="mock" if fixture is not None else "empty")
+        if registration.created:
+            print(f"✓ registered connection [{registration.key}] (env=local) → "
+                  f"{registration.workspace / 'connections.toml'}")
+        elif registration.reconciled:
+            print(f"✓ reconciled connection [{registration.key}] (env=local) → "
+                  f"{registration.workspace / 'connections.toml'}")
         else:
-            print(f"· connection [{key}] (env=local) already registered — left unchanged")
+            print(f"· connection [{registration.key}] (env=local) already registered in "
+                  f"{registration.workspace / 'connections.toml'} — reused")
         if spec.engine == "postgres":
             if not local.wait_pg_ready(spec):
                 err("local postgres did not become ready in time", exit_code=EXIT_CONNECTION_ERROR)
-            local.ensure_pg_database(spec, logical)
-            if created:
+            local.ensure_pg_database(spec, registration.database)
+            if registration.created:
                 print(f"· next: `qy local sync {logical}` copies the schema from the remote env")
         return EXIT_OK
 
+    if getattr(args, "port", None) is not None and args.engine not in ("postgres", "redis"):
+        err("--port requires --engine postgres or redis (or a database key)", exit_code=EXIT_USAGE)
     for spec in local.specs_for(args.engine):
-        state = local.start_container(spec, image=args.image)
-        actual_image = local.container_image(spec.container) or args.image or spec.default_image
-        print(f"✓ local {spec.engine} container {_state_word(state)} "
-              f"(port {spec.port}, image {actual_image})")
+        if getattr(args, "port", None) is not None:
+            spec, state = local.start_on_port(spec, args.port, image=args.image)
+        elif fixture is not None:
+            state = local.start_neptune_empty(spec, fixture=Path(fixture))
+        else:
+            state = local.start_container(spec, image=args.image)
+        if spec.engine == "neptune":
+            backend = "mock" if fixture is not None else "empty"
+            print(f"✓ local Neptune {backend} endpoint {_state_word(state)} (HTTPS port {spec.port})")
+        else:
+            actual_image = local.container_image(spec.container) or args.image or spec.default_image
+            print(f"✓ local {spec.engine} container {_state_word(state)} "
+                  f"(port {spec.port}, image {actual_image})")
     return EXIT_OK
 
 
@@ -785,13 +1255,14 @@ def _state_word(state: str) -> str:
 def cmd_local_down(args: argparse.Namespace) -> int:
     for spec in local.specs_for(args.engine):
         res = local.down_engine(spec, purge=args.purge)
+        noun = "endpoint" if spec.engine == "neptune" else "container"
         if res["was"] == "absent":
-            print(f"· local {spec.engine} container not present")
+            print(f"· local {spec.engine} {noun} not present")
             if res["removed_volume"]:
                 print(f"✓ removed volume {spec.volume}")
             continue
         action = "stopped" if res["stopped"] else "already stopped"
-        line = f"✓ local {spec.engine} container {action}"
+        line = f"✓ local {spec.engine} {noun} {action}"
         if args.purge:
             line += " and removed"
         print(line)
@@ -821,11 +1292,20 @@ def cmd_local_status(args: argparse.Namespace) -> int:
         sys.stdout.write("\n")
         return EXIT_OK
     for st in statuses:
+        if st["engine"] == "neptune":
+            if st["running"]:
+                print(f"  ✓ {'neptune':<9} running  port {st['port']}  backend {st['backend']}")
+            else:
+                print("  ✗ neptune   not running — run `qy local up neptune --engine neptune`")
+            continue
         if not st["docker"]:
             print(f"  ? {st['engine']:<9} docker unavailable")
             continue
         if st["running"]:
             print(f"  ✓ {st['engine']:<9} running  port {st['port']}  image {st['image']}")
+        elif st.get("port_conflict"):
+            print(f"  ✗ {st['engine']:<9} not running; port {st['port']} is occupied by {st['port_owner']} — "
+                  f"run `qy local up --engine {st['engine']} --port <free-port>`")
         else:
             data_note = " (data volume present)" if st["volume_exists"] else ""
             print(f"  ✗ {st['engine']:<9} not running{data_note} — "
@@ -833,26 +1313,201 @@ def cmd_local_status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_local_neptune_calls(args: argparse.Namespace) -> int:
+    if args.after < 0:
+        err("--after must be a non-negative integer", exit_code=EXIT_USAGE)
+    result = local.neptune_mock_calls(local.configured_spec("neptune"), after=args.after)
+    if args.format == "json":
+        json.dump(result, sys.stdout, indent=2 if sys.stdout.isatty() else None, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        for call in result["calls"]:
+            print(f"{call['sequence']} {'matched' if call['matched'] else 'unmatched'} "
+                  f"{call['query']}  parameters={json.dumps(call['parameters'], ensure_ascii=False)}")
+        print(f"cursor: {result['next']}")
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # argparse plumbing
 # ---------------------------------------------------------------------------
+
+def cmd_ai_configure(args: argparse.Namespace) -> int:
+    import getpass
+
+    from .assistant_config import config_details, configure_model, load_model_config
+
+    key = sys.stdin.read(8194).strip() if args.api_key_stdin else None
+    base_url, model = args.base_url, args.model
+    key_env, no_key, bifrost = args.api_key_env, args.no_key, args.bifrost
+    thinking = args.thinking
+    needs_input = not base_url or not model or not (key_env or args.api_key_stdin or no_key)
+    if needs_input:
+        if not sys.stdin.isatty():
+            raise QuarryError("Interactive configuration needs a terminal. Provide --base-url, --model and a key option; see `qy ai configure --help`.")
+        current = config_details()
+
+        def ask(label, default=""):
+            suffix = f" [{default}]" if default else ""
+            return input(f"{label}{suffix}: ").strip() or default
+
+        try:
+            base_url = base_url or ask("Base URL", current.get("base_url", ""))
+            model = model or ask("Model", current.get("model", ""))
+            if not (key_env or args.api_key_stdin or no_key):
+                key = getpass.getpass("API key (hidden; blank keeps the current key): ").strip()
+                if not key:
+                    key = None
+                    if current.get("auth") == "env":
+                        key_env = current.get("api_key_env")
+                    elif current.get("auth") == "none":
+                        no_key = True
+                    elif current.get("configured"):
+                        key = load_model_config().api_key
+                    else:
+                        raise QuarryError("An API key is required; for a local endpoint without authentication use --no-key.")
+            if not bifrost:
+                default = "y" if current.get("bifrost") else "n"
+                bifrost = ask("Use Bifrost virtual-key headers? (y/n)", default).lower() in ("y", "yes")
+            thinking = thinking or current.get("thinking", "default")
+        except (EOFError, KeyboardInterrupt):
+            raise QuarryError("Model configuration cancelled.") from None
+    result = configure_model(base_url=base_url, model=model,
+                             api_key_env=key_env, api_key=key,
+                             no_key=no_key, bifrost=bifrost,
+                             thinking=thinking or "default", timeout=args.timeout)
+    print(f"SQL assistant configured: {result['model']}")
+    if not result["configured"]:
+        print("API key is not available in this environment yet.", file=sys.stderr)
+    return EXIT_OK
+
+
+def cmd_ai_show(args: argparse.Namespace) -> int:
+    from .assistant_config import config_details
+
+    print(json.dumps(config_details(), indent=2, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_ai_language(args: argparse.Namespace) -> int:
+    from .assistant_config import gui_preferences, set_reply_language
+
+    result = set_reply_language(args.language) if args.language else gui_preferences()
+    print(json.dumps(result, indent=2))
+    return EXIT_OK
+
+
+def cmd_ai_generate(args: argparse.Namespace) -> int:
+    from . import assistant
+    from .assistant_config import load_model_config
+
+    load_model_config()  # fail before touching a database or creating history
+    sql = args.sql or ""
+    if args.file:
+        sql = sys.stdin.read(assistant.MAX_SQL + 1) if args.file == "-" else _read_sql_file(args.file)
+    explain = args.ai_cmd == "explain"
+    if explain and not sql.strip():
+        raise QuarryError("Provide SQL with --sql or --file (use --file - for stdin).")
+    conversation = assistant.create_conversation({"db": args.db, "env": args.env, "sql": sql})
+    body = {"conversationId": conversation["id"], "revision": conversation["revision"], "sql": sql,
+            "prompt": assistant.DEFAULT_EXPLAIN_PROMPT if explain else args.prompt, "explain": explain}
+    output = ""
+    proposal = None
+    completed = None
+    for event in assistant.stream_chat(body):
+        if event["type"] == "text_delta":
+            output += event["delta"]
+            if explain and args.format == "text":
+                print(event["delta"], end="", flush=True)
+        elif event["type"] == "sql_proposal":
+            proposal = event["sql"]
+        elif event["type"] == "error":
+            if explain and args.format == "text" and output:
+                print()
+            raise QuarryError(event["error"])
+        elif event["type"] == "done":
+            completed = event["conversation"]
+    if completed is None:
+        raise QuarryError("Assistant reply did not complete.")
+    if args.format == "json":
+        print(json.dumps({"conversationId": completed["id"], "text": output, "sql": proposal}, ensure_ascii=False))
+    elif explain:
+        print()
+    elif proposal:
+        print(proposal)
+    else:
+        print(output, file=sys.stderr)  # clarification is not SQL on stdout
+    return EXIT_OK
+
+
+def _positive_int(raw: str) -> int:
+    """argparse `type=` for --timeout: reject 0/negative up front with a clear
+    usage error, instead of silently reaching PG's `max(1, ...)` statement_timeout
+    floor (issue #94 review r1-3) where e.g. --timeout 0 would cancel almost
+    every query in ~1ms instead of failing fast with an explanation."""
+    try:
+        val = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {raw!r}") from None
+    if val <= 0:
+        raise argparse.ArgumentTypeError(f"timeout must be a positive integer (seconds), got {val}")
+    return val
+
 
 def _add_safety_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--env", default=None, help="Target env for an env-set (dev/prod/jp; default: dev)")
     p.add_argument("--write", action="store_true", help="Allow write/DDL (off by default — read-only)")
     p.add_argument("--yes", action="store_true", help="Skip the prod-write confirmation prompt")
-    p.add_argument("--max-rows", type=int, default=None,
-                   help="Cap rows when SQL has no LIMIT (safety; default: unlimited for CLI)")
+    p.add_argument("--max-rows", type=int, default=core.DEFAULT_MAX_ROWS,
+                   help="Cap rows when the outer query has no LIMIT (default: 500; 0: unlimited)")
+    p.add_argument("--timeout", type=_positive_int, default=None,
+                   help="Query execution timeout in seconds (env: QUARRY_TIMEOUT; "
+                        "connections.toml `timeout`; default: 300s)")
+    p.add_argument("--no-proxy", action="store_true",
+                   help="Skip the workspace's proxy (see `qy proxy`) for this call only")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qy",
-        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, Neptune)",
+        description="Quarry — multi-engine database query tool (PostgreSQL, MySQL, SQLite, Redis, Neptune)",
     )
     parser.add_argument("--workspace", default=None,
-                        help="Workspace dir (connections.toml + queries/); overrides $QUARRY_WORKSPACE")
+                        help="Workspace dir (connections.toml + queries/); overrides config.toml")
+    parser.add_argument("--skill-dir", default=None,
+                        help="Expose query links at <skill-dir>/queries/<workspace-name> before running")
     sub = parser.add_subparsers(dest="cmd", required=True, metavar="<command>")
+
+    ai = sub.add_parser("ai", help="Explain and write SQL using a configured model")
+    ai_sub = ai.add_subparsers(dest="ai_cmd", required=True)
+    ai_config = ai_sub.add_parser("configure", help="Configure the model endpoint (CLI only)")
+    ai_config.add_argument("--base-url", help="OpenAI-compatible base URL, including /v1 when required")
+    ai_config.add_argument("--model")
+    auth = ai_config.add_mutually_exclusive_group()
+    auth.add_argument("--api-key-env", help="Read the key from this environment variable at request time")
+    auth.add_argument("--api-key-stdin", action="store_true", help="Read a key from stdin and save it privately on this computer")
+    auth.add_argument("--no-key", action="store_true", help="Use an endpoint that does not require an API key")
+    ai_config.add_argument("--bifrost", action="store_true", help="Send the configured key as x-bf-vk as well as Bearer")
+    ai_config.add_argument("--thinking", choices=["default", "disabled"])
+    ai_config.add_argument("--timeout", type=_positive_int, default=30, help="Model connect/read timeout in seconds (1–300)")
+    ai_config.set_defaults(func=cmd_ai_configure)
+    ai_sub.add_parser("show", help="Show model configuration with the API key masked").set_defaults(func=cmd_ai_show)
+    language = ai_sub.add_parser("language", help="Show or change the GUI assistant reply language (CLI replies are unaffected)")
+    language.add_argument("language", nargs="?", choices=["zh", "en", "system", "auto"],
+                          help="zh: Simplified Chinese; en: English; system: follow the Quarry server OS language (default); auto: legacy alias for system")
+    language.set_defaults(func=cmd_ai_language)
+    for action in ("explain", "sql"):
+        command = ai_sub.add_parser(action, help="Explain existing SQL" if action == "explain" else "Generate or revise SQL without executing it")
+        command.add_argument("--db", required=True, help="Target logical database or connection key")
+        command.add_argument("--env", default=None)
+        source = command.add_mutually_exclusive_group()
+        source.add_argument("--sql", help="Current SQL to explain or revise")
+        source.add_argument("--file", help="Read current SQL from a file; - reads stdin")
+        command.add_argument("--format", choices=["text", "json"] if action == "explain" else ["sql", "json"],
+                             default="text" if action == "explain" else "sql")
+        if action == "sql":
+            command.add_argument("prompt", help="Describe the query or change you want")
+        command.set_defaults(func=cmd_ai_generate)
 
     p_conn = sub.add_parser("connections", help="Manage DB connections (list/add/set/remove/test)")
     p_conn.add_argument("--format", choices=["table", "json"], default="table")
@@ -864,19 +1519,43 @@ def build_parser() -> argparse.ArgumentParser:
     p_ca = conn_sub.add_parser("add", help="Add a new connection (errors if exists)")
     p_ca.add_argument("key")
     p_ca.add_argument("--url", required=True)
-    p_ca.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
+    p_ca.add_argument("--engine", choices=["postgres", "mysql", "sqlite", "neptune"], default=None)
     p_ca.add_argument("--region", default=None)
+    p_ca.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
+                       help="Explicit production classification (independent of env name)")
     p_ca.add_argument("--env", default=None)
+    p_ca.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
+    p_ca.add_argument("--group", default=None, help="Sidebar project folder")
     p_ca.add_argument("--notes", default=None)
+    p_ca.add_argument("--timeout", type=_positive_int, default=None,
+                       help="Query execution timeout in seconds for this connection")
+    p_ca.add_argument("--ssh-host", default=None, help="SSH bastion host to tunnel through")
+    p_ca.add_argument("--ssh-user", default=None)
+    p_ca.add_argument("--ssh-key", default=None, help="Path to the SSH private key")
+    p_ca.add_argument("--ssh-port", type=int, default=None)
+    p_ca.add_argument("--force", action="store_true",
+                       help="Write anyway despite a host:port conflict with an existing connection")
     p_ca.add_argument("--no-test", action="store_true")
     p_ca.set_defaults(func=cmd_connections_add)
     p_cs = conn_sub.add_parser("set", help="Add or update a connection (upsert)")
     p_cs.add_argument("key")
     p_cs.add_argument("--url", default=None)
-    p_cs.add_argument("--engine", choices=["postgres", "mysql", "neptune"], default=None)
+    p_cs.add_argument("--engine", choices=["postgres", "mysql", "sqlite", "neptune"], default=None)
     p_cs.add_argument("--region", default=None)
+    p_cs.add_argument("--production", action=argparse.BooleanOptionalAction, default=None,
+                       help="Explicit production classification (independent of env name)")
     p_cs.add_argument("--env", default=None)
+    p_cs.add_argument("--db", default=None, help="Logical database identity shared by env siblings")
+    p_cs.add_argument("--group", default=None, help="Sidebar project folder")
     p_cs.add_argument("--notes", default=None)
+    p_cs.add_argument("--timeout", type=_positive_int, default=None,
+                       help="Query execution timeout in seconds for this connection")
+    p_cs.add_argument("--ssh-host", default=None, help="SSH bastion host to tunnel through")
+    p_cs.add_argument("--ssh-user", default=None)
+    p_cs.add_argument("--ssh-key", default=None, help="Path to the SSH private key")
+    p_cs.add_argument("--ssh-port", type=int, default=None)
+    p_cs.add_argument("--force", action="store_true",
+                       help="Write anyway despite a host:port conflict with an existing connection")
     p_cs.add_argument("--no-test", action="store_true")
     p_cs.set_defaults(func=cmd_connections_set)
     p_cr = conn_sub.add_parser("remove", help="Delete a connection")
@@ -887,6 +1566,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_ct.add_argument("key")
     p_ct.add_argument("--env", default=None, help="Target env for an env-set")
     p_ct.set_defaults(func=cmd_connections_test)
+
+    p = sub.add_parser(
+        "ping", help="Lightweight reachability probe for configured connection(s)")
+    p.add_argument("key", nargs="?", help="Connection key / logical db to probe")
+    p.add_argument("--all", action="store_true", help="Probe every configured connection")
+    p.add_argument("--env", default=None, help="Target env for an env-set")
+    p.add_argument("--timeout", type=_positive_int, default=None,
+                   help=f"Probe timeout in seconds (default: {DEFAULT_PING_TIMEOUT_SEC}s)")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_ping)
 
     p = sub.add_parser("list", help="List saved named queries")
     p.add_argument("--db")
@@ -927,6 +1616,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["json", "ndjson", "csv", "table"], default="json")
     _add_safety_flags(p)
     p.set_defaults(func=cmd_exec)
+
+    p = sub.add_parser(
+        "speedtest",
+        help="Measure the current PostgreSQL/MySQL tunnel path with a generated payload",
+    )
+    p.add_argument("db_key")
+    p.add_argument("--env", default=None, help="Target env for an env-set (default: dev)")
+    p.add_argument(
+        "--bytes",
+        type=int,
+        default=1_000_000,
+        help="Generated result payload in bytes (default: 1000000; max: 100000000)",
+    )
+    p.add_argument("--runs", type=int, default=3, help="Number of samples (default: 3; max: 20)")
+    p.add_argument("--timeout", type=_positive_int, default=None, help="Per-run query timeout in seconds")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+    p.set_defaults(func=cmd_speedtest)
 
     p = sub.add_parser("save", help="Save a named query")
     p.add_argument("name")
@@ -976,26 +1682,70 @@ def build_parser() -> argparse.ArgumentParser:
     p_wr.add_argument("dir")
     p_wr.set_defaults(func=cmd_workspace_remove)
 
+    p_proxy = sub.add_parser(
+        "proxy", help="Diagnose / toggle the workspace-level ssh & Neptune HTTP(S) proxy (issue #96)")
+    p_proxy.set_defaults(func=cmd_proxy_status, format="text")
+    proxy_sub = p_proxy.add_subparsers(dest="proxy_cmd", metavar="<subcommand>")
+    p_pst = proxy_sub.add_parser("status", help="Show discovered proxy + per-workspace enabled state (default)")
+    p_pst.add_argument("--format", choices=["text", "json"], default="text")
+    p_pst.set_defaults(func=cmd_proxy_status)
+    p_pon = proxy_sub.add_parser("on", help="Enable the proxy for a workspace")
+    # default=SUPPRESS (not None): the global --workspace flag already populates
+    # args.workspace before the subparser runs — if this local flag isn't given,
+    # it must stay out of the namespace entirely, or its own default would
+    # clobber the value the global flag just set.
+    p_pon.add_argument("--workspace", default=argparse.SUPPRESS,
+                       help="Workspace dir (default: the primary workspace)")
+    p_pon.set_defaults(func=cmd_proxy_on)
+    p_poff = proxy_sub.add_parser("off", help="Disable the proxy for a workspace")
+    p_poff.add_argument("--workspace", default=argparse.SUPPRESS,
+                        help="Workspace dir (default: the primary workspace)")
+    p_poff.set_defaults(func=cmd_proxy_off)
+
+    p_up = sub.add_parser("up", help="Start the workspace tunnel keep-alive process")
+    p_up.add_argument("--workspace", default=argparse.SUPPRESS,
+                      help="Workspace dir (default: the primary workspace)")
+    p_up.set_defaults(func=cmd_keepalive_up)
+    p_down = sub.add_parser("down", help="Stop the workspace tunnel keep-alive process")
+    p_down.add_argument("--workspace", default=argparse.SUPPRESS,
+                        help="Workspace dir (default: the primary workspace)")
+    p_down.set_defaults(func=cmd_keepalive_down)
+    p_status = sub.add_parser("status", help="Show workspace tunnel keep-alive status")
+    p_status.add_argument("--format", choices=["text", "json"], default="text")
+    p_status.add_argument("--workspace", default=argparse.SUPPRESS,
+                          help="Workspace dir (default: the primary workspace)")
+    p_status.set_defaults(func=cmd_keepalive_status)
+
     p_local = sub.add_parser(
-        "local", help="Manage local dev containers (postgres/redis) for env=local connections")
+        "local", help="Manage local dev services for env=local connections")
     local_sub = p_local.add_subparsers(dest="local_cmd", metavar="<subcommand>", required=True)
     p_lu = local_sub.add_parser(
-        "up", help="Start local container(s); with a key, auto-register an env=local connection")
+        "up", help="Start local services; with a key, auto-register an env=local connection")
     p_lu.add_argument("key", nargs="?",
                       help="Connection key / logical db to bring up + auto-register (env=local)")
-    p_lu.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_lu.add_argument("--engine", choices=["postgres", "redis", "neptune", "sqlite", "all"], default=None)
     p_lu.add_argument("--image", default=None, help="Override the container image tag")
+    p_lu.add_argument("--port", type=_positive_int, default=None,
+                      help="Persist a local Docker port; update managed connections in loaded workspaces")
+    p_lu.add_argument("--fixture", type=Path,
+                      help="Start only Neptune in strict mock mode with JSON query responses")
     p_lu.set_defaults(func=cmd_local_up)
     p_ld = local_sub.add_parser(
         "down", help="Stop local container(s); --purge also deletes the data volume")
-    p_ld.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_ld.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_ld.add_argument("--purge", action="store_true",
                       help="Also delete the named data volume (destroys local data)")
     p_ld.set_defaults(func=cmd_local_down)
     p_ls = local_sub.add_parser("status", help="Show local container status (running / port / image)")
-    p_ls.add_argument("--engine", choices=["postgres", "redis", "all"], default=None)
+    p_ls.add_argument("--engine", choices=["postgres", "redis", "neptune", "all"], default=None)
     p_ls.add_argument("--format", choices=["text", "json"], default="text")
     p_ls.set_defaults(func=cmd_local_status)
+    p_lcalls = local_sub.add_parser(
+        "neptune-calls", help="Read the opt-in local Neptune mock's openCypher calls")
+    p_lcalls.add_argument("--after", type=int, default=0,
+                          help="Only show calls after this cursor (default: 0)")
+    p_lcalls.add_argument("--format", choices=["text", "json"], default="text")
+    p_lcalls.set_defaults(func=cmd_local_neptune_calls)
     p_lsync = local_sub.add_parser(
         "sync", help="Copy schema from a remote env into the local database via a "
                      "staging db + rename swap (postgres only)")
@@ -1012,6 +1762,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser("mcp", help="Serve the MCP face over stdio (for AI agents)")
+    p.add_argument("--workspace", default=argparse.SUPPRESS, help="Workspace directory")
     p.add_argument("--write", action="store_true",
                    help="Allow tool calls to request writes (per-call opt-in still required)")
     p.set_defaults(func=cmd_mcp)
@@ -1023,7 +1774,13 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     workspace.configure_workspace(args.workspace)
+    cache.load()
     try:
+        if args.skill_dir:
+            try:
+                workspace.ensure_skill_links(args.skill_dir)
+            except (OSError, ValueError, RuntimeError) as exc:
+                err(f"cannot create skill query links: {exc}", exit_code=EXIT_USAGE)
         return args.func(args)
     except QuarryError as exc:
         print(f"quarry: {exc}", file=sys.stderr)

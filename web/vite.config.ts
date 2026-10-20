@@ -3,9 +3,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base: "/app/",
+  base: "/quarry/",
   build: {
     outDir: "../src/quarry/web_dist",
     emptyOutDir: true,
+  },
+  test: {
+    setupFiles: ["./src/test-setup.ts"],
   },
 });

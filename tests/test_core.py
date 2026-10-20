@@ -94,6 +94,8 @@ def test_run_query_returns_rows(ws):
     assert res.engine == "postgres"
     assert res.elapsed_ms >= 0
     assert res.truncated is False
+    assert res.download_bytes > 0
+    assert res.size_is_estimated is True
 
 
 @requires_db

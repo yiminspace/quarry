@@ -229,29 +229,31 @@ class TestPureHelpers:
         args = argparse.Namespace(write=True, yes=False)
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
-    def test_confirm_prod_write_readonly_is_auto_ok(self):
+    def test_confirm_prod_write_opt_in_requires_confirmation_even_for_select(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=False)
-        # a read-only statement never needs confirmation, even on prod
-        assert cli._confirm_prod_write(conn, "SELECT 1", args) is True
+        import io
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
+        # SELECT can call a writing function after the DB read-only guard is lifted.
+        assert cli._confirm_prod_write(conn, "SELECT 1", args) is False
 
     def test_confirm_prod_write_yes_flag_skips_prompt(self):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=True)
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
     def test_confirm_prod_write_prompt_yes(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="PROD")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="jp", production=True)
         args = argparse.Namespace(write=True, yes=False)
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("y\n"))
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is True
 
     def test_confirm_prod_write_prompt_no(self, monkeypatch):
         import argparse
-        conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+        conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
         args = argparse.Namespace(write=True, yes=False)
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
         assert cli._confirm_prod_write(conn, "DELETE FROM t", args) is False
@@ -289,7 +291,7 @@ class TestConnectionsMgmt:
         # two members sharing db=shop with distinct envs -> the env-labelled line
         (wsdir / "connections.toml").write_text(
             '[shop_dev]\nurl = "postgresql://localhost/x"\ndb="shop"\nenv="dev"\n'
-            '[shop_prod]\nurl = "postgresql://localhost/y"\ndb="shop"\nenv="prod"\n',
+            '[shop_prod]\nurl = "postgresql://localhost/y"\ndb="shop"\nenv="prod"\nproduction=true\n',
             encoding="utf-8")
         assert run_cli(wsdir, "connections", "list") == EXIT_OK
         out = capsys.readouterr().out
@@ -297,7 +299,8 @@ class TestConnectionsMgmt:
 
     def test_connections_add_and_duplicate(self, wsdir, capsys):
         rc = run_cli(wsdir, "connections", "add", "extra", "--url",
-                     "postgresql://localhost:5432/quarry_test", "--no-test", "--notes", "hi")
+                     "postgresql://localhost:5432/quarry_test", "--no-test", "--notes", "hi",
+                     "--force")  # shares host:port with the seeded testpg connection
         assert rc == EXIT_OK
         assert "added connection [extra]" in capsys.readouterr().out
         # the connection is now visible + persisted
@@ -305,7 +308,7 @@ class TestConnectionsMgmt:
         assert "extra" in conns and conns["extra"].notes == "hi"
         # adding it again is a usage error (add refuses to overwrite)
         rc = run_cli(wsdir, "connections", "add", "extra", "--url",
-                     "postgresql://localhost:5432/quarry_test", "--no-test")
+                     "postgresql://localhost:5432/quarry_test", "--no-test", "--force")
         assert rc == EXIT_USAGE
 
     def test_connections_add_invalid_key(self, wsdir):
@@ -315,13 +318,14 @@ class TestConnectionsMgmt:
 
     def test_connections_set_upsert(self, wsdir, capsys):
         # set on a brand-new key (upsert) — requires --url
+        # shares host:port with the seeded testpg connection -> needs --force
         rc = run_cli(wsdir, "connections", "set", "s1", "--url",
                      "postgresql://localhost:5432/quarry_test",
-                     "--engine", "postgres", "--notes", "n", "--no-test")
+                     "--engine", "postgres", "--notes", "n", "--no-test", "--force")
         assert rc == EXIT_OK
         assert "added connection [s1]" in capsys.readouterr().out
         # update an existing key: change notes only
-        rc = run_cli(wsdir, "connections", "set", "s1", "--notes", "changed", "--no-test")
+        rc = run_cli(wsdir, "connections", "set", "s1", "--notes", "changed", "--no-test", "--force")
         assert rc == EXIT_OK
         assert "updated connection [s1]" in capsys.readouterr().out
         assert core.load_connections()["s1"].notes == "changed"
@@ -334,16 +338,123 @@ class TestConnectionsMgmt:
     def test_connections_set_region_and_env(self, wsdir):
         run_cli(wsdir, "connections", "set", "r1", "--url",
                 "postgresql://localhost/x", "--region", "us-east-1",
-                "--env", "prod", "--no-test")
+                "--env", "prod", "--no-test", "--force")
         c = core.load_connections()["r1"]
         assert c.region == "us-east-1" and c.env == "prod"
 
     def test_connections_add_with_region_and_env(self, wsdir):
         run_cli(wsdir, "connections", "add", "a1", "--url",
                 "postgresql://localhost/x", "--region", "eu-west-1",
-                "--env", "dev", "--no-test")
+                "--env", "dev", "--no-test", "--force")
         c = core.load_connections()["a1"]
         assert c.region == "eu-west-1" and c.env == "dev"
+
+    def test_connections_add_and_set_explicit_production(self, wsdir):
+        run_cli(wsdir, "connections", "add", "jp1", "--url",
+                "postgresql://localhost/x", "--env", "jp", "--production",
+                "--no-test", "--force")
+        assert core.load_connections()["jp1"].production is True
+
+        run_cli(wsdir, "connections", "set", "jp1", "--no-production",
+                "--no-test", "--force")
+        assert core.load_connections()["jp1"].production is False
+
+    def test_connections_add_accepts_explicit_db_and_group(self, wsdir):
+        run_cli(wsdir, "connections", "add", "shop_dev", "--url",
+                "postgresql://dev.example.com/shop", "--env", "dev",
+                "--db", "shop", "--group", "commerce", "--no-test")
+        c = core.load_connections()["shop_dev"]
+        assert c.logical_db == "shop" and c.group == "commerce"
+
+    def test_connections_add_inherits_env_set_identity(self, wsdir):
+        (wsdir / "connections.toml").write_text(
+            '[shop_dev]\nurl = "postgresql://dev.example.com/shop"\n'
+            'env = "dev"\ndb = "shop"\ngroup = "commerce"\n',
+            encoding="utf-8",
+        )
+        run_cli(wsdir, "connections", "add", "shop_prod", "--url",
+                "postgresql://prod.example.com/shop", "--env", "prod", "--no-test")
+        c = core.load_connections()["shop_prod"]
+        assert c.logical_db == "shop" and c.group == "commerce"
+
+    def test_connections_set_can_heal_identity_from_sibling(self, wsdir):
+        (wsdir / "connections.toml").write_text(
+            '[queue_local]\nurl = "redis://localhost:6379/0"\nengine = "redis"\n'
+            'env = "local"\ndb = "queue"\ngroup = "brain"\n'
+            '[queue]\nurl = "redis://dev.example.com:6379/0"\nengine = "redis"\nenv = "dev"\n',
+            encoding="utf-8",
+        )
+        run_cli(wsdir, "connections", "set", "queue", "--notes", "healed", "--no-test")
+        c = core.load_connections()["queue"]
+        assert c.logical_db == "queue" and c.group == "brain"
+
+    # -- issue #94: configurable per-connection query timeout ---------------
+
+    def test_connections_add_with_timeout(self, wsdir):
+        run_cli(wsdir, "connections", "add", "t1", "--url",
+                "postgresql://localhost/x", "--timeout", "45", "--no-test", "--force")
+        assert core.load_connections()["t1"].timeout == 45
+
+    def test_connections_set_updates_timeout(self, wsdir):
+        run_cli(wsdir, "connections", "set", "t2", "--url",
+                "postgresql://localhost/x", "--no-test", "--force")
+        assert core.load_connections()["t2"].timeout is None
+        run_cli(wsdir, "connections", "set", "t2", "--timeout", "90", "--no-test", "--force")
+        assert core.load_connections()["t2"].timeout == 90
+
+    # -- issue #76: local-misconfig / port-conflict guardrails --------------
+
+    def _seed_local_shadow_db(self, wsdir):
+        (wsdir / "connections.toml").write_text(
+            (wsdir / "connections.toml").read_text(encoding="utf-8")
+            + '\n[shop_local]\nurl = "postgresql://127.0.0.1:5433/shop"\nenv = "local"\n'
+              'local_image = "postgres:16-alpine"\n',
+            encoding="utf-8",
+        )
+
+    def test_connections_add_port_conflict_blocked_without_force(self, wsdir):
+        # message content (occupant key + local_image) is covered at the
+        # core.check_connection_write level; here we only check the CLI wiring
+        self._seed_local_shadow_db(wsdir)
+        rc = run_cli(wsdir, "connections", "add", "shop", "--url",
+                     "postgresql://localhost:5433/shop", "--no-test")
+        assert rc == EXIT_USAGE
+        assert "shop" not in core.load_connections()
+
+    def test_connections_add_port_conflict_forced(self, wsdir):
+        self._seed_local_shadow_db(wsdir)
+        rc = run_cli(wsdir, "connections", "add", "shop", "--url",
+                     "postgresql://localhost:5433/shop", "--no-test", "--force")
+        assert rc == EXIT_OK
+        assert "shop" in core.load_connections()
+
+    def test_connections_add_loopback_without_ssh_warns(self, wsdir, capsys):
+        rc = run_cli(wsdir, "connections", "add", "svc", "--url",
+                     "postgresql://127.0.0.1:5555/svc", "--no-test")
+        assert rc == EXIT_OK
+        err = capsys.readouterr().err
+        assert "loopback" in err and "--ssh-host" in err
+
+    def test_connections_add_loopback_with_ssh_host_suppresses_warning(self, wsdir, capsys):
+        rc = run_cli(wsdir, "connections", "add", "svc2", "--url",
+                     "postgresql://127.0.0.1:5556/svc", "--ssh-host", "bastion.example.com",
+                     "--ssh-user", "ubuntu", "--no-test")
+        assert rc == EXIT_OK
+        assert "loopback" not in capsys.readouterr().err
+        c = core.load_connections()["svc2"]
+        assert c.ssh_host == "bastion.example.com" and c.ssh_user == "ubuntu"
+
+    def test_connections_add_env_local_naming_hint(self, wsdir, capsys):
+        rc = run_cli(wsdir, "connections", "add", "shop", "--url",
+                     "postgresql://db.internal.example.com:5432/shop", "--env", "local", "--no-test")
+        assert rc == EXIT_OK
+        assert "shop_local" in capsys.readouterr().err
+
+    def test_connections_add_env_local_suffix_no_hint(self, wsdir, capsys):
+        rc = run_cli(wsdir, "connections", "add", "shop_local", "--url",
+                     "postgresql://db.internal.example.com:5432/shop", "--env", "local", "--no-test")
+        assert rc == EXIT_OK
+        assert "naming convention" not in capsys.readouterr().err
 
     def test_connections_set_new_key_without_url_errors(self, wsdir):
         rc = run_cli(wsdir, "connections", "set", "brandnew", "--notes", "x", "--no-test")
@@ -356,7 +467,7 @@ class TestConnectionsMgmt:
 
     def test_connections_remove_with_yes(self, wsdir, capsys):
         run_cli(wsdir, "connections", "set", "goner", "--url",
-                "postgresql://localhost/x", "--no-test")
+                "postgresql://localhost/x", "--no-test", "--force")
         assert "goner" in core.load_connections()
         rc = run_cli(wsdir, "connections", "remove", "goner", "--yes")
         assert rc == EXIT_OK
@@ -368,7 +479,7 @@ class TestConnectionsMgmt:
 
     def test_connections_remove_prompt_confirm(self, wsdir, monkeypatch):
         run_cli(wsdir, "connections", "set", "byebye", "--url",
-                "postgresql://localhost/x", "--no-test")
+                "postgresql://localhost/x", "--no-test", "--force")
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("y\n"))
         assert run_cli(wsdir, "connections", "remove", "byebye") == EXIT_OK  # no --yes -> prompt
         assert "byebye" not in core.load_connections()
@@ -520,7 +631,7 @@ class TestListDescribeAudit:
 
     def test_connections_remove_prompt_abort(self, wsdir, monkeypatch):
         run_cli(wsdir, "connections", "set", "keeper", "--url",
-                "postgresql://localhost/x", "--no-test")
+                "postgresql://localhost/x", "--no-test", "--force")
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO("n\n"))
         assert run_cli(wsdir, "connections", "remove", "keeper") == EXIT_USAGE
         assert "keeper" in core.load_connections()  # abort kept it
@@ -582,6 +693,242 @@ class TestWorkspaceCmds:
     def test_workspace_remove_not_found(self, wsdir, tmp_path, monkeypatch):
         monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
         assert run_cli(wsdir, "workspace", "remove", str(tmp_path / "nope")) == EXIT_USAGE
+
+
+# ===========================================================================
+# proxy — `qy proxy [status|on|off]` + `--no-proxy` override (issue #96)
+# ===========================================================================
+
+@pytest.mark.unit
+class TestProxyCmds:
+    def test_proxy_status_no_discovery_no_workspaces_enabled(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(proxy_mod, "discover_proxy", lambda: None)
+        assert run_cli(wsdir, "proxy") == EXIT_OK
+        out = capsys.readouterr().out
+        assert "未探测到代理" in out
+        assert "未启用" in out
+
+    def test_proxy_status_json_includes_discovery_and_workspaces(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(
+            proxy_mod, "discover_proxy",
+            lambda: proxy_mod.ProxyInfo(host="127.0.0.1", port=7890, source="system"),
+        )
+        assert run_cli(wsdir, "proxy", "status", "--format", "json") == EXIT_OK
+        obj = json.loads(capsys.readouterr().out)
+        assert obj["discovered"] == {"host": "127.0.0.1", "port": 7890, "source": "system"}
+        assert any(w["home"] == str(wsdir.resolve()) for w in obj["workspaces"])
+        assert all(w["enabled"] is False for w in obj["workspaces"])
+
+    def test_proxy_status_text_lists_active_tunnels(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        from quarry import tunnel as tunnel_mod
+        monkeypatch.setattr(tunnel_mod, "list_tunnels", lambda: [
+            {"ssh_target": "ec2-user@bastion.example.com:22", "db_target": "db.internal:5432",
+             "local_port": 54321, "proxied": True, "proxy": "127.0.0.1:6152", "alive": True},
+        ])
+        assert run_cli(wsdir, "proxy") == EXIT_OK
+        out = capsys.readouterr().out
+        assert "活跃隧道" in out
+        assert "bastion.example.com" in out and "54321" in out and "127.0.0.1:6152" in out
+
+    def test_proxy_status_text_no_tunnels(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        from quarry import tunnel as tunnel_mod
+        monkeypatch.setattr(tunnel_mod, "list_tunnels", lambda: [])
+        assert run_cli(wsdir, "proxy") == EXIT_OK
+        assert "(无)" in capsys.readouterr().out
+
+    def test_proxy_status_json_includes_tunnels(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        from quarry import tunnel as tunnel_mod
+        fake_tunnels = [
+            {"ssh_target": "ec2-user@bastion.example.com:22", "db_target": "db.internal:5432",
+             "local_port": 54321, "proxied": False, "proxy": None, "alive": True},
+        ]
+        monkeypatch.setattr(tunnel_mod, "list_tunnels", lambda: fake_tunnels)
+        assert run_cli(wsdir, "proxy", "status", "--format", "json") == EXIT_OK
+        obj = json.loads(capsys.readouterr().out)
+        assert obj["tunnels"] == fake_tunnels
+
+    def test_proxy_on_off_persist_and_are_read_back(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        assert run_cli(wsdir, "proxy", "on") == EXIT_OK
+        assert "开启代理" in capsys.readouterr().out
+        assert workspace.is_proxy_enabled(wsdir) is True
+
+        # a fresh status call reflects the persisted toggle
+        assert run_cli(wsdir, "proxy") == EXIT_OK
+        assert "已启用" in capsys.readouterr().out
+
+        assert run_cli(wsdir, "proxy", "off") == EXIT_OK
+        assert "关闭代理" in capsys.readouterr().out
+        assert workspace.is_proxy_enabled(wsdir) is False
+
+    def test_proxy_on_explicit_workspace_flag(self, wsdir, tmp_path, monkeypatch):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        other = tmp_path / "other_ws"
+        other.mkdir()
+        assert run_cli(wsdir, "proxy", "on", "--workspace", str(other)) == EXIT_OK
+        assert workspace.is_proxy_enabled(other) is True
+        assert workspace.is_proxy_enabled(wsdir) is False
+
+    def test_no_proxy_flag_overrides_enabled_toggle_for_one_call(self, wsdir, tmp_path, monkeypatch):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        captured = {}
+
+        def fake_execute_sql(**kwargs):
+            captured.update(kwargs)
+            return EXIT_OK
+
+        monkeypatch.setattr(core, "execute_sql", fake_execute_sql)
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1", "--no-proxy")
+        assert rc == EXIT_OK
+        assert captured["use_proxy"] is False
+
+    def test_without_no_proxy_flag_defers_to_persisted_toggle(self, wsdir, tmp_path, monkeypatch):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        captured = {}
+
+        def fake_execute_sql(**kwargs):
+            captured.update(kwargs)
+            return EXIT_OK
+
+        monkeypatch.setattr(core, "execute_sql", fake_execute_sql)
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1")
+        assert rc == EXIT_OK
+        assert captured["use_proxy"] is None
+
+    def test_run_strict_no_proxy_flag_threads_into_validate_query(self, wsdir, tmp_path, monkeypatch):
+        """PR #98 review (r1-3): `qy run --strict --no-proxy` must also skip the
+        proxy for the strict-mode EXPLAIN pre-check, not just the real query —
+        previously core.validate_query() had no use_proxy parameter at all."""
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_query(wsdir, "testpg", "sok", "-- @name: sok\n-- @db: testpg\nSELECT 1 AS ok;\n")
+        captured = {}
+
+        def fake_validate_query(q, conn, **kwargs):
+            captured.update(kwargs)
+            return EXIT_OK
+
+        def fake_execute_sql(**kwargs):
+            return EXIT_OK
+
+        monkeypatch.setattr(core, "validate_query", fake_validate_query)
+        monkeypatch.setattr(core, "execute_sql", fake_execute_sql)
+        rc = run_cli(wsdir, "run", "sok", "--strict", "--no-proxy")
+        assert rc == EXIT_OK
+        assert captured["use_proxy"] is False
+
+    def test_run_strict_without_no_proxy_defers_to_persisted_toggle(self, wsdir, tmp_path, monkeypatch):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_query(wsdir, "testpg", "sok", "-- @name: sok\n-- @db: testpg\nSELECT 1 AS ok;\n")
+        captured = {}
+
+        def fake_validate_query(q, conn, **kwargs):
+            captured.update(kwargs)
+            return EXIT_OK
+
+        def fake_execute_sql(**kwargs):
+            return EXIT_OK
+
+        monkeypatch.setattr(core, "validate_query", fake_validate_query)
+        monkeypatch.setattr(core, "execute_sql", fake_execute_sql)
+        rc = run_cli(wsdir, "run", "sok", "--strict")
+        assert rc == EXIT_OK
+        assert captured["use_proxy"] is None
+
+
+# ===========================================================================
+# proxy fallback notice (issue #101) — stderr hint when a proxied workspace's
+# resolved connection actually runs direct
+# ===========================================================================
+
+def _seed_ssh_conn(wsdir: Path) -> None:
+    (wsdir / "connections.toml").write_text(
+        f'[testpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "test"\n'
+        'ssh_host = "bastion.example.com"\nssh_user = "ec2-user"\n',
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+class TestProxyFallbackNotice:
+    def test_not_discovered_reason_printed_to_stderr(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_ssh_conn(wsdir)
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(proxy_mod, "discover_proxy", lambda: None)
+        monkeypatch.setattr(core, "execute_sql", lambda **kwargs: EXIT_OK)
+
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1")
+        assert rc == EXIT_OK
+        assert "none was discovered" in capsys.readouterr().err
+
+    def test_port_unreachable_reason_printed_to_stderr(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_ssh_conn(wsdir)
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(
+            proxy_mod, "discover_proxy",
+            lambda: proxy_mod.ProxyInfo(host="127.0.0.1", port=6152, source="system"),
+        )
+        monkeypatch.setattr(proxy_mod, "_port_listening", lambda host, port, timeout=0.3: False)
+        monkeypatch.setattr(core, "execute_sql", lambda **kwargs: EXIT_OK)
+
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1")
+        assert rc == EXIT_OK
+        err_out = capsys.readouterr().err
+        assert "nothing is listening" in err_out and "127.0.0.1:6152" in err_out
+
+    def test_exception_list_reason_printed_to_stderr(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_ssh_conn(wsdir)
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(
+            proxy_mod, "discover_proxy",
+            lambda: proxy_mod.ProxyInfo(host="127.0.0.1", port=6152, source="system",
+                                        exceptions=["bastion.example.com"]),
+        )
+        monkeypatch.setattr(core, "execute_sql", lambda **kwargs: EXIT_OK)
+
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1")
+        assert rc == EXIT_OK
+        assert "exceptions list" in capsys.readouterr().err
+
+    def test_no_proxy_flag_suppresses_notice(self, wsdir, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        workspace.set_proxy_enabled(str(wsdir), True)
+        _seed_ssh_conn(wsdir)
+        from quarry import proxy as proxy_mod
+        monkeypatch.setattr(proxy_mod, "discover_proxy", lambda: None)
+        monkeypatch.setattr(core, "execute_sql", lambda **kwargs: EXIT_OK)
+
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1", "--no-proxy")
+        assert rc == EXIT_OK
+        assert capsys.readouterr().err == ""
+
+    def test_disabled_toggle_prints_no_notice(self, wsdir, tmp_path, monkeypatch, capsys):
+        """The workspace proxy toggle is off entirely — nothing to report, unlike
+        the `not_discovered`/`port_unreachable`/`exception_list` cases which all
+        assume the toggle is on but the actual routing still fell back direct."""
+        monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "c.toml"))
+        _seed_ssh_conn(wsdir)
+        monkeypatch.setattr(core, "execute_sql", lambda **kwargs: EXIT_OK)
+
+        rc = run_cli(wsdir, "exec", "testpg", "--sql", "SELECT 1")
+        assert rc == EXIT_OK
+        assert capsys.readouterr().err == ""
 
 
 # ===========================================================================
@@ -647,7 +994,13 @@ class TestExecRunDB:
         rc = run_cli(wsdir, "exec", "testpg", "--sql",
                      "SELECT count(*) AS n FROM customers", "--format", "json")
         assert rc == EXIT_OK
-        assert json.loads(capsys.readouterr().out)[0]["n"] == 3
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)[0]["n"] == 3
+        # issue #105: elapsed/download-size/avg-speed summary goes to stderr
+        # only, keeping stdout pipeable (postgres approximates the size, so
+        # it's marked with '≈').
+        assert "ms · downloaded ≈" in captured.err
+        assert "avg speed ≈" in captured.err
 
     def test_exec_ndjson(self, wsdir, capsys):
         rc = run_cli(wsdir, "exec", "testpg", "--sql",
@@ -676,6 +1029,19 @@ class TestExecRunDB:
         lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
         assert len(lines) == 4  # exactly N, not N+1
 
+    def test_exec_timeout_flag_cancels_slow_query(self, wsdir):
+        # issue #94: --timeout reaches the server-side statement_timeout backstop
+        parser = cli.build_parser()
+        args = parser.parse_args(["--workspace", str(wsdir), "exec", "testpg", "--sql",
+                                  "SELECT pg_sleep(3)", "--timeout", "1", "--format", "json"])
+        workspace.configure_workspace(args.workspace)
+        with pytest.raises(core.QuarryError) as ei:
+            args.func(args)
+        assert ei.value.exit_code == EXIT_SQL_ERROR
+        msg = str(ei.value).lower()
+        assert "statement timeout" in msg
+        assert "--timeout" in msg
+
     def test_exec_write_blocked_exit_8(self, wsdir, pg_exec, capsys):
         # prove the write did NOT run: create a scratch table, block a delete, confirm intact
         pg_exec("DROP TABLE IF EXISTS cli_tmp_wb; "
@@ -693,16 +1059,13 @@ class TestExecRunDB:
         assert rc == EXIT_SAFETY_BLOCKED
 
     def test_exec_write_flag_lifts_safety_block(self, wsdir, pg_exec):
-        # --write must pass enforce_safety (no EXIT_SAFETY_BLOCKED). The CLI's
-        # json/csv/table path then wraps the statement in `FROM (<sql>)`, which
-        # Postgres rejects for a bare INSERT — so we get a plain SQL error (3),
-        # NOT the safety block (8). The distinction proves --write took effect.
+        # Authorization must result in a committed write, not just a different error.
         pg_exec("DROP TABLE IF EXISTS cli_tmp_w2; CREATE TABLE cli_tmp_w2(id int)")
         try:
             rc = run_cli(wsdir, "exec", "testpg", "--sql",
                          "INSERT INTO cli_tmp_w2 VALUES (7)", "--write", "--format", "json")
-            assert rc != EXIT_SAFETY_BLOCKED
-            assert rc == EXIT_SQL_ERROR
+            assert rc == 0
+            assert pg_exec("SELECT id FROM cli_tmp_w2")[1].strip() == "7"
         finally:
             pg_exec("DROP TABLE IF EXISTS cli_tmp_w2")
 
@@ -923,6 +1286,25 @@ class TestDescribeTableAndConnTestDB:
         # psql \d+ output includes the table title and column names
         assert "customers" in out and "email" in out
 
+    def test_describe_table_text_cache_hit_skips_psql(self, wsdir, monkeypatch, capsys):
+        # `qy schema`/describe-table's default (unflagged) form is postgres
+        # --format text; issue #97 review flagged that it bypassed the shared
+        # cache entirely. A second call for the same table must not shell out
+        # to psql again.
+        from quarry import cli
+
+        rc1 = run_cli(wsdir, "describe-table", "testpg", "customers", "--format", "text")
+        assert rc1 == EXIT_OK
+        first = capsys.readouterr().out
+        assert "email" in first
+
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda *a, **k: pytest.fail("must not shell out to psql on a cache hit"))
+        rc2 = run_cli(wsdir, "describe-table", "testpg", "customers", "--format", "text")
+        assert rc2 == EXIT_OK
+        assert capsys.readouterr().out == first
+
     def test_describe_table_text_handles_quote_in_name(self, wsdir, capsys):
         # The text path shells out to `psql -c '\d+ "<name>"'`; psql's own metacommand
         # parsing swallows a stray quote without a crash and still returns 0.
@@ -931,16 +1313,78 @@ class TestDescribeTableAndConnTestDB:
         # customers table is what psql resolves the quoted-identifier prefix to
         assert "customers" in capsys.readouterr().out
 
-    def test_describe_table_json_quote_is_sql_error_not_crash(self, wsdir):
-        # The JSON path interpolates the name straight into WHERE table_name = '...';
-        # a quote makes it a SQL syntax error (EXIT_SQL_ERROR), never a Python crash.
+    def test_describe_table_json_quote_is_not_a_crash(self, wsdir, capsys):
+        # The JSON path now goes through core.cached_columns, which binds the
+        # table name as a query parameter (issue #97) instead of splicing it
+        # into the SQL text — a quote is just part of a nonexistent table name,
+        # never a SQL syntax error or a Python crash.
         rc = run_cli(wsdir, "describe-table", "testpg", "cust'omers", "--format", "json")
-        assert rc == EXIT_SQL_ERROR
+        assert rc == EXIT_OK
+        obj = json.loads(capsys.readouterr().out)
+        assert obj == {"table": "cust'omers", "columns": []}
 
     def test_connections_test_ok(self, wsdir, capsys):
         rc = run_cli(wsdir, "connections", "test", "testpg")
         assert rc == EXIT_OK
         assert "connected to quarry_test" in capsys.readouterr().out
+
+
+@requires_db
+@pytest.mark.integration
+class TestPing:
+    def test_ping_single_ok(self, wsdir, capsys):
+        rc = run_cli(wsdir, "ping", "testpg")
+        assert rc == EXIT_OK
+        out = capsys.readouterr().out
+        assert "✓ testpg (postgres): ok" in out
+        assert "ms" in out
+
+    def test_ping_single_json_shape(self, wsdir, capsys):
+        rc = run_cli(wsdir, "ping", "testpg", "--format", "json")
+        assert rc == EXIT_OK
+        obj = json.loads(capsys.readouterr().out)
+        assert obj["key"] == "testpg"
+        assert obj["engine"] == "postgres"
+        assert obj["ok"] is True
+        assert obj["error"] is None
+        assert isinstance(obj["elapsed_ms"], int)
+
+    def test_ping_all_single_connection(self, wsdir, capsys):
+        rc = run_cli(wsdir, "ping", "--all")
+        assert rc == EXIT_OK
+        out = capsys.readouterr().out
+        assert "✓ testpg" in out
+        assert "1/1 reachable" in out
+
+    def test_ping_unreachable_connection_exits_1_with_reason(self, wsdir, capsys):
+        # localhost:1 refuses instantly (no listener) — a fast, real connection
+        # failure, no mocking or a real timeout wait needed.
+        with (wsdir / "connections.toml").open("a", encoding="utf-8") as f:
+            f.write('\n[bad]\nurl = "postgresql://localhost:1/nosuchdb"\nengine = "postgres"\n')
+        rc = run_cli(wsdir, "ping", "bad", "--timeout", "3")
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "✗ bad (postgres): fail" in out
+        assert "connection" in out.lower()  # failure reason surfaced, not just "fail"
+
+    def test_ping_all_mixed_reachability_exits_1(self, wsdir, capsys):
+        with (wsdir / "connections.toml").open("a", encoding="utf-8") as f:
+            f.write('\n[bad]\nurl = "postgresql://localhost:1/nosuchdb"\nengine = "postgres"\n')
+        rc = run_cli(wsdir, "ping", "--all", "--timeout", "3")
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "✓ testpg" in out
+        assert "✗ bad" in out
+        assert "1/2 reachable" in out
+
+    def test_ping_requires_connection_or_all(self, wsdir):
+        assert run_cli(wsdir, "ping") == EXIT_USAGE
+
+    def test_ping_rejects_connection_and_all_together(self, wsdir):
+        assert run_cli(wsdir, "ping", "testpg", "--all") == EXIT_USAGE
+
+    def test_ping_unknown_connection_is_usage_error(self, wsdir):
+        assert run_cli(wsdir, "ping", "no_such_connection") == EXIT_USAGE
 
 
 @pytest.mark.unit
@@ -960,7 +1404,7 @@ class TestProdWriteGuard:
         # a write against a prod-tagged connection prompts; answering 'n' aborts
         # (EXIT_USAGE) and the write never reaches the DB.
         (wsdir / "connections.toml").write_text(
-            f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+            f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
             encoding="utf-8")
         pg_exec("DROP TABLE IF EXISTS cli_tmp_prod; CREATE TABLE cli_tmp_prod(id int); "
                 "INSERT INTO cli_tmp_prod VALUES (1);")

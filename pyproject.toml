@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quarry-db"
-version = "0.2.2"
+version = "1.10.0"
 description = "AI-native database workbench: one safety-railed query kernel, many faces (CLI / GUI / agent skill / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Wangggym" }]
-keywords = ["database", "sql", "postgres", "mysql", "redis", "ai", "agent", "mcp", "cli", "workbench"]
+authors = [{ name = "yiminlab" }]
+keywords = ["database", "sql", "postgres", "mysql", "sqlite", "redis", "ai", "agent", "mcp", "cli", "workbench"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
@@ -26,15 +26,16 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Wangggym/quarry"
-Repository = "https://github.com/Wangggym/quarry"
-Changelog = "https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md"
-Issues = "https://github.com/Wangggym/quarry/issues"
+Homepage = "https://yiminspace.github.io/quarry/"
+Repository = "https://github.com/yiminspace/quarry"
+Changelog = "https://github.com/yiminspace/quarry/blob/main/CHANGELOG.md"
+Issues = "https://github.com/yiminspace/quarry/issues"
 
 [project.optional-dependencies]
-mysql = ["pymysql>=1.1"]
-gui = ["flask>=3.0"]
-dev = ["pymysql>=1.1", "flask>=3.0", "pytest>=8.0", "pytest-cov>=5.0"]
+mysql = ["pymysql[rsa]>=1.1"]
+# Retained for compatibility with existing install commands; GUI uses stdlib.
+gui = []
+dev = ["pymysql[rsa]>=1.1", "pytest>=8.0", "pytest-cov>=5.0", "hatchling"]
 # Browser-driven GUI e2e (headless Chromium). After install, run:
 #   python -m playwright install chromium
 e2e = ["pytest>=8.0", "playwright>=1.40"]
@@ -42,6 +43,26 @@ e2e = ["pytest>=8.0", "playwright>=1.40"]
 [project.scripts]
 qy = "quarry.cli:main"
 quarry = "quarry.cli:main"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/quarry/__init__.py:__version__", "server.json:version"]
+allow_zero_version = true
+major_on_zero = false
+tag_format = "v{version}"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+output_format = "md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/quarry"]
@@ -53,8 +74,15 @@ packages = ["src/quarry"]
 # removed".
 dev-mode-exact = true
 
+[tool.hatch.build.targets.wheel.hooks.custom]
+# Bundles CHANGELOG.md into standard wheels only — see hatch_build.py for why
+# a plain force-include (which also applies to editable wheels) breaks
+# `pip install -e`.
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
 exclude = [
+  "/reports",
   "/web/node_modules",
   "/web/tsconfig.tsbuildinfo",
 ]
@@ -79,7 +107,7 @@ branch = true
 
 [tool.coverage.report]
 # The 95% gate applies to unit + integration (see `make cov`). Frontend JS lives
-# in the INDEX_HTML string literal and is exercised by the browser suite, not by
+# in web/ and is exercised by the browser suite, not by
 # line coverage. Defensive/unreachable lines are excluded explicitly.
 precision = 1
 show_missing = true

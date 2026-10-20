@@ -15,7 +15,7 @@ Quarry has a few invariants that PRs must not break. If your change needs to ben
 ## Development setup
 
 ```bash
-git clone https://github.com/Wangggym/quarry && cd quarry
+git clone https://github.com/yiminspace/quarry && cd quarry
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
@@ -59,6 +59,23 @@ An engine implements: URL parsing, query execution returning the standard result
 - Add or update tests for what you change.
 - `python3 -m pytest -q` must pass.
 - Describe *why*, not just *what*, in the PR body.
+- PR titles must follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
+  `chore:`, `docs:`, ...). Quarry uses squash merge, so the PR title is the
+  release-driving commit message.
+
+## Release flow (fully automated)
+
+- Versioning and changelog updates are handled by `python-semantic-release` on
+  every merge to `main`; do not manually edit `project.version` in
+  `pyproject.toml` for routine releases.
+- Bump rules follow Conventional Commits:
+  - `fix` -> patch
+  - `feat` -> minor
+  - `BREAKING CHANGE` footer or `!` -> breaking change (while on `0.x`,
+    configured to bump **minor**, not `1.0.0`)
+- The release workflow updates `pyproject.toml`, writes the new `CHANGELOG.md`
+  section, creates a git tag, and publishes a GitHub Release. The existing
+  publish workflow then ships that release to PyPI.
 
 ## Reporting bugs / proposing features
 
