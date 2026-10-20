@@ -8,6 +8,11 @@ dist/
 .venv/
 venv/
 
+# Test coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
 # Quarry — never commit a workspace with real connection secrets
 connections.toml
 workspace/
@@ -15,6 +20,10 @@ workspace/
 # ...but the credential-free example workspace ships with the repo
 !examples/workspace/
 !examples/workspace/connections.toml
+
+# Frontend (Node is dev-only; built assets ship in the wheel)
+web/node_modules/
+web/tsconfig.tsbuildinfo
 
 # OS / editor
 .DS_Store

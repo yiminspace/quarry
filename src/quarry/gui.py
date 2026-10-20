@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
+import queue
+import re
 import signal
 import socket
 import subprocess
@@ -23,11 +26,14 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
-from . import core, redis_engine, tunnel, workspace
+from . import __version__, cache, core, keepalive, local, local_sync, proxy, redis_engine, row_link, sqlite_engine, tunnel, workspace
 from .core import QuarryError
 
 log = logging.getLogger("quarry.gui")
+
+_WEB_DIST = Path(__file__).resolve().parent / "web_dist"
 
 
 def _setup_logging() -> None:
@@ -43,65 +49,350 @@ def _setup_logging() -> None:
 # ---------------------------------------------------------------------------
 
 # Server-side cache so table lists + health survive browser reloads AND `qy gui`
-# restarts. NO expiry — entries live until replaced by a fresh (fresh=1) call.
-# Persisted to disk (JSON) so it outlives the process. key -> value.
-_CACHE: dict[str, dict] = {}
-_CACHE_LOCK = threading.Lock()
-_CACHE_FILE = Path.home() / ".cache" / "quarry" / "gui-cache.json"
+# restarts. Storage (in-memory dict + on-disk JSON at ~/.cache/quarry/gui-cache.json)
+# lives in cache.py (issue #97) so the CLI and MCP share the same cache instead
+# of each re-querying the DB on every invocation.
 
 
-def _load_cache() -> None:
+# ---------------------------------------------------------------------------
+# Events (SSE) — the GUI's change-notification contract
+# ---------------------------------------------------------------------------
+# One channel, `GET /api/events`, streams JSON events of the shape
+# {"type": <str>, "ts": <epoch seconds>}. Events are *hints to refetch*, never
+# data carriers — losing one is harmless, so there is no replay/Last-Event-ID.
+#
+# Event types (the contract consumed by web/src/useEvents.ts and by future
+# features building on this channel):
+#   workspace_changed — a watched workspace file (config.toml, any
+#                       connections.toml, any queries/**/*.sql) changed on
+#                       disk; clients should refetch connections + queries.
+#   update_available  — the background update checker (below) found a newer
+#                       quarry-db release on PyPI; clients should refetch
+#                       GET /api/update to paint the header badge.
+#
+# A comment line (`: hb`) is sent every HEARTBEAT_SEC as keep-alive; clients
+# also use the EventSource auto-reconnect that follows a server restart to
+# re-check /api/version and prompt a page reload after an upgrade.
+
+HEARTBEAT_SEC = float(os.environ.get("QUARRY_EVENTS_HEARTBEAT", "15"))
+WATCH_INTERVAL_SEC = float(os.environ.get("QUARRY_WATCH_INTERVAL", "2"))
+
+_SUBSCRIBERS: set[queue.Queue] = set()
+_SUB_LOCK = threading.Lock()
+_WATCHER_STARTED = False
+
+
+def publish_event(type_: str) -> None:
+    evt = {"type": type_, "ts": time.time()}
+    with _SUB_LOCK:
+        subs = list(_SUBSCRIBERS)
+    for q in subs:
+        try:
+            q.put_nowait(evt)
+        except queue.Full:  # slow consumer: drop — events are refetch hints
+            pass
+
+
+def _sse_format(evt: dict) -> bytes:
+    return f"data: {json.dumps(evt, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _close_event_streams() -> None:
+    """Ask every open SSE handler to end its stream (each blocks on its own
+    queue, so a normal event is the only way to wake them). Process exit does
+    this implicitly for `qy gui`; serve() and tests use it for a clean stop."""
+    publish_event("_close")
+
+
+def _ws_fingerprint() -> dict[str, float]:
+    """mtime of every watched file: the workspace-list config plus each
+    workspace's connections.toml and queries/**/*.sql. Dict compare catches
+    edits, additions, and deletions alike."""
+    fp: dict[str, float] = {}
+    paths = [workspace._config_path()]
+    for w in workspace.WS_LIST:
+        paths.append(w.connections_file)
+        try:
+            paths.extend(sorted(w.queries_dir.rglob("*.sql")))
+        except OSError:
+            pass
+    for p in paths:
+        try:
+            fp[str(p)] = p.stat().st_mtime
+        except OSError:
+            continue
+    return fp
+
+
+def _apply_workspace_change() -> None:
+    """React to an on-disk workspace change: re-resolve the workspace list
+    (config.toml may have changed), drop health cache entries (connection URLs
+    may now differ, making cached probe results lies), and notify clients.
+    Table/column caches survive — they are keyed by db@env and refresh via the
+    existing fresh=1 path."""
+    workspace.reload_workspace()
+    cache.drop_prefix("health:")
+    publish_event("workspace_changed")
+
+
+def _watch_tick(prev: dict[str, float]) -> dict[str, float]:
+    """One watcher iteration: compare fingerprints, apply on change. Split out
+    of the loop so tests can drive it deterministically."""
+    cur = _ws_fingerprint()
+    if cur != prev:
+        try:
+            _apply_workspace_change()
+        except Exception:  # noqa: BLE001 — watcher must survive bad configs
+            log.exception("workspace watcher: reload failed")
+    return cur
+
+
+def _watch_loop() -> None:  # pragma: no cover — thread wrapper around _watch_tick
+    fp = _ws_fingerprint()
+    while True:
+        time.sleep(WATCH_INTERVAL_SEC)
+        fp = _watch_tick(fp)
+
+
+def _ensure_watcher() -> None:
+    """Start the (single, daemon) file watcher lazily on first SSE subscriber —
+    no client listening means nobody to notify, so no thread until then."""
+    global _WATCHER_STARTED
+    with _SUB_LOCK:
+        if _WATCHER_STARTED:
+            return
+        _WATCHER_STARTED = True
+    threading.Thread(target=_watch_loop, name="quarry-gui-watcher", daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Update check — PyPI polling for a newer quarry-db release
+# ---------------------------------------------------------------------------
+# A background daemon thread, throttled to once per UPDATE_CHECK_INTERVAL_SEC
+# (default 24h, tracked via a `checked_at` timestamp persisted in gui-cache so
+# the throttle survives `qy gui` restarts), asks PyPI's JSON API for the
+# latest quarry-db release. A newer version publishes `update_available` over
+# /api/events; GET /api/update reports the last-known state for the header's
+# first paint (before any event fires).
+#
+# Silent by design: QUARRY_UPDATE_CHECK=0, an editable/dev install (nothing to
+# `pipx upgrade`), or any network failure all mean "no update" with nothing
+# surfaced anywhere — this channel must never become noise or a false alarm.
+
+PYPI_URL = os.environ.get("QUARRY_PYPI_URL", "https://pypi.org/pypi/quarry-db/json")
+UPDATE_CHECK_INTERVAL_SEC = float(os.environ.get("QUARRY_UPDATE_INTERVAL", str(24 * 3600)))
+UPDATE_LOOP_SLEEP_SEC = float(os.environ.get("QUARRY_UPDATE_LOOP_SLEEP", "3600"))
+_UPDATE_CACHE_KEY = "update_check"
+_UPDATE_CHECKER_STARTED = False
+_UPDATE_CHECKER_LOCK = threading.Lock()
+
+
+def _update_check_disabled() -> bool:
+    return os.environ.get("QUARRY_UPDATE_CHECK", "") == "0"
+
+
+def _is_editable_install() -> bool:
+    """True for `pip install -e` / source-checkout installs — an editable
+    install has no PyPI wheel to upgrade into, so checking is pointless noise
+    for contributors. Detected via the `direct_url.json` dist-info metadata
+    pip writes for such installs (`dir_info.editable: true`); a normal PyPI
+    install has no direct_url.json at all."""
     try:
-        with _CACHE_FILE.open(encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            _CACHE.update(data)
-    except Exception:
-        pass
+        import importlib.metadata as importlib_metadata
+
+        dist = importlib_metadata.distribution("quarry-db")
+        raw = dist.read_text("direct_url.json")
+        if not raw:
+            return False
+        info = json.loads(raw)
+        return bool(info.get("dir_info", {}).get("editable"))
+    except Exception:  # noqa: BLE001 — never let detection break the checker
+        return False
 
 
-def _save_cache() -> None:
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Numeric dot-segments only (ignores any pre-release suffix) — enough to
+    compare quarry-db's plain MAJOR.MINOR.PATCH releases by segment rather
+    than as strings (so 0.10.0 > 0.9.0). Never raises on odd input."""
+    out = []
+    for part in (v or "").split("."):
+        m = re.match(r"\d+", part)
+        out.append(int(m.group()) if m else 0)
+    return tuple(out)
+
+
+def _version_gt(a: str, b: str) -> bool:
+    return _parse_version(a) > _parse_version(b)
+
+
+def _fetch_latest_version(timeout: float = 5.0) -> str | None:
+    """The latest version PyPI reports for quarry-db, or None on ANY failure
+    (network, timeout, bad JSON) — callers must treat None as "couldn't check
+    this time", never as an error to surface."""
     try:
-        with _CACHE_LOCK:
-            snapshot = dict(_CACHE)
-        _CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CACHE_FILE.with_suffix(".tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(snapshot, f, ensure_ascii=False)
-        os.replace(tmp, _CACHE_FILE)
-    except Exception:
-        pass
+        req = Request(PYPI_URL, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        v = data.get("info", {}).get("version")
+        return v if isinstance(v, str) and v else None
+    except Exception:  # noqa: BLE001 — silent by design, see module docstring
+        return None
 
 
-def _cache_get(key: str):
-    return _CACHE.get(key)
+def _check_for_update(force: bool = False) -> None:
+    """One throttled check: skip entirely if disabled/editable; skip the PyPI
+    call if the last check is still within the interval (unless forced);
+    otherwise fetch + cache the result and publish an event if a newer
+    release appeared. `checked_at` advances on every real attempt (even a
+    failed one) so a PyPI outage can't turn into a retry storm."""
+    if _update_check_disabled() or _is_editable_install():
+        return
+    c = cache.get(_UPDATE_CACHE_KEY) or {}
+    last = c.get("checked_at")
+    if not force and isinstance(last, (int, float)) and (time.time() - last) < UPDATE_CHECK_INTERVAL_SEC:
+        return
+    latest = _fetch_latest_version()
+    now = time.time()
+    if latest is None:
+        cache.put(_UPDATE_CACHE_KEY, {**c, "checked_at": now})
+        return
+    available = _version_gt(latest, __version__)
+    cache.put(_UPDATE_CACHE_KEY, {"checked_at": now, "latest": latest, "available": available})
+    if available:
+        publish_event("update_available")
 
 
-def _cache_put(key: str, value: dict) -> dict:
-    _CACHE[key] = value
-    _save_cache()
-    return value
+def _update_loop() -> None:  # pragma: no cover — thread wrapper around _check_for_update
+    while True:
+        try:
+            _check_for_update()
+        except Exception:  # noqa: BLE001 — checker must survive a bad response
+            log.exception("update checker: check failed")
+        time.sleep(UPDATE_LOOP_SLEEP_SEC)
+
+
+def _ensure_update_checker() -> None:
+    """Start the (single, daemon) update-check thread. Unlike the workspace
+    watcher this isn't gated on an SSE subscriber — GET /api/update must have
+    something to report on the very first page load."""
+    global _UPDATE_CHECKER_STARTED
+    with _UPDATE_CHECKER_LOCK:
+        if _UPDATE_CHECKER_STARTED:
+            return
+        _UPDATE_CHECKER_STARTED = True
+    threading.Thread(target=_update_loop, name="quarry-gui-update-checker", daemon=True).start()
+
+
+def api_update() -> dict:
+    """Last-known update-check state — never triggers a network call itself
+    (that's the background thread's job); this just reads the cache. The
+    cached `available` flag is never trusted directly: it's re-derived from
+    `latest` vs. the *current* __version__ on every call, so a value cached
+    before an upgrade (or before QUARRY_UPDATE_CHECK=0 was set) can't outlive
+    its relevance and keep showing a stale badge."""
+    if _update_check_disabled() or _is_editable_install():
+        return {"current": __version__, "latest": None, "available": False}
+    c = cache.get(_UPDATE_CACHE_KEY) or {}
+    latest = c.get("latest")
+    return {
+        "current": __version__,
+        "latest": latest,
+        "available": bool(latest) and _version_gt(latest, __version__),
+    }
+
+
+# ---------------------------------------------------------------------------
+# What's New — CHANGELOG.md parsing for the header's "what changed since you
+# last looked" panel (companion to the update-check badge above: that one is
+# about a newer PyPI release you haven't installed yet, this one is about
+# what the release you're ALREADY running actually changed).
+# ---------------------------------------------------------------------------
+# CHANGELOG.md ships next to this file in standard wheels (see hatch_build.py
+# — packages=["src/quarry"] alone wouldn't reach a repo-root file); an
+# editable/source-checkout install deliberately has no such copy (a bundled
+# one would shadow the editable redirect), so fall back to the repo root two
+# levels up from src/quarry/gui.py.
+
+CHANGELOG_MAX_VERSIONS = 20
+
+# semantic-release's `## v1.2.3 (YYYY-MM-DD)` heading, and the older
+# hand-written `## [1.2.3] — YYYY-MM-DD` form used before #74.
+_CHANGELOG_HEADING_RE = re.compile(
+    r"^## \[?v?(?P<version>\d+\.\d+\.\d+[\w.-]*)\]?\s*[(\u2014-]\s*"
+    r"(?P<date>\d{4}-\d{2}-\d{2})\)?\s*$"
+)
+# A trailing parenthetical made entirely of markdown links — semantic-release's
+# `([#77](url), [`sha`](url))` PR/commit footer — is internal bookkeeping, not
+# release-note content, so it's stripped from each entry.
+_CHANGELOG_META_RE = re.compile(r"\s*\((?:\[[^\]]+\]\([^)]+\)(?:,\s*)?)+\)\s*$")
+
+
+def _changelog_path() -> Path:
+    bundled = Path(__file__).resolve().parent / "CHANGELOG.md"
+    if bundled.exists():
+        return bundled
+    return Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+
+
+def _parse_changelog(text: str) -> list[dict]:
+    """Structured `{version, date, entries}` sections, newest first, one per
+    released-version heading. The `## [Unreleased]` section (no version/date
+    yet) is intentionally skipped — nothing has a __version__ to compare it
+    against. Capped at CHANGELOG_MAX_VERSIONS: the panel only ever needs to
+    bridge a user from their last-seen version to the current one, never the
+    full history."""
+    versions: list[dict] = []
+    current: dict | None = None
+    entry_lines: list[str] = []
+
+    def flush_entry() -> None:
+        if current is not None and entry_lines:
+            joined = " ".join(entry_lines).strip()
+            joined = _CHANGELOG_META_RE.sub("", joined)
+            joined = joined.replace("**", "").strip()
+            if joined:
+                current["entries"].append(joined)
+        entry_lines.clear()
+
+    for line in text.splitlines():
+        heading = _CHANGELOG_HEADING_RE.match(line)
+        if heading:
+            flush_entry()
+            if len(versions) >= CHANGELOG_MAX_VERSIONS:
+                break
+            current = {"version": heading.group("version"), "date": heading.group("date"), "entries": []}
+            versions.append(current)
+            continue
+        if line.startswith("## "):  # any other top-level heading (e.g. [Unreleased]) ends the section
+            flush_entry()
+            current = None
+            continue
+        if current is None:
+            continue
+        if line.startswith("- "):
+            flush_entry()
+            entry_lines.append(line[2:].strip())
+        elif line.strip() and not line.startswith("#"):
+            entry_lines.append(line.strip())
+        elif not line.strip():
+            flush_entry()
+    flush_entry()
+    return versions
+
+
+def api_changelog() -> list[dict]:
+    """Top CHANGELOG_MAX_VERSIONS released-version sections — an empty list
+    (never an error) if CHANGELOG.md isn't present, e.g. a stripped-down
+    install; this is cosmetic and must never break the page."""
+    try:
+        text = _changelog_path().read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return _parse_changelog(text)
 
 
 def _resolve(db: str, env: str | None):
     return core.resolve_connection(db, env)
-
-
-def _list_tables(conn) -> list[str]:
-    engine = core.connection_engine(conn)
-    if engine == "redis":
-        with tunnel.open_tunnel(conn, engine) as url:
-            return redis_engine.scan_keys(url, count=1000)
-    if engine == "mysql":
-        sql = ("SELECT table_name FROM information_schema.tables "
-               "WHERE table_schema = DATABASE() ORDER BY table_name")
-    elif engine == "neptune":
-        return []
-    else:
-        sql = ("SELECT table_name FROM information_schema.tables "
-               "WHERE table_schema = 'public' ORDER BY table_name")
-    res = core.run_query(conn, sql, max_rows=5000)
-    return [r.get("table_name") for r in res.rows if r.get("table_name")]
 
 
 def _display_path(p) -> str:
@@ -116,108 +407,301 @@ def api_connections() -> dict:
     for g in groups:
         if g.get("ws"):
             g["ws"] = _display_path(g["ws"])
+    # issue #101: attach an observed (not guessed) proxied flag per env, sourced
+    # from the actual tunnel-decision logic rather than left for the frontend
+    # to infer from workspace config alone.
+    core.attach_proxy_status(groups)
     return {"groups": groups, "workspace": _display_path(workspace.WS.home), "workspaces": homes}
 
 
+def api_workspaces() -> dict:
+    """The config.toml-registered workspace list, for the header's manage-UI
+    (issue #15 — that list used to be display-only). Mirrors `qy workspace
+    list`: raw dirs as written, each flagged if missing or lacking a
+    connections.toml, so a typo is visible before it silently contributes
+    nothing.
+
+    issue #101: also reports, per workspace, whether its proxy toggle is on
+    (`qy proxy on|off`) and the currently discovered system/env proxy (if
+    any) — one `discover_proxy()` call shared across all items, mirroring
+    `core.attach_proxy_status`'s single-probe approach for connections."""
+    discovered = proxy.discover_proxy()
+    proxy_discovered = (
+        {"host": discovered.host, "port": discovered.port, "source": discovered.source}
+        if discovered else None
+    )
+    items = []
+    for d in workspace.config_workspaces():
+        home = Path(d).expanduser()
+        items.append({
+            "dir": d,
+            "display": _display_path(home),
+            "exists": home.exists(),
+            "hasConnections": (home / "connections.toml").exists(),
+            "proxyEnabled": workspace.is_proxy_enabled(home),
+        })
+    return {
+        "config": _display_path(workspace._config_path()),
+        "items": items,
+        "proxyDiscovered": proxy_discovered,
+    }
+
+
+def api_keepalive() -> dict:
+    """Workspace tunnel keep-alive status (same contract as `qy status --format json`)."""
+    return keepalive.status(workspace.WS.home)
+
+
+def api_keepalive_up() -> dict:
+    keepalive.start(workspace.WS.home)
+    return api_keepalive()
+
+
+def api_keepalive_down() -> dict:
+    keepalive.stop(workspace.WS.home)
+    return api_keepalive()
+
+
+def api_workspace_add(body: dict) -> dict:
+    workspace.add_workspace(_req(body, "dir"))
+    # reload_workspace(), not configure_workspace(None): the GUI is a long-lived
+    # process that may have been launched with an explicit --workspace override,
+    # which a hardcoded None would silently drop.
+    workspace.reload_workspace()
+    return api_workspaces()
+
+
+def api_workspace_remove(body: dict) -> dict:
+    d = _req(body, "dir")
+    if not workspace.remove_workspace(d):
+        raise QuarryError(f"workspace not found in config: {d}")
+    workspace.reload_workspace()
+    return api_workspaces()
+
+
 def api_tables(db: str, env: str | None, fresh: bool = False) -> dict:
-    key = f"tables:{db}@{env}"
-    if not fresh:
-        c = _cache_get(key)
-        if c is not None:
-            return {**c, "_cached": True}
     conn = _resolve(db, env)
-    engine = core.connection_engine(conn)
-    if engine == "redis":
-        with tunnel.open_tunnel(conn, engine) as url:
-            out = {"engine": "redis", "keys": redis_engine.keys_with_meta(url, cap=400)}
-    else:
-        out = {"tables": _list_tables(conn), "engine": engine}
-    _cache_put(key, out)
-    return {**out, "_cached": False}
+    return core.cached_tables(conn, db, env, fresh=fresh)
 
 
 def api_columns(db: str, env: str | None, table: str) -> dict:
-    """Column names for one table (postgres/mysql), cached. Powers editor
-    autocomplete of `table.<col>`. Never raises — returns {columns: []} on any miss."""
-    safe = "".join(ch for ch in (table or "") if ch.isalnum() or ch in "_$")
-    if not safe:
-        return {"columns": []}
-    key = f"columns:{db}@{env}:{safe}"
-    c = _cache_get(key)
-    if c is not None:
-        return c
+    """Column names + types for one SQL table, cached. `columns`
+    (a flat name list) powers editor autocomplete of `table.<col>`; `types`
+    (name -> data_type) powers the sidebar's table-structure browser. Never
+    raises — returns {columns: [], types: {}} on any miss.
+
+    The table name is matched via a bound `:'table'` query parameter (psql -v
+    for postgres, our own quote_val escaping for mysql) rather than a
+    character-stripping sanitizer — a stripped name silently dropped legal
+    quoted/special-character table names (e.g. `qy-review-weird`) that
+    `/api/tables` had just listed, so clicking them showed an empty schema."""
+    if not (table or "").strip():
+        return {"columns": [], "types": {}}
     try:
         conn = _resolve(db, env)
-        engine = core.connection_engine(conn)
-        if engine in ("redis", "neptune"):
-            return _cache_put(key, {"columns": []})
-        schema = "DATABASE()" if engine == "mysql" else "'public'"
-        sql = ("SELECT column_name FROM information_schema.columns "
-               f"WHERE table_schema = {schema} AND table_name = '{safe}' "
-               "ORDER BY ordinal_position")
-        res = core.run_query(conn, sql, max_rows=2000)
-        cols = [r.get("column_name") for r in res.rows if r.get("column_name")]
-        return _cache_put(key, {"columns": cols})
+        res = core.cached_columns(conn, db, env, table)
     except Exception:  # noqa: BLE001
-        return {"columns": []}
+        return {"columns": [], "types": {}}
+    rows = res.get("rows", [])
+    cols = [r.get("column_name") for r in rows if r.get("column_name")]
+    types = {r.get("column_name"): r.get("data_type") for r in rows if r.get("column_name")}
+    return {"columns": cols, "types": types}
 
 
 def api_inspect(db: str, env: str | None, key: str) -> dict:
+    if not key:
+        raise QuarryError("inspect requires a 'key' parameter")
     conn = _resolve(db, env)
-    with tunnel.open_tunnel(conn, core.connection_engine(conn)) as url:
+    engine = core.connection_engine(conn)
+    if engine != "redis":
+        raise QuarryError(f"inspect is redis-only (connection '{db}' is {engine})")
+    with tunnel.open_tunnel(conn, engine) as url:
         rows = redis_engine.inspect_key(url, key)
     return {"columns": core._columns_from_rows(rows), "rows": rows, "rowCount": len(rows),
-            "truncated": False, "elapsedMs": 0, "engine": "redis", "sql": f"# inspect {key}"}
+            "truncated": False, "elapsedMs": 0, "engine": "redis", "sql": f"# inspect {key}",
+            "downloadBytes": 0, "sizeIsEstimated": True}
+
+
+_URL_PASSWORD_RE = re.compile(r"(://[^/@?#]*?):[^/@?#]*@")
+
+
+def _mask_url(url: str) -> str:
+    """Mask the password in a connection URL — the info panel must never leak
+    credentials into screenshots or screen shares."""
+    return _URL_PASSWORD_RE.sub(r"\1:••••@", url)
+
+
+def api_conninfo(db: str, env: str | None, reveal: bool = False) -> dict:
+    """Resolved-connection details for the info panel: what quarry will actually
+    dial for this db@env, and which file that came from. Diagnosing "why can't I
+    connect" starts with seeing the config that is really in effect.
+
+    reveal=True returns the URL with its password — the GUI is localhost-only
+    and the value already lives in the user's own connections.toml; the mask is
+    a screenshot/screen-share guard, not an access control."""
+    conn = _resolve(db, env)
+    p = urlparse(conn.url)
+    file = workspace.WS.connections_file
+    for w in workspace.WS_LIST:
+        if str(w.home) == (conn.source or ""):
+            file = w.connections_file
+            break
+    out = {
+        "key": conn.key, "db": conn.logical_db, "env": conn.env, "production": conn.production,
+        "engine": core.connection_engine(conn),
+        "url": conn.url if reveal else _mask_url(conn.url),
+        "host": p.hostname, "port": p.port,
+        "database": (p.path or "").lstrip("/") or None,
+        "group": conn.group, "region": conn.region, "notes": conn.notes,
+        "file": _display_path(file), "tunnel": None,
+    }
+    if conn.ssh_host:
+        out["tunnel"] = {"host": conn.ssh_host, "user": conn.ssh_user,
+                         "port": conn.ssh_port or 22, "key": conn.ssh_key}
+    if out["engine"] == "sqlite":
+        path = sqlite_engine.database_path(conn)
+        out.update(host=None, port=None, database=path.name, databasePath=str(path))
+    return out
+
+
+def api_local_up(body: dict) -> dict:
+    """GUI counterpart of `qy local up <db>`: start the shared local container
+    for the env-set's engine and register an env=local connection."""
+    db = _req(body, "db")
+    conns = core.load_connections()
+    members = {(c.env or ""): c for c in conns.values() if c.logical_db == db}
+    if not members:
+        raise QuarryError(f"unknown connection '{db}'")
+    src = (members.get(core.DEFAULT_ENV)
+           or next((m for e, m in sorted(members.items()) if e.lower() != local.LOCAL_ENV),
+                   members[sorted(members)[0]]))
+    engine = core.connection_engine(src)
+    if engine not in {"postgres", "redis"}:
+        raise QuarryError(
+            f"engine '{engine}' has no local-container support (postgres/redis only)")
+    if not local.SAFE_DB_RE.match(db):
+        raise QuarryError(f"'{db}' is not a valid local db name")
+    spec = local.configured_spec(engine)
+    state = local.start_container(
+        spec, image=local.stored_local_image(
+            db, group=src.group, workspace_home=src.source))
+    redis_db = (local.source_redis_db(
+        db, group=src.group, workspace_home=src.source)
+        if engine == "redis" else None)
+    registration = local.register_local_connection(
+        db, spec, group=src.group, redis_db=redis_db, workspace_home=src.source)
+    out = {"key": registration.key, "created": registration.created, "engine": engine,
+           "state": state, "port": spec.port}
+    if engine == "postgres":
+        if not local.wait_pg_ready(spec):
+            raise QuarryError("local postgres did not become ready in time")
+        local.ensure_pg_database(spec, registration.database)
+        # First-time convenience: a freshly registered local env is an empty
+        # shell — fill it from the remote sibling right away. A sync failure
+        # must not undo the successful `up`; it is reported alongside.
+        src_env = (src.env or "").lower()
+        if registration.created and src_env and src_env != local.LOCAL_ENV:
+            try:
+                res = api_local_sync({"db": db, "from": src.env})
+                out["synced_from"] = res["from"]
+            except Exception as e:  # noqa: BLE001
+                out["sync_error"] = str(e)
+    return out
+
+
+def api_local_sync(body: dict) -> dict:
+    """GUI counterpart of `qy local sync <db> [--from env]`. All safety gates
+    (env=local + loopback host + no tunnel, postgres-only) live in sync_schema."""
+    db = _req(body, "db")
+    from_env = body.get("from") or core.DEFAULT_ENV
+    res = local_sync.sync_schema(db, from_env=from_env)
+    # the swapped-in database invalidates cached table lists for this env-set
+    cache.drop_prefix(f"tables:{db}@")
+    return {**res, "from": from_env}
 
 
 def api_health(db: str, env: str | None, fresh: bool = False, cached_only: bool = False) -> dict:
-    """Fast connectivity probe. Never raises — returns {ok, error}. Cached (120s) so
-    reloads paint dots instantly. cached_only=True returns {ok:None} instead of probing."""
-    key = f"health:{db}@{env}"
-    if not fresh:
-        c = _cache_get(key)
-        if c is not None:
-            return c
-    if cached_only:
-        return {"ok": None}
     try:
         conn = _resolve(db, env)
-        engine = core.connection_engine(conn)
-        with tunnel.open_tunnel(conn, engine) as url:
-            if engine == "redis":
-                redis_engine.run_redis(url, "PING", timeout=6)
-            elif engine == "mysql":
-                core.run_mysql_query(url, "SELECT 1", timeout=6)
-            elif engine == "neptune":
-                core.run_neptune_cypher(url, "RETURN 1 AS ok", timeout=6)
-            else:
-                rc, _out, e = core.run_psql_capture(url, "SELECT 1", timeout=6)
-                if rc != 0:
-                    return _cache_put(key, {"ok": False, "error": (e.strip() or "connect failed")[:200]})
-        return _cache_put(key, {"ok": True})
-    except Exception as e:  # noqa: BLE001
-        return _cache_put(key, {"ok": False, "error": str(e)[:200]})
+    except Exception as e:  # noqa: BLE001 — an unresolvable connection is a health failure, not a crash
+        return {"ok": False, "error": str(e)[:200]}
+    return core.cached_health(conn, db, env, fresh=fresh, cached_only=cached_only)
+
+
+def _saved_query_files():
+    # Keep workspace/file identity: names can legitimately repeat across workspaces.
+    for w in workspace.WS_LIST:
+        for path in sorted(w.queries_dir.glob("**/*.sql")):
+            query_id = json.dumps([_display_path(w.home), path.relative_to(w.queries_dir).as_posix()])
+            yield w, path, query_id
 
 
 def api_queries() -> list[dict]:
-    return [{"name": q.name, "db": q.db, "desc": q.desc, "sql": q.sql,
-             "params": [{"name": p.name, "type": p.type, "required": p.required, "default": p.default}
-                        for p in q.params]}
-            for q in core.list_all_queries()]
+    out = []
+    for w, path, query_id in _saved_query_files():
+        try:
+            q = core.parse_query_file(path)
+        except (QuarryError, OSError, UnicodeError) as exc:
+            log.warning("Skipping saved query %s: %s", path, exc)
+            continue
+        out.append({"name": q.name, "db": q.db, "desc": q.desc, "sql": q.sql,
+                    "ws": _display_path(w.home), "queryId": query_id,
+                    "params": [{"name": p.name, "type": p.type, "required": p.required,
+                                "default": p.default} for p in q.params]})
+    return out
+
+
+def _req(body: dict, field: str):
+    val = body.get(field)
+    if val is None or val == "":
+        raise QuarryError(f"missing required field '{field}'")
+    return val
+
+
+def _max_rows(body: dict) -> int:
+    try:
+        return int(body.get("maxRows") or 500)
+    except (TypeError, ValueError):
+        raise QuarryError(f"maxRows must be an integer, got {body.get('maxRows')!r}")
+
+
+def _offset(body: dict) -> int:
+    try:
+        return int(body.get("offset") or 0)
+    except (TypeError, ValueError):
+        raise QuarryError(f"offset must be an integer, got {body.get('offset')!r}")
 
 
 def api_query(body: dict) -> dict:
-    conn = _resolve(body["db"], body.get("env"))
-    res = core.run_query(conn, body["sql"], max_rows=int(body.get("maxRows") or 500), with_types=True)
+    conn = _resolve(_req(body, "db"), body.get("env"))
+    res = core.run_query(
+        conn, _req(body, "sql"), max_rows=_max_rows(body), offset=_offset(body), with_types=True
+    )
     return res.to_dict()
 
 
 def api_run(body: dict) -> dict:
-    q = core.load_query(body["name"])
+    if body.get("queryId") is not None:
+        # Resolve only files in currently loaded workspaces; never trust a client path.
+        path = next((path for _, path, query_id in _saved_query_files()
+                     if query_id == body["queryId"]), None)
+        if path is None:
+            raise QuarryError("saved query no longer exists in the loaded workspaces")
+        q = core.parse_query_file(path)
+    else:
+        q = core.load_query(_req(body, "name"))
     conn = _resolve(q.db, body.get("env"))
     params = core.resolve_params(q, body.get("params") or {})
-    res = core.run_query(conn, q.sql, params=params, max_rows=int(body.get("maxRows") or 500), with_types=True)
-    return res.to_dict()
+    res = core.run_query(
+        conn, q.sql, params=params, max_rows=_max_rows(body), offset=_offset(body), with_types=True
+    )
+    out = res.to_dict()
+    # A saved query runs on its OWN connection (q.db), which may differ from the
+    # tab that launched it. Report the producing connection so the client tags &
+    # persists the result under it instead of the tab's current connection.
+    out["db"] = conn.logical_db
+    out["env"] = conn.env
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +740,103 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_file(self, code: int, path: Path) -> None:
+        data = path.read_bytes()
+        mime, _ = mimetypes.guess_type(str(path))
+        content_type = mime or "application/octet-stream"
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_events(self) -> None:
+        """SSE stream (see the Events contract above). Runs in this handler's
+        own thread (ThreadingHTTPServer, daemon threads) until the client
+        disconnects — detected by the failed heartbeat/event write."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        q: queue.Queue = queue.Queue(maxsize=64)
+        with _SUB_LOCK:
+            _SUBSCRIBERS.add(q)
+        _ensure_watcher()
+        log.info("GET /api/events (stream opened)")
+        try:
+            self.wfile.write(_sse_format({"type": "hello", "ts": time.time()}))
+            self.wfile.flush()
+            while True:
+                try:
+                    evt = q.get(timeout=HEARTBEAT_SEC)
+                    if evt.get("type") == "_close":  # graceful server stop
+                        break
+                    self.wfile.write(_sse_format(evt))
+                except queue.Empty:
+                    self.wfile.write(b": hb\n\n")
+                self.wfile.flush()
+        except OSError:  # BrokenPipe/ConnectionReset — client went away
+            pass
+        finally:
+            with _SUB_LOCK:
+                _SUBSCRIBERS.discard(q)
+
+    def _serve_react_app(self, path: str) -> bool:
+        """Serve the Vite-built React app — the GUI's only frontend, under /quarry/."""
+        if path == "/quarry":
+            self.send_response(301)
+            query = urlparse(self.path).query
+            self.send_header("Location", "/quarry/" + ("?" + query if query else ""))
+            self.end_headers()
+            return True
+        if not path.startswith("/quarry/"):
+            return False
+        root = _WEB_DIST.resolve()
+        rel = path[len("/quarry/"):] or "index.html"
+        if rel not in ("index.html", "favicon.svg") and not rel.startswith("assets/"):
+            self._send(404, {"error": "not found"})
+            return True
+        target = (root / rel).resolve()
+        if not target.is_relative_to(root):
+            self._send(403, {"error": "forbidden"})
+            return True
+        if not target.is_file():
+            target = root / "index.html"
+            if not target.is_file():
+                self._send(404, {"error": "react app not built"})
+                return True
+        self._send_file(200, target)
+        return True
+
     def _err(self, exc, path):
         if isinstance(exc, QuarryError):
             log.warning("%s → %s (code=%s)", path, exc, exc.exit_code)
         else:
             log.error("%s → %s\n%s", path, exc, traceback.format_exc())
-        self._send(400, {"error": str(exc), "code": getattr(exc, "exit_code", None)})
+        self._send(getattr(exc, "status_code", 400), {"error": str(exc), "code": getattr(exc, "exit_code", None)})
+
+    def _serve_assistant(self, body: dict) -> None:
+        """One request's model stream; deliberately separate from broadcast /events."""
+        from . import assistant
+
+        assistant._text(body.get("conversationId"), "Conversation ID", 100, required=True)
+        if "requestId" in body:
+            assistant._text(body["requestId"], "Request ID", 100, required=True)
+        events = assistant.stream_chat(body, gui=True)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            for event in events:
+                self.wfile.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+        except OSError:
+            pass  # disconnect closes the upstream response and records interruption
+        finally:
+            events.close()
 
     def do_GET(self):
         if not self._local_origin_ok():
@@ -269,14 +844,26 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         qs = parse_qs(u.query)
         g = lambda k: (qs.get(k) or [None])[0]
+        flag = lambda k: str(g(k) or "").lower() not in ("", "0", "false", "no")
         t0 = time.monotonic()
         try:
             if u.path in ("/", "/index.html"):
-                return self._send(200, INDEX_HTML, "text/html")
-            if u.path == "/api/connections":
+                self.send_response(301)
+                self.send_header("Location", "/quarry/")
+                self.end_headers()
+                return
+            if self._serve_react_app(u.path):
+                return
+            if u.path == "/api/events":
+                return self._serve_events()
+            if u.path == "/api/version":
+                out = {"name": "Quarry", "version": __version__}
+            elif u.path == "/api/connections":
                 out = api_connections()
+            elif u.path == "/api/workspaces":
+                out = api_workspaces()
             elif u.path == "/api/tables":
-                out = api_tables(g("db"), g("env"), fresh=bool(g("fresh")))
+                out = api_tables(g("db"), g("env"), fresh=flag("fresh"))
             elif u.path == "/api/inspect":
                 out = api_inspect(g("db"), g("env"), g("key"))
             elif u.path == "/api/columns":
@@ -284,10 +871,29 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/queries":
                 out = api_queries()
             elif u.path == "/api/health":
-                out = api_health(g("db"), g("env"), fresh=bool(g("fresh")), cached_only=bool(g("cached")))
+                out = api_health(g("db"), g("env"), fresh=flag("fresh"), cached_only=flag("cached"))
+            elif u.path == "/api/conninfo":
+                out = api_conninfo(g("db"), g("env"), reveal=flag("reveal"))
+            elif u.path == "/api/update":
+                out = api_update()
+            elif u.path == "/api/changelog":
+                out = api_changelog()
+            elif u.path == "/api/keepalive":
+                out = api_keepalive()
+            elif u.path == "/api/assistant/config":
+                from .assistant_config import config_status
+                out = config_status()
+            elif u.path == "/api/assistant/preferences":
+                from .assistant_config import gui_preferences
+                out = gui_preferences()
+            elif u.path == "/api/assistant/conversations":
+                from . import assistant, assistant_store
+                out = assistant.conversation_view(assistant_store.get(g("id"))) if g("id") else {
+                    "conversations": [assistant.conversation_view(item) for item in assistant_store.list_conversations()]}
             else:
                 return self._send(404, {"error": "not found"})
-            log.info("GET %s (%d ms)", self.path, int((time.monotonic() - t0) * 1000))
+            request_log = log.debug if u.path == "/api/keepalive" else log.info
+            request_log("GET %s (%d ms)", self.path, int((time.monotonic() - t0) * 1000))
             self._send(200, out)
         except BaseException as e:  # noqa: BLE001  (catch SystemExit too)
             self._err(e, "GET " + self.path)
@@ -299,11 +905,55 @@ class Handler(BaseHTTPRequestHandler):
         t0 = time.monotonic()
         try:
             length = int(self.headers.get("Content-Length", 0))
+            if u.path.startswith("/api/assistant/") and not 0 <= length <= 256_000:
+                return self._send(413, {"error": "Assistant request is too large."})
             body = json.loads(self.rfile.read(length) or b"{}")
+            if u.path.startswith("/api/assistant/") and not isinstance(body, dict):
+                return self._send(400, {"error": "Assistant request must be an object."})
             if u.path == "/api/query":
                 out = api_query(body)
+            elif u.path == "/api/assistant/chat":
+                return self._serve_assistant(body)
+            elif u.path == "/api/assistant/conversations":
+                from .assistant import create_conversation
+                out = create_conversation(body)
+            elif u.path == "/api/assistant/cancel":
+                from .assistant import cancel_chat
+                out = cancel_chat(_req(body, "conversationId"), _req(body, "requestId"))
+            elif u.path in {"/api/assistant/conversations/update", "/api/assistant/conversations/apply", "/api/assistant/conversations/restore"}:
+                from . import assistant, assistant_store
+                identity = _req(body, "id")
+                assistant._context(assistant_store.get(identity))
+                if u.path.endswith("/update"):
+                    out = assistant_store.update(identity, body.get("revision"), body.get("sql", ""))
+                elif u.path.endswith("/apply"):
+                    explicit = body.get("explicit", False)
+                    if type(explicit) is not bool:
+                        raise QuarryError("explicit must be a boolean")
+                    out = assistant_store.apply(identity, body.get("revision"), _req(body, "sql"), _req(body, "messageId"), explicit=explicit)
+                else:
+                    out = assistant_store.restore(identity, body.get("revision"), _req(body, "checkpointId"))
+                out = assistant.conversation_view(out)
+            elif u.path == "/api/record-link":
+                try:
+                    out = row_link.record_query(_resolve(_req(body, "db"), body.get("env")),
+                                                _req(body, "sql"), _req(body, "row"))
+                except Exception:
+                    out = {"reason": "metadata_unavailable"}
             elif u.path == "/api/run":
                 out = api_run(body)
+            elif u.path == "/api/local/up":
+                out = api_local_up(body)
+            elif u.path == "/api/local/sync":
+                out = api_local_sync(body)
+            elif u.path == "/api/workspaces/add":
+                out = api_workspace_add(body)
+            elif u.path == "/api/workspaces/remove":
+                out = api_workspace_remove(body)
+            elif u.path == "/api/keepalive/up":
+                out = api_keepalive_up()
+            elif u.path == "/api/keepalive/down":
+                out = api_keepalive_down()
             else:
                 return self._send(404, {"error": "not found"})
             log.info("POST %s (%d ms)", u.path, int((time.monotonic() - t0) * 1000))
@@ -322,11 +972,16 @@ def _port_pids(port: int) -> list[int]:
 
 
 def _is_quarry_gui(pid: int) -> bool:
+    """True only for *our own* quarry GUI process — never a foreign 'gui' command,
+    so _reclaim_port can't SIGTERM someone else's server on the same port."""
     try:
         r = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
                            capture_output=True, text=True, timeout=3)
         c = r.stdout.lower()
-        return "gui" in c and ("quarry" in c or "/qy" in c or c.strip().endswith(" gui"))
+        if "gui" not in c:
+            return False
+        # require an unambiguous quarry/qy marker in the command line
+        return "quarry" in c or "/qy " in c or c.strip().endswith("/qy") or "-m quarry" in c
     except Exception:
         return False
 
@@ -371,19 +1026,21 @@ def _bind(host: str, port: int) -> tuple[ThreadingHTTPServer, int]:
         return ThreadingHTTPServer((host, new_port), Handler), new_port
 
 
-def serve(host="127.0.0.1", port=8765, ws_path=None, open_browser=True) -> int:
+def serve(host="127.0.0.1", port=8765, ws_path=None, open_browser=True) -> int:  # pragma: no cover
+    # blocking serve_forever loop — exercised by the real `qy gui` e2e, not the in-process gate
     workspace.configure_workspace(ws_path)
     _setup_logging()
-    _load_cache()
+    cache.load()
+    _ensure_update_checker()
     httpd, port = _bind(host, port)
     url = f"http://{host}:{port}"
     homes = ", ".join(str(w.home) for w in workspace.WS_LIST)
     print(f"Quarry GUI → {url}", flush=True)
     print(f"  workspace(s): {homes}", flush=True)
-    print("  requests + errors log below; Ctrl-C to stop.", flush=True)
+    print("  activity + errors log below; Ctrl-C to stop.", flush=True)
     if open_browser:
         try:
-            webbrowser.open(url)
+            webbrowser.open(f"{url}/quarry/")
         except Exception:
             pass
     try:
@@ -391,792 +1048,13 @@ def serve(host="127.0.0.1", port=8765, ws_path=None, open_browser=True) -> int:
     except KeyboardInterrupt:
         print("\nbye.")
     finally:
+        _close_event_streams()
         httpd.server_close()
     return 0
 
 
 def main() -> int:
     return serve()
-
-
-INDEX_HTML = r"""<!doctype html>
-<html lang="zh" data-theme="dark"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Quarry</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%2032%2032%27%3E%3Crect%20width%3D%2732%27%20height%3D%2732%27%20rx%3D%277%27%20fill%3D%27%23c0824f%27/%3E%3Ctext%20x%3D%2716%27%20y%3D%2717%27%20font-family%3D%27-apple-system%2CSegoe%20UI%2CRoboto%2Csans-serif%27%20font-size%3D%2720%27%20font-weight%3D%27700%27%20fill%3D%27%23241407%27%20text-anchor%3D%27middle%27%20dominant-baseline%3D%27central%27%3EQ%3C/text%3E%3C/svg%3E">
-<style>
-:root{
-  --bg0:#0e1116; --bg1:#1c2028; --bg2:#242a33; --bg3:#2f3641;
-  --line:#404a58; --line2:#525d6e;
-  --fg:#eef0f3; --fg2:#c4cbd6; --fg3:#a3abb8;
-  --accent:#c0824f; --accent-hi:#d4966a; --accent-ink:#241407;
-  --red:#c0504a; --red-bg:#3a2222; --red-fg:#e79a93;
-  --ok:#8fb48c; --ok-bg:#232f24;
-  --num:#8fbcea; --uuid:#c79fe2; --ts:#6fc8b6; --bool:#9cc199; --null:#8e97a4;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --sans:-apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif;
-}
-html[data-theme=light]{
-  --bg0:#f4f3ee; --bg1:#ffffff; --bg2:#f0efe9; --bg3:#e7e5dd;
-  --line:#d6d3c7; --line2:#bfbaa9;
-  --fg:#1c1c19; --fg2:#54534b; --fg3:#7a7970;
-  --accent:#b06a34; --accent-hi:#c17b43; --accent-ink:#ffffff;
-  --red:#b23b34; --red-bg:#f6e3e1; --red-fg:#8f2f29;
-  --ok:#4f7a48; --ok-bg:#e6efe2;
-  --num:#215da0; --uuid:#6a3fa0; --ts:#137a68; --bool:#3f6a39; --null:#8a887e;
-}
-*{box-sizing:border-box}
-body{margin:0;font:14px/1.55 var(--sans);background:var(--bg0);color:var(--fg);height:100vh;display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-header{display:flex;align-items:center;gap:11px;padding:10px 14px;background:var(--bg1);border-bottom:1px solid var(--line)}
-.logo{width:20px;height:20px;border-radius:5px;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-weight:600;font-size:12px}
-.brand{font-weight:600;letter-spacing:.3px}
-.ws{color:var(--fg3);font-size:12.5px}
-.sp{flex:1}
-.badge{font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid var(--line2)}
-.badge.prod{background:var(--red-bg);color:var(--red-fg);border-color:var(--red)}
-.badge.ro{background:var(--ok-bg);color:var(--ok);border-color:transparent}
-.iconbtn{background:none;border:0;color:var(--fg3);cursor:pointer;font-size:16px;padding:3px;border-radius:5px}
-.iconbtn:hover{color:var(--fg);background:var(--bg2)}
-main{flex:1;display:flex;min-height:0}
-aside{width:244px;background:var(--bg1);border-right:1px solid var(--line);overflow:auto;padding:7px 0;flex:none}
-.grp{display:flex;align-items:center;gap:7px;padding:9px 12px 4px;color:var(--fg2);font-size:12px;text-transform:uppercase;letter-spacing:.5px;cursor:pointer;user-select:none}
-.grp .ti{font-size:13px}
-.grp .wsorig{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg3);font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
-.dbrow{display:flex;align-items:center;gap:8px;padding:6px 12px 6px 22px;color:var(--fg);cursor:pointer;border-radius:0}
-.dbrow:hover{background:var(--bg2)}
-.dbrow.on{background:var(--bg2);box-shadow:inset 2px 0 0 var(--accent);color:#fff}
-html[data-theme=light] .dbrow.on{color:#000}
-.dbrow .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--fg3);opacity:.4;transition:background .2s}
-.dbrow .dot.ok{background:#4e9a6b;opacity:.9}
-.dbrow .dot.down{background:#cf5b52;opacity:.9}
-.dbrow .dot.chk{opacity:.85;animation:pulse 1s ease-in-out infinite}
-.dbrow.down{opacity:.5}
-.dbrow.down:hover{opacity:.85}
-@keyframes pulse{50%{opacity:.25}}
-.dbrow small{margin-left:auto;color:var(--fg3);font-size:11.5px}
-.pills{display:flex;flex-wrap:wrap;gap:4px;padding:1px 10px 5px 30px}
-.pill{font-size:11.5px;padding:2px 9px;border-radius:10px;border:1px solid var(--line2);color:var(--fg2);cursor:pointer}
-.pill.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.pill.on.prod{background:var(--red);border-color:var(--red);color:#fff}
-.tname,.qname{display:flex;align-items:center;gap:8px;padding:5px 12px 5px 22px;color:var(--fg2);font-family:var(--mono);font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tname:hover,.qname:hover{background:var(--bg2);color:var(--fg)}
-.tname .ti,.qname .ti{font-size:14px;color:var(--fg3);flex:none}
-section{flex:1;display:flex;flex-direction:column;min-width:0}
-.qhead{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--bg1);border-bottom:1px solid var(--line);flex:none}
-.qtitle{font-family:var(--mono);font-size:13.5px}
-.runon{color:var(--fg3);font-size:12px}
-.esw{display:flex;gap:5px}
-.ep{font-size:12px;padding:3px 11px;border-radius:6px;border:1px solid var(--line2);color:var(--fg2);cursor:pointer}
-.ep.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.ep.on.prod{background:var(--red);border-color:var(--red);color:#fff}
-.edwrap{position:relative;background:var(--bg2);overflow:hidden;height:154px}
-.hresizer{height:6px;flex:none;cursor:row-resize;background:var(--bg1);border-bottom:1px solid var(--line);position:relative}
-.hresizer::after{content:"";position:absolute;left:50%;top:2px;width:30px;height:2px;transform:translateX(-50%);background:var(--fg3);opacity:.4;border-radius:2px}
-.hresizer:hover{background:var(--bg3)}
-.hresizer:hover::after{background:var(--accent);opacity:1}
-.edwrap pre,.edwrap textarea{margin:0;padding:11px 14px;font-family:var(--mono);font-size:13.5px;line-height:1.6;border:0;white-space:pre-wrap;word-break:break-word;width:100%;height:100%;box-sizing:border-box}
-.edwrap pre{position:absolute;inset:0;pointer-events:none;color:var(--fg);overflow:hidden}
-.edwrap textarea{position:relative;background:transparent;color:transparent;caret-color:var(--accent);resize:none;outline:none;overflow:auto}
-.tok-kw{color:var(--accent)}.tok-fn{color:var(--num)}.tok-str{color:var(--ok)}.tok-num{color:var(--num)}.tok-cm{color:var(--fg3)}
-.toolbar{display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--bg1);border-bottom:1px solid var(--line);flex:none}
-.btn{font-size:13px;color:var(--fg);background:var(--bg2);border:1px solid var(--line2);border-radius:6px;padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
-.btn:hover{background:var(--bg3)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:500}
-.btn.primary:hover{background:var(--accent-hi)}
-.gridwrap{flex:1;overflow:auto;position:relative}
-table{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;font-family:var(--mono);font-size:13px;table-layout:auto}
-th{position:sticky;top:0;z-index:1;background:var(--bg2);color:var(--fg2);font-weight:500;text-align:left;padding:8px 24px 8px 12px;border-bottom:1px solid var(--line2);border-right:1px solid var(--line);white-space:nowrap;cursor:pointer;user-select:none}
-th .ty{color:var(--fg3);font-size:11px;margin-left:5px;font-weight:400}
-th .ar{color:var(--accent);margin-left:4px;font-size:10px}
-th .rz{position:absolute;right:0;top:0;width:6px;height:100%;cursor:col-resize}
-th .rz:hover{background:var(--accent)}
-td{padding:7px 12px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:480px;cursor:default}
-tr:nth-child(even) td{background:var(--bg1)}
-tr:hover td{background:var(--bg2)}
-td.num{color:var(--num);text-align:right}td.uuid{color:var(--uuid)}td.ts{color:var(--ts)}td.bool{color:var(--bool)}td.json{color:var(--uuid)}
-td.null{color:var(--null);font-style:italic}
-td.sel{outline:2px solid var(--accent);outline-offset:-2px}
-td.rownum{color:var(--fg3);text-align:right;cursor:pointer;background:var(--bg2);position:sticky;left:0}
-td.rownum:hover{color:var(--accent)}
-th.rownum{left:0;z-index:3;cursor:default;padding:6px 8px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.spin .ti-loader{display:inline-block;animation:spin 1s linear infinite}
-.resizer{width:5px;flex:none;cursor:col-resize;background:transparent}
-.resizer:hover{background:var(--accent)}
-.tsearch{width:calc(100% - 24px);margin:3px 12px 5px;padding:6px 10px;font-size:13px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--fg);font-family:var(--mono)}
-.tsearch::placeholder{color:var(--fg3)}
-.rediskey{display:flex;align-items:center;gap:6px}
-.rbadge{font-size:9.5px;padding:0 5px;border-radius:8px;background:var(--bg3);color:var(--fg2);margin-left:auto;flex:none}
-.rbadge.ttl{color:var(--accent)}
-.knode{cursor:pointer;user-select:none}
-.kchild{padding-left:12px}
-.status{display:flex;align-items:center;gap:14px;padding:7px 14px;background:var(--bg1);border-top:1px solid var(--line);color:var(--fg2);font-size:12.5px;flex:none}
-.status .cu{color:var(--accent)}
-.status .tr{color:var(--accent)}
-.empty{color:var(--fg3);padding:22px;text-align:center}
-.err{color:var(--red-fg);padding:14px;white-space:pre-wrap;font-family:var(--mono);font-size:12px}
-.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--red-bg);color:var(--red-fg);border:1px solid var(--red);padding:8px 14px;border-radius:8px;font-size:12.5px;max-width:70%;z-index:50}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:60}
-.modal .box{background:var(--bg1);border:1px solid var(--line2);border-radius:12px;max-width:70%;max-height:70%;overflow:auto;padding:16px}
-.modal pre{margin:0;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word;color:var(--fg)}
-.modal .mh{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:var(--fg2);font-size:12px}
-.spin{color:var(--fg3);padding:22px;text-align:center}
-.tabs{display:flex;gap:4px;padding:6px 10px 0;background:var(--bg1);flex:none;overflow-x:auto}
-.tab{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono);padding:4px 10px;border:1px solid var(--line);border-bottom:0;border-radius:7px 7px 0 0;color:var(--fg3);cursor:pointer;white-space:nowrap;background:var(--bg1);max-width:180px;overflow:hidden;text-overflow:ellipsis}
-.tab.on{background:var(--bg2);color:var(--fg);border-color:var(--line2)}
-.tab .x{color:var(--fg3);padding:0 2px;border-radius:3px;flex:none}
-.tab .x:hover{color:var(--red-fg);background:var(--bg3)}
-.tab.add{border-style:dashed;padding:4px 9px;flex:none}
-.tab.add:hover{color:var(--accent)}
-.jt{margin-left:14px}.jt>summary{cursor:pointer;color:var(--fg2);font-family:var(--mono);font-size:12.5px;user-select:none}
-.jrow{margin-left:30px;font-family:var(--mono);font-size:12.5px;word-break:break-word}
-.jk{color:var(--accent-hi)}.jstr{color:var(--ok)}.jnum{color:var(--num)}.jbool{color:var(--bool)}.jnull{color:var(--null);font-style:italic}
-.jm{color:var(--fg3);font-size:11px}
-.hsearch{width:100%;margin:0 0 8px;padding:6px 10px;font-size:13px;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--fg);font-family:var(--mono);box-sizing:border-box}
-.hmeta{color:var(--fg3);font-size:11px;margin-top:3px;font-family:var(--sans)}
-.acbox{position:fixed;z-index:80;background:var(--bg1);border:1px solid var(--line2);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);max-height:260px;overflow:auto;min-width:196px;padding:4px;font-family:var(--mono);font-size:13.5px;display:none}
-.acitem{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:5px;color:var(--fg);cursor:pointer;white-space:nowrap}
-.acitem.on{background:var(--accent);color:var(--accent-ink)}
-.acitem .ack{font-size:9px;opacity:.85;width:24px;flex:none;text-transform:uppercase}
-.ack-tbl{color:var(--ts)}.ack-col{color:var(--num)}.ack-kw{color:var(--accent-hi)}
-.acitem.on .ack,.acitem.on .ack-tbl,.acitem.on .ack-col,.acitem.on .ack-kw{color:var(--accent-ink)}
-</style>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.0.0/dist/tabler-icons.min.css" media="print" onload="this.media='all'">
-</head>
-<body>
-<header>
-  <div class="logo">Q</div><span class="brand">Quarry</span>
-  <span class="ws" id="ws"></span>
-  <span class="sp"></span>
-  <span class="badge prod" id="prodBadge" style="display:none"><i class="ti ti-alert-triangle"></i> prod</span>
-  <span class="badge ro" id="roBadge"><i class="ti ti-lock"></i> read-only · auto LIMIT</span>
-  <button class="iconbtn" id="healthBtn" title="Check all connections"><i class="ti ti-activity"></i></button>
-  <button class="iconbtn" id="langBtn" style="font-size:13px;font-weight:600" title="Language">中</button>
-  <button class="iconbtn" id="themeBtn" title="Toggle theme"><i class="ti ti-sun"></i></button>
-</header>
-<main>
-  <aside id="side"><div class="spin"><i class="ti ti-loader"></i> Loading connections…</div></aside>
-  <div class="resizer" id="resizer"></div>
-  <section>
-    <div class="qhead">
-      <span class="qtitle" id="qtitle">No connection selected</span>
-      <span class="runon" id="runon" style="display:none">runs on</span>
-      <span class="esw" id="esw"></span>
-      <span class="sp"></span>
-    </div>
-    <div class="tabs" id="tabs"></div>
-    <div class="edwrap">
-      <pre id="hl" aria-hidden="true"></pre>
-      <textarea id="sql" spellcheck="false" placeholder="Pick a connection, then write SQL — Cmd/Ctrl+Enter runs"></textarea>
-    </div>
-    <div class="hresizer" id="edresizer" title="Drag to resize the editor"></div>
-    <div class="toolbar">
-      <button class="btn primary" id="runBtn"><i class="ti ti-player-play"></i> <span id="runLbl">Run</span></button>
-      <button class="btn" id="fmtBtn"><i class="ti ti-wand"></i> <span id="fmtLbl">Format</span></button>
-      <button class="btn" id="expBtn" title="Show query plan (EXPLAIN)"><i class="ti ti-route"></i> EXPLAIN</button>
-      <button class="btn" id="csvBtn"><i class="ti ti-download"></i> CSV</button>
-      <button class="btn" id="jsonBtn"><i class="ti ti-braces"></i> JSON</button>
-      <span class="sp"></span>
-      <button class="btn" id="histBtn"><i class="ti ti-history"></i> <span id="histLbl">History</span></button>
-    </div>
-    <div class="gridwrap" id="grid"><div class="empty">Pick a connection and a table, or write some SQL.</div></div>
-    <div class="status" id="status" style="display:none"></div>
-  </section>
-</main>
-<script>
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-/* ---- i18n: English default, 中文 via the 中/EN toggle ---- */
-const I18N={
-en:{loading:'Loading connections…',no_conn:'No connection selected',runs_on:'runs on',
- ph_sql:'Write SQL — Cmd/Ctrl+Enter runs',ph_sql_first:'Pick a connection, then write SQL — Cmd/Ctrl+Enter runs',
- ph_redis:'redis command, e.g. GET key / SCAN 0 / HGETALL key',
- run:'Run',fmt:'Format',hist:'History',ro_badge:'read-only · auto LIMIT',
- check_health:'Check all connections',toggle_theme:'Toggle theme',switch_lang:'切换到中文',
- drag_editor:'Drag to resize the editor',explain_title:'Show query plan (EXPLAIN)',
- empty_grid:'Pick a connection and a table, or write some SQL.',rows:'rows',truncated:'truncated to cap',
- row_detail:'Row detail',cell:'Cell · click outside to close ·',copy:'Copy',copied:'Copied',
- saved_queries:'saved queries',other:'other',params_suffix:'params',fill_params:'parameters',
- required:'*required',default_v:'default',
- filter_tables:'Filter tables…',filter_keys:'Filter keys…',no_tables:'no tables',no_keys:'no keys',
- running:'Running…',hist_title:'Query history',hist_search:'Search history… (SQL / connection)',
- no_match:'no match',no_hist:'No history yet',new_query:'new query',close_tab:'Close tab',new_tab:'New tab',
- just_now:'just now',min_ago:'m ago',hr_ago:'h ago',day_ago:'d ago',
- no_plan_redis:'no query plan for redis',pick_conn:'pick a connection first',empty_plan:'(empty plan)'},
-zh:{loading:'加载连接…',no_conn:'未选连接',runs_on:'运行于',
- ph_sql:'写 SQL，Cmd/Ctrl+Enter 执行',ph_sql_first:'选左侧连接后写 SQL，Cmd/Ctrl+Enter 执行',
- ph_redis:'redis 命令，如 GET key / SCAN 0 / HGETALL key',
- run:'运行',fmt:'格式化',hist:'历史',ro_badge:'只读 · 自动 LIMIT',
- check_health:'检查所有连接可用性',toggle_theme:'切换主题',switch_lang:'Switch to English',
- drag_editor:'拖拽调整编辑器高度',explain_title:'查看执行计划(EXPLAIN)',
- empty_grid:'选一个连接和表，或写条 SQL。',rows:'行',truncated:'已截断到上限',
- row_detail:'整行详情',cell:'单元格 · 点外部关闭 ·',copy:'复制',copied:'已复制',
- saved_queries:'已存查询',other:'其他',params_suffix:'参数',fill_params:'填参数',
- required:'*必填',default_v:'默认',
- filter_tables:'过滤表…',filter_keys:'过滤 key…',no_tables:'无表',no_keys:'无 key',
- running:'执行中…',hist_title:'查询历史',hist_search:'搜索历史…（SQL / 连接名）',
- no_match:'无匹配',no_hist:'暂无历史',new_query:'新查询',close_tab:'关闭标签',new_tab:'新标签',
- just_now:'刚刚',min_ago:' 分钟前',hr_ago:' 小时前',day_ago:' 天前',
- no_plan_redis:'redis 无执行计划',pick_conn:'先选一个连接',empty_plan:'（空计划）'}};
-let LANG=localStorage.getItem('qy_lang')||'en';
-const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
-const j=(u,o)=>fetch(u,o).then(async r=>{const d=await r.json();if(!r.ok)throw d;return d;});
-let cur={db:null,env:null,engine:null,isRedis:false}, lastRes=null, TREE=null, selTd=null;
-const QMETA={}, TCACHE={}, HEALTH={};
-function setHealth(db,ok){HEALTH[db]=ok;$$('#side .dbrow').forEach(x=>{if(x.dataset.db===db){x.classList.toggle('down',!ok);const d=x.querySelector('.dot');if(d){d.classList.remove('ok','down','chk');d.classList.add(ok?'ok':'down');}}});}
-async function checkHealth(){
-  const btn=$('#healthBtn');btn.innerHTML='<i class="ti ti-loader"></i>';btn.classList.add('spin');
-  $$('#side .dbrow .dot').forEach(d=>{if(!d.classList.contains('ok')&&!d.classList.contains('down'))d.classList.add('chk');});
-  const items=[];for(const g of TREE)for(const it of g.items)items.push(it);
-  let i=0;
-  const worker=async()=>{ while(i<items.length){ const it=items[i++];
-    const env=((it.envs.find(e=>e.env==='dev')||it.envs[0]||{}).env)||'';
-    await fetch(`/api/health?db=${encodeURIComponent(it.db)}&env=${encodeURIComponent(env)}&fresh=1`)
-      .then(r=>r.json()).then(d=>setHealth(it.db,!!d.ok)).catch(()=>setHealth(it.db,false));
-  }};
-  await Promise.all(Array.from({length:3},worker));   // cap concurrency at 3 (SSH races skew results)
-  btn.classList.remove('spin');btn.innerHTML='<i class="ti ti-activity"></i>';
-}
-function loadHealthCache(){   // paint health dots from the backend cache (no probing, instant)
-  for(const g of TREE) for(const it of g.items){
-    const env=((it.envs.find(e=>e.env==='dev')||it.envs[0]||{}).env)||'';
-    fetch(`/api/health?db=${encodeURIComponent(it.db)}&env=${encodeURIComponent(env)}&cached=1`)
-      .then(r=>r.json()).then(d=>{if(d.ok===true||d.ok===false)setHealth(it.db,d.ok);}).catch(()=>{});
-  }
-}
-const HIST=JSON.parse(localStorage.getItem('qy_hist')||'[]'); let hi=-1;
-
-/* theme */
-const themeBtn=$('#themeBtn');
-function setTheme(t){document.documentElement.dataset.theme=t;localStorage.setItem('qy_theme',t);
-  themeBtn.innerHTML=t==='dark'?'<i class="ti ti-sun"></i>':'<i class="ti ti-moon"></i>';}
-setTheme(localStorage.getItem('qy_theme')||'dark');
-themeBtn.onclick=()=>setTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
-
-/* language: apply the active language to static chrome; toggle reloads */
-(function(){
-  document.documentElement.lang=LANG==='zh'?'zh':'en';
-  $('#roBadge').innerHTML='<i class="ti ti-lock"></i> '+t('ro_badge');
-  $('#healthBtn').title=t('check_health'); themeBtn.title=t('toggle_theme');
-  $('#qtitle').textContent=t('no_conn'); $('#runon').textContent=t('runs_on');
-  $('#edresizer').title=t('drag_editor'); $('#expBtn').title=t('explain_title');
-  $('#runLbl').textContent=t('run'); $('#fmtLbl').textContent=t('fmt'); $('#histLbl').textContent=t('hist');
-  $('#side').innerHTML='<div class="spin"><i class="ti ti-loader"></i> '+t('loading')+'</div>';
-  $('#grid').innerHTML='<div class="empty">'+t('empty_grid')+'</div>';
-  $('#sql').placeholder=t('ph_sql_first');
-  const lb=$('#langBtn');
-  lb.textContent=LANG==='en'?'中':'EN'; lb.title=t('switch_lang');
-  lb.onclick=()=>{localStorage.setItem('qy_lang',LANG==='en'?'zh':'en');location.reload();};
-})();
-
-/* sidebar resize */
-(function(){const rz=$('#resizer'),aside=$('#side');const w=localStorage.getItem('qy_sw');if(w)aside.style.width=w+'px';
-  rz.onmousedown=e=>{e.preventDefault();const sx=e.pageX,sw=aside.offsetWidth;
-    const mv=ev=>{const nw=Math.min(480,Math.max(150,sw+ev.pageX-sx));aside.style.width=nw+'px';localStorage.setItem('qy_sw',nw);};
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-    document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);};})();
-
-/* editor resize (full-width bar, like the sidebar divider) */
-(function(){const rz=$('#edresizer'),ed=document.querySelector('.edwrap');const h=localStorage.getItem('qy_edh');if(h)ed.style.height=h+'px';
-  rz.onmousedown=e=>{e.preventDefault();const sy=e.pageY,sh=ed.offsetHeight;
-    const mv=ev=>{const nh=Math.min(window.innerHeight*0.7,Math.max(70,sh+ev.pageY-sy));ed.style.height=nh+'px';localStorage.setItem('qy_edh',Math.round(nh));};
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-    document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);};})();
-
-/* SQL highlight overlay */
-const KW=/\b(select|from|where|and|or|not|in|is|null|order|by|group|having|limit|offset|join|left|right|inner|outer|on|as|distinct|count|sum|avg|min|max|insert|update|delete|set|values|into|create|drop|alter|table|with|case|when|then|else|end|asc|desc|between|like|ilike|union|all)\b/gi;
-function highlight(t){
-  let h=esc(t);
-  h=h.replace(/(--[^\n]*)/g,'<span class="tok-cm">$1</span>');
-  h=h.replace(/('(?:[^']|'')*')/g,'<span class="tok-str">$1</span>');
-  h=h.replace(/\b(\d+\.?\d*)\b/g,'<span class="tok-num">$1</span>');
-  h=h.replace(KW,'<span class="tok-kw">$&</span>');
-  return h+'\n';
-}
-const ta=$('#sql'), hl=$('#hl');
-function syncHL(){hl.innerHTML=highlight(ta.value);hl.scrollTop=ta.scrollTop;}
-ta.addEventListener('input',()=>{syncHL();saveUI();acUpdate();}); ta.addEventListener('scroll',()=>{hl.scrollTop=ta.scrollTop;acClose();});
-ta.addEventListener('blur',()=>setTimeout(acClose,120));
-ta.addEventListener('keydown',e=>{   // capture: handle AC nav before run/history handlers
-  if(!acOpen()||e.metaKey||e.ctrlKey)return;   // let Cmd/Ctrl combos (run, history) through
-  if(e.key==='ArrowDown'){e.preventDefault();e.stopPropagation();acMove(1);}
-  else if(e.key==='ArrowUp'){e.preventDefault();e.stopPropagation();acMove(-1);}
-  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();e.stopPropagation();acAccept();}
-  else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();acClose();}
-},true);
-function setSQL(v){ta.value=v;syncHL();acClose();if(typeof saveUI==='function')saveUI();}
-
-/* ---- editor tabs: each tab = {sql, db, env}, persisted across restarts ---- */
-let TABS=[], ATI=0;
-(function(){
-  try{TABS=JSON.parse(localStorage.getItem('qy_tabs')||'null')||[];}catch(e){TABS=[];}
-  if(!TABS.length){                      // migrate from the old single-state key
-    let ui=null; try{ui=JSON.parse(localStorage.getItem('qy_ui')||'null');}catch(e){}
-    TABS=[{sql:(ui&&ui.sql)||'',db:(ui&&ui.db)||null,env:(ui&&ui.env)||null}];
-  }
-  ATI=Math.min(+(localStorage.getItem('qy_ati')||0)||0,TABS.length-1);
-})();
-function tabTitle(tb){return tb.db?(tb.db+(tb.env?'@'+tb.env:'')):((tb.sql||'').trim().split(/\s+/).slice(0,2).join(' ')||t('new_query'));}
-function saveUI(){
-  TABS[ATI]={sql:ta.value,db:cur.db,env:cur.env};
-  try{localStorage.setItem('qy_tabs',JSON.stringify(TABS));localStorage.setItem('qy_ati',String(ATI));}catch(e){}
-  renderTabs();
-}
-function renderTabs(){
-  const bar=$('#tabs'); if(!bar)return;
-  bar.innerHTML=TABS.map((tb,i)=>`<span class="tab${i===ATI?' on':''}" data-i="${i}" title="${esc((tb.sql||'').slice(0,300))}">${esc(tabTitle(tb))}${TABS.length>1?`<span class="x" data-x="${i}" title="${t('close_tab')}">×</span>`:''}</span>`).join('')
-    +`<span class="tab add" id="tabAdd" title="${t('new_tab')}">+</span>`;
-  bar.querySelectorAll('.tab[data-i]').forEach(el=>el.onclick=e=>{
-    if(e.target.dataset.x!==undefined){e.stopPropagation();closeTab(+e.target.dataset.x);return;}
-    switchTab(+el.dataset.i);});
-  const add=bar.querySelector('#tabAdd');
-  if(add)add.onclick=()=>{TABS[ATI]={sql:ta.value,db:cur.db,env:cur.env};TABS.push({sql:'',db:cur.db,env:cur.env});switchTab(TABS.length-1);};
-}
-function loadTab(t){
-  ta.value=t.sql||''; syncHL(); acClose();
-  if(t.db&&TREE&&TREE.some(g=>g.items.some(x=>x.db===t.db))) selectDb(t.db,t.env||null);
-  else saveUI();
-}
-function switchTab(i){
-  if(i===ATI&&TABS[i]){renderTabs();return;}
-  TABS[ATI]={sql:ta.value,db:cur.db,env:cur.env};
-  ATI=i; loadTab(TABS[i]); ta.focus();
-}
-function closeTab(i){
-  const wasActive=i===ATI;
-  TABS.splice(i,1);
-  if(!TABS.length)TABS=[{sql:'',db:cur.db,env:cur.env}];
-  if(i<ATI)ATI--;
-  ATI=Math.min(ATI,TABS.length-1);
-  if(wasActive)loadTab(TABS[ATI]); else saveUI();
-}
-
-/* ---- SQL autocomplete: local keywords + tables + columns (no network beyond /api/columns) ---- */
-const AC_KW='select from where and or not in is null order by group having limit offset join left right inner outer on as distinct count sum avg min max coalesce with case when then else end asc desc between like ilike union all insert update delete set values into'.split(' ');
-const COLS={};                               // table -> [colnames], lazily filled from /api/columns
-let acItems=[], acIndex=0, acTok=null, acBox=null;
-function acTablesNow(){const d=TCACHE[cur.db+'@'+(cur.env||'')];return (d&&d.tables)||[];}
-function fetchCols(table){
-  if(COLS[table]!==undefined)return; COLS[table]=[];   // [] marks in-flight (avoids refetch)
-  fetch(`/api/columns?db=${encodeURIComponent(cur.db)}&env=${encodeURIComponent(cur.env||'')}&table=${encodeURIComponent(table)}`)
-    .then(r=>r.json()).then(d=>{COLS[table]=d.columns||[];acUpdate();}).catch(()=>{});
-}
-function caretXY(){
-  const s=getComputedStyle(ta), m=document.createElement('div');
-  ['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','paddingTop','paddingRight','paddingBottom','paddingLeft'].forEach(p=>m.style[p]=s[p]);
-  m.style.cssText+=';position:absolute;visibility:hidden;box-sizing:border-box;white-space:pre-wrap;word-break:break-word;top:0;left:-9999px';
-  m.style.width=ta.clientWidth+'px';
-  m.textContent=ta.value.slice(0,ta.selectionStart);
-  const cur2=document.createElement('span'); cur2.textContent='​'; m.appendChild(cur2);
-  document.body.appendChild(m);
-  const x=cur2.offsetLeft, y=cur2.offsetTop, lh=parseFloat(s.lineHeight)||16; m.remove();
-  const r=ta.getBoundingClientRect();
-  return {x:r.left+x-ta.scrollLeft, y:r.top+y-ta.scrollTop+lh};
-}
-function acOpen(){return acBox&&acBox.style.display==='block'&&acItems.length;}
-function acClose(){if(acBox)acBox.style.display='none';acItems=[];}
-function acShow(items,from,to){
-  if(!items.length){acClose();return;}
-  acItems=items;acIndex=0;acTok={from,to};
-  if(!acBox){acBox=document.createElement('div');acBox.className='acbox';document.body.appendChild(acBox);
-    acBox.onmousedown=e=>{e.preventDefault();const el=e.target.closest('[data-i]');if(el)acAccept(+el.dataset.i);};}
-  acBox.innerHTML=items.map((it,i)=>`<div class="acitem${i===0?' on':''}" data-i="${i}"><span class="ack ack-${it.k}">${it.k}</span>${esc(it.t)}</div>`).join('');
-  const c=caretXY(); acBox.style.left=Math.round(c.x)+'px'; acBox.style.top=Math.round(c.y)+'px'; acBox.style.display='block';
-}
-function acMove(d){if(!acOpen())return;acIndex=(acIndex+d+acItems.length)%acItems.length;
-  [...acBox.children].forEach((el,i)=>el.classList.toggle('on',i===acIndex));
-  acBox.children[acIndex]?.scrollIntoView({block:'nearest'});}
-function acAccept(i){
-  if(!acOpen())return; const it=acItems[i==null?acIndex:i]; if(!it){acClose();return;}
-  const v=ta.value, np=acTok.from+it.t.length;
-  ta.value=v.slice(0,acTok.from)+it.t+v.slice(acTok.to);
-  ta.selectionStart=ta.selectionEnd=np; syncHL(); saveUI(); acClose(); ta.focus();
-}
-function acUpdate(){
-  if(!cur.db||cur.isRedis||document.activeElement!==ta){acClose();return;}
-  const pos=ta.selectionStart, pre=ta.value.slice(0,pos); let m;
-  if(m=pre.match(/([A-Za-z_][\w$]*)\.([\w$]*)$/)){        // table.col
-    const tbl=m[1], frag=m[2].toLowerCase(); fetchCols(tbl);
-    const cands=(COLS[tbl]||[]).filter(c=>c.toLowerCase().startsWith(frag)).map(t=>({t,k:'col'}));
-    acShow(cands.slice(0,12),pos-m[2].length,pos); return;
-  }
-  if(m=pre.match(/([A-Za-z_][\w$]*)$/)){                  // bare word
-    const frag=m[1], lf=frag.toLowerCase();
-    const prevKw=(pre.slice(0,pre.length-frag.length).match(/([A-Za-z_]\w*)\s+$/)||[])[1]||'';
-    const tbls=acTablesNow().filter(t=>t.toLowerCase().startsWith(lf)).map(t=>({t,k:'tbl'}));
-    let list=tbls;
-    if(!/^(from|join|into|update)$/i.test(prevKw)){       // after FROM/JOIN -> tables only
-      const rc=(lastRes?lastRes.columns.map(c=>c.name):[]).filter(c=>c.toLowerCase().startsWith(lf)).map(t=>({t,k:'col'}));
-      const kw=AC_KW.filter(k=>k.startsWith(lf)).map(k=>({t:k.toUpperCase(),k:'kw'}));
-      list=tbls.concat(rc,kw);
-    }
-    const seen=new Set(), out=[];
-    for(const it of list){const key=it.k+':'+it.t.toLowerCase();if(seen.has(key))continue;seen.add(key);out.push(it);if(out.length>=12)break;}
-    if(out.length===1&&out[0].t.toLowerCase()===lf){acClose();return;}   // already fully typed
-    acShow(out,pos-frag.length,pos); return;
-  }
-  acClose();
-}
-
-/* sidebar */
-async function loadSide(){
-  const data=await j('/api/connections'); TREE=data.groups;
-  const wss=data.workspaces||[data.workspace];
-  $('#ws').innerHTML=wss.length>1
-    ? `<i class="ti ti-stack-2"></i> ${wss.length} workspaces`
-    : '<i class="ti ti-folder"></i> '+esc(data.workspace);
-  $('#ws').title=wss.join('\n');
-  let html='';
-  for(const g of TREE){
-    const orig=g.ws?g.ws.split('/').slice(-2).join('/'):'';
-    const gkey=(g.ws||'')+'::'+(g.group||t('other'));
-    html+=`<div class="grp" data-grp data-gkey="${esc(gkey)}"><i class="ti ti-chevron-down"></i> ${esc(g.group||t('other'))}${orig?`<span class="wsorig" title="${esc(g.ws)}">${esc(orig)}</span>`:''}</div><div class="gbody">`;
-    for(const it of g.items){
-      const rc=it.engine==='redis'?' redis':'';
-      html+=`<div class="dbrow${rc}" data-db="${esc(it.db)}"><span class="dot"></span>${esc(it.db)}<small>${esc(it.engine)}</small></div>`;
-      if(it.envs.length>1){
-        const defEnv=(it.envs.find(e=>e.env==='dev')||it.envs[0]).env;
-        html+='<div class="pills">'+it.envs.map(e=>`<span class="pill${e.env===defEnv?' on':''}${e.env==='prod'?' prod':''}" data-db="${esc(it.db)}" data-env="${esc(e.env||'')}">${esc(e.env||'default')}</span>`).join('')+'</div>';
-      }
-    }
-    html+='</div>';
-  }
-  const qs=await j('/api/queries'); qs.forEach(q=>QMETA[q.name]=q);
-  if(qs.length){html+=`<div class="grp" data-grp data-gkey="__saved__"><i class="ti ti-chevron-down"></i> ${t('saved_queries')}</div><div class="gbody">`;
-    html+=qs.map(q=>{const pb=q.params.length?`<span class="rbadge">${q.params.length} ${t('params_suffix')}</span>`:'';
-      return `<div class="qname" data-q="${esc(q.name)}" title="${esc(q.desc||q.name)}"><i class="ti ti-bookmark"></i>${esc(q.name)}${pb}</div>`;}).join('')+'</div>';}
-  $('#side').innerHTML=html;
-  const collapsed=new Set(JSON.parse(localStorage.getItem('qy_collapsed')||'[]'));
-  $$('#side [data-grp]').forEach(el=>{
-    const key=el.dataset.gkey;
-    if(collapsed.has(key)){el.nextElementSibling.style.display='none';el.querySelector('.ti').className='ti ti-chevron-right';}
-    el.onclick=()=>{const b=el.nextElementSibling;const c=b.style.display==='none';b.style.display=c?'':'none';
-      el.querySelector('.ti').className=c?'ti ti-chevron-down':'ti ti-chevron-right';
-      if(c)collapsed.delete(key);else collapsed.add(key);
-      localStorage.setItem('qy_collapsed',JSON.stringify([...collapsed]));};
-  });
-  $$('#side .dbrow').forEach(el=>el.onclick=()=>selectDb(el.dataset.db,null));
-  $$('#side .pill').forEach(el=>el.onclick=ev=>{ev.stopPropagation();selectDb(el.dataset.db,el.dataset.env||null,{via:true});});
-  $$('#side .qname').forEach(el=>el.onclick=()=>openSaved(el.dataset.q));
-  Object.keys(HEALTH).forEach(db=>setHealth(db,HEALTH[db]));   // restore known health from this session
-  loadHealthCache();                                            // backend cache (survives reloads)
-  try{const tab=TABS[ATI]||{};                     // restore the active tab: connection + SQL + result
-    if(tab.sql)setSQL(tab.sql);
-    if(tab.db && TREE.some(g=>g.items.some(i=>i.db===tab.db))) selectDb(tab.db,tab.env||null);
-    const lr=JSON.parse(localStorage.getItem('qy_result')||'null');
-    if(lr&&lr.res&&lr.db===tab.db){cur.db=cur.db||tab.db;cur.env=cur.env||tab.env;render(lr.res);}
-    renderTabs();
-  }catch(e){}
-}
-function openSaved(name){
-  const q=QMETA[name]; if(!q)return;
-  setSQL(q.sql||('-- '+name));
-  if(!q.params.length){runSaved(name,{});return;}
-  const m=document.createElement('div');m.className='modal';
-  const fields=q.params.map(p=>{const req=p.required?` <span style="color:var(--red-fg)">${t('required')}</span>`:(p.default!=null?` <span style="color:var(--fg3)">${t('default_v')} ${esc(p.default)}</span>`:'');
-    return `<div style="margin:8px 0"><label style="font-size:12px;color:var(--fg2);display:block;margin-bottom:3px">${esc(p.name)} <span style="color:var(--fg3)">${esc(p.type||'text')}</span>${req}</label>
-      <input class="pf" data-p="${esc(p.name)}" value="${esc(p.default!=null?p.default:'')}" placeholder="${esc(p.name)}" style="width:100%;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--fg);padding:6px 9px;font-family:var(--mono);font-size:12.5px"></div>`;}).join('');
-  m.innerHTML=`<div class="box" style="width:min(460px,80%)"><div class="mh"><i class="ti ti-adjustments"></i> ${esc(name)} · ${t('fill_params')}</div>
-    ${q.desc?`<div style="color:var(--fg3);font-size:11.5px;margin-bottom:6px">${esc(q.desc)}</div>`:''}
-    ${fields}
-    <div style="text-align:right;margin-top:12px"><button class="btn primary" id="pgo"><i class="ti ti-player-play"></i> ${t('run')}</button></div></div>`;
-  m.onclick=e=>{if(e.target===m)m.remove();};
-  const go=()=>{const params={};m.querySelectorAll('.pf').forEach(i=>{if(i.value!=='')params[i.dataset.p]=i.value;});m.remove();runSaved(name,params);};
-  m.querySelector('#pgo').onclick=go;
-  document.body.appendChild(m);
-  const first=m.querySelector('.pf'); if(first){first.focus();first.select();}
-  m.addEventListener('keydown',e=>{if(e.key==='Enter')go();});
-}
-
-async function selectDb(db,env,opt={}){
-  // re-click active db (no env change) toggles its table panel
-  if(cur.db===db && env===null && !opt.via){const p=$('#tbl-panel'); if(p){p.style.display=p.style.display==='none'?'':'none'; return;}}
-  cur.db=db; cur.env=env;
-  $$('#side .dbrow').forEach(x=>x.classList.toggle('on',x.dataset.db===db));
-  $('#qtitle').textContent=db;
-  renderEnvSwitcher(db,env);
-  $$('#side .pill').forEach(p=>{if(p.dataset.db===db)p.classList.toggle('on',p.dataset.env===(cur.env||''));});
-  saveUI();
-  await renderTables(db,cur.env);
-  if(opt.via && ta.value.trim() && !cur.isRedis) run();  // env switch -> re-run current SQL
-}
-function renderEnvSwitcher(db,env){
-  let item=null; for(const g of TREE) for(const it of g.items) if(it.db===db) item=it;
-  cur.engine=item?item.engine:null; cur.isRedis=cur.engine==='redis';
-  const envs=item?item.envs:[]; const multi=envs.length>1;
-  if(multi){
-    if(!env) env=(envs.find(e=>e.env==='dev')||envs[0]).env; cur.env=env;
-    $('#runon').style.display='';
-    $('#esw').innerHTML=envs.map(e=>`<span class="ep${e.env===cur.env?' on':''}${e.env==='prod'?' prod':''}" data-env="${esc(e.env||'')}">${esc(e.env||'default')}</span>`).join('');
-    $$('#esw .ep').forEach(x=>x.onclick=()=>selectDb(db,x.dataset.env,{via:true}));
-  } else {
-    cur.env=env||(envs[0]?envs[0].env:null); $('#runon').style.display='none'; $('#esw').innerHTML='';
-  }
-  $('#prodBadge').style.display=(cur.env||'').toLowerCase()==='prod'?'':'none';
-  ta.placeholder=cur.isRedis?t('ph_redis'):t('ph_sql');
-}
-async function renderTables(db,env){
-  $('#tbl-panel')?.remove();
-  const active=$('#side .dbrow.on'); if(!active) return;
-  const panel=document.createElement('div'); panel.id='tbl-panel';
-  let anchor=active.nextElementSibling;
-  while(anchor && anchor.classList.contains('pills')) anchor=anchor.nextElementSibling;
-  active.parentNode.insertBefore(panel,anchor);
-  const key=db+'@'+(env||'');
-  const paint=data=>{cur.isRedis?renderRedisPanel(panel,data.keys||[]):renderTablePanel(panel,data.tables||[]);};
-  if(TCACHE[key]) paint(TCACHE[key]);   // 缓存优先:秒出
-  else panel.innerHTML='<div class="spin" style="padding:8px"><i class="ti ti-loader"></i></div>';
-  const qp=`db=${encodeURIComponent(db)}&env=${encodeURIComponent(env||'')}`;
-  try{
-    const data=await j(`/api/tables?${qp}`);   // 命中后端缓存则秒回
-    TCACHE[key]=data; setHealth(db,true);
-    if($('#tbl-panel')===panel) paint(data);
-    if(data._cached){                            // SWR:是缓存 → 后台 fresh 拉一次替换
-      j(`/api/tables?${qp}&fresh=1`).then(fd=>{TCACHE[key]=fd;if($('#tbl-panel')===panel)paint(fd);}).catch(()=>{});
-    }
-  }catch(e){ setHealth(db,false); if(!TCACHE[key] && $('#tbl-panel')===panel) panel.innerHTML='<div class="empty">'+esc(e.error||e)+'</div>'; }
-}
-function renderTablePanel(panel, tables){
-  panel.innerHTML=`<input class="tsearch" placeholder="${t('filter_tables')}">`+(tables.length
-    ?tables.map(tb=>`<div class="tname" data-t="${esc(tb)}" title="${esc(tb)}"><i class="ti ti-table"></i>${esc(tb)}</div>`).join('')
-    :`<div class="empty">${t('no_tables')}</div>`);
-  panel.querySelectorAll('.tname').forEach(el=>el.onclick=()=>{setSQL('select * from '+el.dataset.t+' limit 100');run();});
-  const s=panel.querySelector('.tsearch'); s.oninput=()=>{const q=s.value.toLowerCase();
-    panel.querySelectorAll('.tname').forEach(el=>el.style.display=el.dataset.t.toLowerCase().includes(q)?'':'none');};
-}
-function fmtTtl(s){return s>86400?Math.round(s/86400)+'d':s>3600?Math.round(s/3600)+'h':s>60?Math.round(s/60)+'m':s+'s';}
-function kTree(keys){const root={dirs:{},leaves:[]};
-  for(const k of keys){const parts=k.key.split(':');let n=root;
-    for(let i=0;i<parts.length-1;i++){const seg=parts[i];n.dirs[seg]=n.dirs[seg]||{dirs:{},leaves:[],name:seg};n=n.dirs[seg];}
-    n.leaves.push({...k,label:parts[parts.length-1]||k.key});}
-  return root;}
-function kCount(n){let c=n.leaves.length;for(const d in n.dirs)c+=kCount(n.dirs[d]);return c;}
-function renderKNode(node){let h='';
-  for(const name in node.dirs){const d=node.dirs[name];
-    h+=`<div class="tname knode"><i class="ti ti-chevron-down"></i>${esc(name)}<span class="rbadge">${kCount(d)}</span></div><div class="kchild">${renderKNode(d)}</div>`;}
-  for(const lf of node.leaves){const ttl=lf.ttl>0?`<span class="rbadge ttl">${fmtTtl(lf.ttl)}</span>`:'';
-    h+=`<div class="tname" data-key="${esc(lf.key)}" title="${esc(lf.key)}"><i class="ti ti-key"></i>${esc(lf.label)}<span class="rbadge">${esc(lf.type)}</span>${ttl}</div>`;}
-  return h;}
-function renderRedisPanel(panel, keys){
-  panel.innerHTML=`<input class="tsearch" placeholder="${t('filter_keys')}"><div id="ktree"></div>`;
-  const draw=list=>{$('#ktree').innerHTML=list.length?renderKNode(kTree(list)):`<div class="empty">${t('no_keys')}</div>`;
-    panel.querySelectorAll('.knode').forEach(el=>el.onclick=()=>{const c=el.nextElementSibling;const h=c.style.display==='none';
-      c.style.display=h?'':'none';el.querySelector('.ti').className=h?'ti ti-chevron-down':'ti ti-chevron-right';});
-    panel.querySelectorAll('#ktree .tname[data-key]').forEach(el=>el.onclick=()=>inspectKey(el.dataset.key));};
-  draw(keys);
-  const s=panel.querySelector('.tsearch'); s.oninput=()=>{const q=s.value.toLowerCase();draw(keys.filter(k=>k.key.toLowerCase().includes(q)));};
-}
-
-/* run */
-function loading(){$('#grid').innerHTML='<div class="spin"><i class="ti ti-loader"></i> '+t('running')+'</div>';}
-async function run(){
-  if(!cur.db)return; const sql=ta.value.trim(); if(!sql)return;
-  acClose(); pushHist(sql); loading();
-  try{ render(await j('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({db:cur.db,env:cur.env,sql})})); }
-  catch(e){ showErr(e); }
-}
-async function inspectKey(key){
-  setSQL('# '+key); loading();
-  try{ render(await j(`/api/inspect?db=${encodeURIComponent(cur.db)}&env=${encodeURIComponent(cur.env||'')}&key=${encodeURIComponent(key)}`)); }
-  catch(e){ showErr(e); }
-}
-async function runSaved(name,params){
-  loading();
-  try{ const res=await j('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,env:cur.env,params:params||{}})});
-    setSQL(res.sql); render(res); }
-  catch(e){ showErr(e); }
-}
-function showErr(e){$('#status').style.display='none';$('#grid').innerHTML='<div class="err">'+esc(e.error||JSON.stringify(e))+'</div>';}
-
-/* grid */
-function cellText(v){ if(v===null||v===undefined)return null;
-  if(typeof v==='object')return JSON.stringify(v);   // jsonb / arrays
-  return String(v); }
-function cellClass(v){ if(v===null||v===undefined)return 'null';
-  if(typeof v==='number')return 'num';
-  if(typeof v==='object')return 'json';
-  const s=String(v);
-  if(/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(s))return 'uuid';
-  if(/^\d{4}-\d{2}-\d{2}[ T]\d{2}:/.test(s))return 'ts';
-  if(s==='true'||s==='false')return 'bool';
-  if(/^-?\d+\.?\d*$/.test(s))return 'num';
-  return ''; }
-let sortState={i:-1,dir:1};
-function render(res){
-  lastRes=res; selTd=null;
-  try{const s=JSON.stringify({db:cur.db,env:cur.env,res});localStorage.setItem('qy_result',s.length<900000?s:'');}catch(e){}
-  const cols=res.columns;
-  let st=`<span><span class="cu">${res.rowCount}</span> ${t('rows')}</span><span><i class="ti ti-clock"></i> ${res.elapsedMs} ms</span>`;
-  if(res.truncated)st+=`<span class="tr"><i class="ti ti-arrow-narrow-down"></i> ${t('truncated')}</span>`;
-  st+=`<span style="flex:1"></span><span>${esc(cur.db)}${cur.env?'@'+esc(cur.env):''} · ${esc(res.engine)}</span>`;
-  $('#status').style.display='';$('#status').innerHTML=st;
-  if(!res.rows.length){$('#grid').innerHTML=`<div class="empty">0 ${t('rows')}</div>`;return;}
-  const head='<tr><th class="rownum">#</th>'+cols.map((c,i)=>{
-    const ar=sortState.i===i?`<span class="ar">${sortState.dir>0?'↑':'↓'}</span>`:'';
-    return `<th data-i="${i}">${esc(c.name)}${c.type?`<span class="ty">${esc(c.type)}</span>`:''}${ar}<span class="rz"></span></th>`;}).join('')+'</tr>';
-  const body=res.rows.map((r,ri)=>{
-    let tds=`<td class="rownum" data-ri="${ri}" title="${t('row_detail')}">${ri+1}</td>`;
-    tds+=cols.map(c=>{const v=r[c.name];const cl=cellClass(v);const t=cellText(v);
-      const disp=t===null?'NULL':esc(t);
-      return `<td class="${cl}" data-v="${esc(t===null?'':t)}" title="${esc(t===null?'NULL':t)}">${disp}</td>`;}).join('');
-    return '<tr>'+tds+'</tr>';}).join('');
-  $('#grid').innerHTML=`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-  wireGrid();
-}
-function wireGrid(){
-  $$('#grid td:not(.rownum)').forEach(td=>{
-    td.onclick=()=>{if(selTd)selTd.classList.remove('sel');selTd=td;td.classList.add('sel');};
-    td.ondblclick=()=>{const v=td.dataset.v;(v.length>60||/^[\[{]/.test(v))?openModal(v):copy(v);};
-  });
-  $$('#grid td.rownum').forEach(td=>td.onclick=()=>rowDetail(lastRes.rows[+td.dataset.ri]));
-  $$('#grid th[data-i]').forEach(th=>{th.onclick=e=>{if(e.target.classList.contains('rz'))return;sortBy(+th.dataset.i);};
-    const rz=th.querySelector('.rz'); if(rz)rz.onmousedown=e=>startResize(e,th);});
-}
-function sortBy(i){ if(!lastRes)return; sortState.dir=sortState.i===i?-sortState.dir:1; sortState.i=i;
-  const col=lastRes.columns[i].name;
-  lastRes.rows.sort((a,b)=>{let x=a[col],y=b[col];if(x===null||x===undefined)return 1;if(y===null||y===undefined)return -1;
-    if(typeof x==='number'&&typeof y==='number')return (x-y)*sortState.dir;
-    return String(x).localeCompare(String(y))*sortState.dir;});
-  render(lastRes);
-}
-function startResize(e,th){e.preventDefault();e.stopPropagation();const sx=e.pageX,sw=th.offsetWidth;
-  const mv=ev=>{th.style.width=Math.max(50,sw+ev.pageX-sx)+'px';th.style.minWidth=th.style.width;};
-  const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-  document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);}
-function jsonTree(v,key){
-  const k=key!==undefined?`<span class="jk">${esc(key)}</span>: `:'';
-  if(v===null)return `<div class="jrow">${k}<span class="jnull">null</span></div>`;
-  if(Array.isArray(v)){
-    if(!v.length)return `<div class="jrow">${k}[]</div>`;
-    return `<details class="jt" open><summary>${k}<span class="jm">[${v.length}]</span></summary>${v.map((x,i)=>jsonTree(x,i)).join('')}</details>`;
-  }
-  if(typeof v==='object'){
-    const ks=Object.keys(v);
-    if(!ks.length)return `<div class="jrow">${k}{}</div>`;
-    return `<details class="jt" open><summary>${k}<span class="jm">{${ks.length}}</span></summary>${ks.map(kk=>jsonTree(v[kk],kk)).join('')}</details>`;
-  }
-  const cls=typeof v==='number'?'jnum':typeof v==='boolean'?'jbool':'jstr';
-  return `<div class="jrow">${k}<span class="${cls}">${esc(typeof v==='string'?JSON.stringify(v):String(v))}</span></div>`;
-}
-function openModal(v){
-  let body=null;                                   // JSON -> collapsible tree
-  try{const p=JSON.parse(v);if(p&&typeof p==='object')body=jsonTree(p);}catch(_){}
-  if(body===null)body=`<pre>${esc(v)}</pre>`;
-  const m=document.createElement('div');m.className='modal';
-  m.innerHTML=`<div class="box" style="min-width:min(560px,80vw)"><div class="mh"><i class="ti ti-eye"></i> ${t('cell')} <span id="cpy" style="cursor:pointer;color:var(--accent)">${t('copy')}</span></div>${body}</div>`;
-  m.onclick=e=>{if(e.target===m)m.remove();};
-  m.querySelector('#cpy').onclick=()=>{copy(v);m.remove();};
-  document.body.appendChild(m);}
-function rowDetail(row){
-  const m=document.createElement('div');m.className='modal';
-  const rows=lastRes.columns.map(c=>{const t=cellText(row[c.name]);const disp=t===null?'<span style="color:var(--null);font-style:italic">NULL</span>':esc(t);
-    return `<tr><td style="color:var(--fg2);padding:4px 12px 4px 0;vertical-align:top;white-space:nowrap">${esc(c.name)}${c.type?` <span class="ty" style="color:var(--fg3)">${esc(c.type)}</span>`:''}</td><td style="padding:4px 0;word-break:break-word;font-family:var(--mono)">${disp}</td></tr>`;}).join('');
-  m.innerHTML=`<div class="box" style="width:60%"><div class="mh"><i class="ti ti-list-details"></i> ${t('row_detail')}</div><table style="border:0;width:100%">${rows}</table></div>`;
-  m.onclick=e=>{if(e.target===m)m.remove();};document.body.appendChild(m);}
-function copy(v){navigator.clipboard?.writeText(String(v));toast(t('copied'),true);}
-
-/* export */
-function toCSV(res){const cols=res.columns.map(c=>c.name);
-  const esc2=v=>{const s=cellText(v);if(s===null)return '';return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
-  return [cols.join(','),...res.rows.map(r=>cols.map(c=>esc2(r[c])).join(','))].join('\n');}
-function download(name,text,type){const b=new Blob([text],{type});const a=document.createElement('a');
-  a.href=URL.createObjectURL(b);a.download=name;a.click();}
-$('#csvBtn').onclick=()=>{if(lastRes)download('quarry.csv',toCSV(lastRes),'text/csv');};
-$('#jsonBtn').onclick=()=>{if(lastRes)download('quarry.json',JSON.stringify(lastRes.rows,null,2),'application/json');};
-
-/* format (light) */
-$('#fmtBtn').onclick=()=>{let s=ta.value;
-  s=s.replace(/\s+/g,' ').replace(/\s*,\s*/g,', ').trim();
-  s=s.replace(/\b(select|from|where|order by|group by|having|limit|offset|left join|right join|inner join|join|on|and|or|union|values|insert into|update|set|delete from)\b/gi,m=>m.toUpperCase());
-  s=s.replace(/\b(FROM|WHERE|ORDER BY|GROUP BY|HAVING|LIMIT|OFFSET|LEFT JOIN|RIGHT JOIN|INNER JOIN|JOIN|UNION)\b/g,'\n$1');
-  setSQL(s);};
-
-/* history — entries are {sql, db, env, ts} (older versions stored bare strings) */
-const hSql=h=>typeof h==='string'?h:(h.sql||'');
-function fmtAgo(ts){if(!ts)return '';const s=(Date.now()-ts)/1000;
-  return s<60?t('just_now'):s<3600?Math.floor(s/60)+t('min_ago'):s<86400?Math.floor(s/3600)+t('hr_ago'):Math.floor(s/86400)+t('day_ago');}
-function pushHist(sql){if(hSql(HIST[0]||'')!==sql){HIST.unshift({sql,db:cur.db,env:cur.env,ts:Date.now()});
-  HIST.length=Math.min(HIST.length,100);
-  localStorage.setItem('qy_hist',JSON.stringify(HIST));}hi=-1;}
-$('#histBtn').onclick=()=>{if(!HIST.length)return toast(t('no_hist'),true);
-  const m=document.createElement('div');m.className='modal';
-  const row=(h,i)=>{const o=typeof h==='string'?{sql:h}:h;
-    const meta=[o.db?o.db+(o.env?'@'+o.env:''):'',fmtAgo(o.ts)].filter(Boolean).join(' · ');
-    return `<div class="hitem" data-i="${i}" style="cursor:pointer;padding:7px 6px;border-bottom:1px solid var(--line)">
-      <pre style="margin:0;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;word-break:break-word">${esc(o.sql)}</pre>
-      ${meta?`<div class="hmeta">${esc(meta)}</div>`:''}</div>`;};
-  m.innerHTML=`<div class="box" style="width:min(680px,80%)"><div class="mh"><i class="ti ti-history"></i> ${t('hist_title')} · ${HIST.length}</div>
-    <input class="hsearch" placeholder="${t('hist_search')}"><div id="hlist">${HIST.map(row).join('')}</div></div>`;
-  m.onclick=e=>{if(e.target===m)m.remove();};
-  document.body.appendChild(m);
-  const wire=()=>m.querySelectorAll('.hitem').forEach(el=>el.onclick=()=>{setSQL(hSql(HIST[+el.dataset.i]));m.remove();ta.focus();});
-  wire();
-  const s=m.querySelector('.hsearch'); s.focus();
-  s.oninput=()=>{const q=s.value.toLowerCase();
-    m.querySelector('#hlist').innerHTML=HIST.map((h,i)=>({h,i})).filter(({h})=>{
-      const o=typeof h==='string'?{sql:h}:h;
-      return o.sql.toLowerCase().includes(q)||String(o.db||'').toLowerCase().includes(q);
-    }).map(({h,i})=>row(h,i)).join('')||`<div class="empty">${t('no_match')}</div>`;
-    wire();};};
-
-/* toast */
-let tt; function toast(msg,ok){clearTimeout(tt);let el=$('#toast');if(!el){el=document.createElement('div');el.id='toast';el.className='toast';document.body.appendChild(el);}
-  el.style.background=ok?'var(--ok-bg)':'var(--red-bg)';el.style.color=ok?'var(--ok)':'var(--red-fg)';el.style.borderColor=ok?'var(--ok)':'var(--red)';
-  el.textContent=msg;el.style.display='';tt=setTimeout(()=>el.style.display='none',ok?1400:4000);}
-
-$('#runBtn').onclick=run;
-$('#healthBtn').onclick=checkHealth;
-/* EXPLAIN: run the current SQL under EXPLAIN; single-column plans open in a
-   modal (postgres), tabular plans (mysql) render in the grid. */
-$('#expBtn').onclick=async()=>{
-  if(!cur.db||cur.isRedis)return toast(cur.isRedis?t('no_plan_redis'):t('pick_conn'),false);
-  const sql=ta.value.trim(); if(!sql)return;
-  const btn=$('#expBtn'); btn.disabled=true;
-  try{
-    const res=await j('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({db:cur.db,env:cur.env,sql:'EXPLAIN '+sql.replace(/^\s*explain\s+/i,'')})});
-    if(res.columns.length>1){render(res);return;}
-    const col=res.columns[0]?res.columns[0].name:null;
-    const plan=col?res.rows.map(r=>r[col]).join('\n'):t('empty_plan');
-    const m=document.createElement('div');m.className='modal';
-    m.innerHTML=`<div class="box" style="min-width:min(760px,85vw)"><div class="mh"><i class="ti ti-route"></i> EXPLAIN · ${esc(cur.db)}${cur.env?'@'+esc(cur.env):''}</div><pre>${esc(plan)}</pre></div>`;
-    m.onclick=e=>{if(e.target===m)m.remove();};document.body.appendChild(m);
-  }catch(e){toast(e.error||String(e),false);}
-  finally{btn.disabled=false;}
-};
-ta.addEventListener('keydown',e=>{
-  if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();run();}
-  if((e.metaKey||e.ctrlKey)&&e.key==='ArrowUp'){e.preventDefault();if(hi<HIST.length-1){hi++;setSQL(hSql(HIST[hi]));}}
-  if((e.metaKey||e.ctrlKey)&&e.key==='ArrowDown'){e.preventDefault();if(hi>0){hi--;setSQL(hSql(HIST[hi]));}else{hi=-1;setSQL('');}}
-});
-/* grid keyboard navigation: arrows move the selected cell, Enter inspects */
-function moveSel(dr,dc){
-  if(!selTd)return;
-  const tr=selTd.parentElement, tbody=tr.parentElement;
-  const nr=tbody.rows[tr.sectionRowIndex+dr]; if(!nr)return;
-  const ci=Math.min(Math.max(selTd.cellIndex+dc,1),nr.cells.length-1);
-  const nc=nr.cells[ci]; if(!nc)return;
-  selTd.classList.remove('sel'); selTd=nc; nc.classList.add('sel');
-  nc.scrollIntoView({block:'nearest',inline:'nearest'});
-}
-document.addEventListener('keydown',e=>{
-  if(e.key==='Escape'){const m=$('.modal');if(m){m.remove();return;}}
-  if((e.metaKey||e.ctrlKey)&&e.key==='c'&&selTd&&document.activeElement!==ta&&!String(getSelection())){
-    copy(selTd.dataset.v);}
-  const typing=/INPUT|TEXTAREA/.test((document.activeElement||{}).tagName||'');
-  if(selTd&&!typing&&!e.metaKey&&!e.ctrlKey&&!e.altKey&&!$('.modal')){
-    if(e.key==='ArrowDown'){e.preventDefault();moveSel(1,0);}
-    else if(e.key==='ArrowUp'){e.preventDefault();moveSel(-1,0);}
-    else if(e.key==='ArrowLeft'){e.preventDefault();moveSel(0,-1);}
-    else if(e.key==='ArrowRight'){e.preventDefault();moveSel(0,1);}
-    else if(e.key==='Enter'){e.preventDefault();openModal(selTd.dataset.v);}
-  }
-});
-loadSide();
-</script>
-</body></html>"""
 
 
 if __name__ == "__main__":

@@ -12,6 +12,22 @@ engine = "postgres"
 env    = "dev"
 notes  = "local dev database"
 
+# SQLite opens an existing file directly; no Docker or SQLite CLI is needed.
+# Relative paths resolve from this workspace. Create/provide the files first.
+# Each env needs a separate file to isolate its data.
+[notes_local]
+url    = "sqlite:///data/notes-local.db"
+engine = "sqlite"
+db     = "notes"
+env    = "local"
+
+[notes_prod]
+url        = "sqlite:////srv/notes/notes.db"
+engine     = "sqlite"
+db         = "notes"
+env        = "prod"
+production = true
+
 # An env-set: same logical db across environments.
 # `qy exec analytics ...` hits dev; `qy exec analytics --env prod ...` asks for confirmation on writes.
 [analytics_dev]
@@ -27,6 +43,7 @@ engine = "postgres"
 group  = "analytics"
 db     = "analytics"
 env    = "prod"
+production = true
 
 # Redis, via system redis-cli
 [cache]

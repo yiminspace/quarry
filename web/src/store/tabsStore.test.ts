@@ -1,0 +1,228 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { QueryResult } from "../api";
+import { t } from "../i18n";
+import {
+  MAX_PERSISTED_RESULT_BYTES,
+  parseMainTable,
+  tabTitle,
+  useTabsStore,
+  type Tab,
+  type TabResultSnapshot,
+} from "./tabsStore";
+
+function tab(patch: Partial<Tab>): Tab {
+  return { id: "t1", title: null, sql: "", db: null, env: null, ...patch };
+}
+
+function snapshot(downloadBytes: number, value = "ok"): TabResultSnapshot {
+  const result: QueryResult = {
+    columns: [{ name: "v", type: "text" }],
+    rows: [{ v: value }],
+    rowCount: 1,
+    truncated: false,
+    elapsedMs: 1,
+    engine: "postgres",
+    sql: "select 1",
+    downloadBytes,
+    sizeIsEstimated: true,
+  };
+  return { result, queryDb: "shop", queryEnv: "dev", querySql: "select 1" };
+}
+
+describe("parseMainTable", () => {
+  it("finds the table in a single-table SELECT", () => {
+    expect(parseMainTable("select id, name from mind_trace where id = 1")).toBe("mind_trace");
+  });
+
+  it("finds the table in UPDATE/INSERT/DELETE", () => {
+    expect(parseMainTable("update mind_attribute set v = 1 where id = 1")).toBe("mind_attribute");
+    expect(parseMainTable("insert into mind_attribute (a, b) values (1, 2)")).toBe("mind_attribute");
+    expect(parseMainTable("delete from mind_trace where id = 1")).toBe("mind_trace");
+  });
+
+  it("returns null for a multi-table JOIN", () => {
+    expect(parseMainTable("select a.id from mind_trace a join mind_attribute b on a.id = b.id")).toBeNull();
+  });
+
+  it("returns null for a non-DML statement", () => {
+    expect(parseMainTable("explain analyze select 1")).toBeNull();
+  });
+
+  it("finds the table when it's quoted (mixed-case/reserved names)", () => {
+    // Postgres double-quote form, as produced by ResultWorkbench's quoteIdent()
+    expect(parseMainTable('select * from "QyCamelZz" limit 5')).toBe("QyCamelZz");
+    // schema-qualified, quoted
+    expect(parseMainTable('select * from public."QyCamelZz" limit 5')).toBe("public.QyCamelZz");
+    expect(parseMainTable("select * from audit.events")).toBe("audit.events");
+    // MySQL backtick form
+    expect(parseMainTable("select * from `QyCamelZz` limit 5")).toBe("QyCamelZz");
+    // escaped quote inside the identifier
+    expect(parseMainTable('select * from "Weird""Name" limit 5')).toBe('Weird"Name');
+  });
+});
+
+describe("tabTitle", () => {
+  it("prefers a user-set title over anything else", () => {
+    expect(tabTitle(tab({ title: "My tab", sql: "select * from mind_trace", db: "shop", env: "prod" }))).toBe(
+      "My tab",
+    );
+  });
+
+  it("derives the title from the SQL's main table, distinguishing same-connection tabs", () => {
+    const t1 = tab({ sql: "select * from mind_trace", db: "shop", env: "prod" });
+    const t2 = tab({ sql: "select * from mind_attribute", db: "shop", env: "prod" });
+    expect(tabTitle(t1)).toBe("mind_trace");
+    expect(tabTitle(t2)).toBe("mind_attribute");
+    expect(tabTitle(t1)).not.toBe(tabTitle(t2));
+  });
+
+  it("distinguishes tabs querying quoted mixed-case tables", () => {
+    const t1 = tab({ sql: 'select * from "QyCamelZz" limit 5', db: "shop", env: "prod" });
+    const t2 = tab({ sql: 'select * from "OtherCamel" limit 5', db: "shop", env: "prod" });
+    expect(tabTitle(t1)).toBe("QyCamelZz");
+    expect(tabTitle(t2)).toBe("OtherCamel");
+  });
+
+  it("allows same-table queries to share a title", () => {
+    const t1 = tab({ sql: "select id from mind_trace", db: "shop", env: "prod" });
+    const t2 = tab({ sql: "select name from mind_trace", db: "shop", env: "prod" });
+    expect(tabTitle(t1)).toBe(tabTitle(t2));
+  });
+
+  it("falls back to the first SQL words when no single table can be parsed", () => {
+    expect(tabTitle(tab({ sql: "explain analyze select 1", db: "shop", env: "prod" }))).toBe("explain analyze");
+  });
+
+  it("falls back to db@env when there is no SQL", () => {
+    expect(tabTitle(tab({ sql: "  ", db: "shop", env: "prod" }))).toBe("shop@prod");
+  });
+
+  it("falls back to the new-query placeholder with neither SQL nor a connection", () => {
+    expect(tabTitle(tab({}))).toBe(t("new_query"));
+  });
+});
+
+describe("fixed saved query tabs", () => {
+  it("reuses file identity per environment and protects its SQL at every update entry", () => {
+    localStorage.clear();
+    useTabsStore.setState({ tabs: [tab({ id: 'draft', sql: 'select draft' })], activeId: 'draft', results: {}, emptyGroups: [] });
+    const s = useTabsStore.getState();
+    const query = { name: 'same-name', queryId: 'file-a', db: 'shop', desc: '', sql: 'select 1', params: [] };
+    expect(s.openSavedTab(query, 'shop', 'dev')).toBe(true);
+    const fixedId = useTabsStore.getState().activeId;
+    s.updateTab(fixedId, { sql: 'select overwritten' });
+    s.updateActiveTab({ sql: 'select overwritten again' });
+    expect(useTabsStore.getState().tabs.find(t => t.id === fixedId)?.sql).toBe('select 1');
+    s.switchTab('draft');
+    expect(s.openSavedTab(query, 'shop', 'dev')).toBe(false);
+    expect(useTabsStore.getState().activeId).toBe(fixedId);
+    expect(s.openSavedTab(query, 'shop', 'prod')).toBe(true);
+    expect(s.openSavedTab({ ...query, queryId: 'file-b' }, 'shop', 'dev')).toBe(true);
+    expect(useTabsStore.getState().tabs).toHaveLength(4);
+    expect(JSON.parse(localStorage.getItem('qy_tabs')!)[1].savedQueryId).toBe('file-a');
+    expect(useTabsStore.getState().tabs[0].sql).toBe('select draft');
+  });
+});
+
+describe("bounded result persistence", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({
+      tabs: [tab({ id: "t1", db: "shop", env: "dev" })],
+      activeId: "t1",
+      results: {},
+    });
+  });
+
+  it("persists a small result but keeps an oversized result session-only", () => {
+    useTabsStore.getState().setTabResult("t1", snapshot(100));
+    expect(JSON.parse(localStorage.getItem("qy_tabres") ?? "null")[0].res.rows[0].v).toBe("ok");
+
+    useTabsStore.getState().setTabResult("t1", snapshot(MAX_PERSISTED_RESULT_BYTES + 1, "large"));
+    expect(JSON.parse(localStorage.getItem("qy_tabres") ?? "null")).toEqual([null]);
+    expect(useTabsStore.getState().results.t1.result?.rows[0].v).toBe("large");
+  });
+
+  it("does not rewrite unchanged results on SQL input or tab switches", () => {
+    useTabsStore.getState().setTabResult("t1", snapshot(100));
+    const original = localStorage.setItem.bind(localStorage);
+    const writes: string[] = [];
+    const spy = vi.spyOn(localStorage, "setItem").mockImplementation((key, value) => {
+      writes.push(key);
+      original(key, value);
+    });
+    try {
+      useTabsStore.getState().updateActiveTab({ sql: "select typed" });
+      useTabsStore.getState().addTab();
+      useTabsStore.getState().switchTab("t1");
+      expect(writes.filter((key) => key === "qy_tabres")).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("connection tab recency", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({
+      tabs: [
+        tab({ id: "a", db: "shop", env: "dev", visited: 5 }),
+        tab({ id: "b", db: "shop", env: "dev", visited: 2 }),
+        tab({ id: "c", db: "shop", env: "prod", visited: 3 }),
+      ],
+      activeId: "c",
+      results: {},
+    });
+  });
+  it("selects by use history, independent of visual ordering", () => {
+    const s = useTabsStore.getState();
+    s.selectGroup("shop", "dev");
+    expect(useTabsStore.getState().activeId).toBe("a");
+    s.reorderTab("a", "b");
+    s.selectGroup("shop", "prod");
+    s.selectGroup("shop", "dev");
+    expect(useTabsStore.getState().activeId).toBe("a");
+  });
+  it("a background response cannot change the last-used environment", () => {
+    useTabsStore.getState().updateTab("a", { db: "shop", env: "dev" });
+    expect(useTabsStore.getState().tabs.find((tab) => tab.id === "a")?.visited).toBe(5);
+    expect(useTabsStore.getState().activeId).toBe("c");
+  });
+  it("closing a group's last tab leaves it empty instead of crossing groups", () => {
+    useTabsStore.getState().closeTab("c");
+    const s = useTabsStore.getState();
+    expect(s.activeId).toBe("");
+    expect(s.tabs.some((tab) => tab.env === "prod")).toBe(false);
+    s.selectGroup("shop", "prod");
+    expect(useTabsStore.getState().activeId).toBe("");
+    expect(JSON.parse(localStorage.getItem("qy_empty_tab_groups")!)).toContain('[null,"shop","prod"]');
+    expect(s.tabs.filter((tab) => tab.env === "dev")).toHaveLength(2);
+  });
+});
+
+describe("assistant SQL revision guards", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useTabsStore.setState({ tabs: [tab({ sql: "select 1", sqlRevision: 0 })], activeId: "t1", results: {} });
+  });
+  it("tracks every SQL write through either entry point, including editing back to the original", () => {
+    const store = useTabsStore.getState();
+    store.updateActiveTab({ sql: "select 2" });
+    store.updateTab("t1", { sql: "select 1" });
+    expect(useTabsStore.getState().tabs[0].sqlRevision).toBe(2);
+    store.updateTab("t1", { sql: "select 1" });
+    expect(useTabsStore.getState().tabs[0].sqlRevision).toBe(2);
+    expect(JSON.parse(localStorage.getItem("qy_tabs")!)[0].sqlRevision).toBe(2);
+  });
+  it("binds a durable conversation without changing SQL or revision", () => {
+    useTabsStore.getState().bindConversation("t1", "conversation-1");
+    expect(useTabsStore.getState().tabs[0]).toMatchObject({ sql: "select 1", sqlRevision: 0, conversationId: "conversation-1" });
+    expect(JSON.parse(localStorage.getItem("qy_tabs")!)[0].conversationId).toBe("conversation-1");
+  });
+  it("keeps saved template SQL immutable and does not bump its revision on rejected writes", () => {
+    useTabsStore.setState({ tabs: [tab({ sql: "select :id", savedQueryId: "saved", sqlRevision: 0 })] });
+    useTabsStore.getState().updateTab("t1", { sql: "select 2" });
+    expect(useTabsStore.getState().tabs[0]).toMatchObject({ sql: "select :id", sqlRevision: 0 });
+  });
+});

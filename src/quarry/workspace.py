@@ -25,6 +25,7 @@ workspaces, the earlier workspace wins.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,9 +39,66 @@ class Workspace:
     psql_bin: str
 
 
+def ensure_skill_links(skill_dir: str) -> None:
+    """Expose query directories at <skill>/queries/<workspace basename>.
+
+    Never link the workspace root (which contains credentials), replace user
+    files, or silently choose between workspaces with the same basename.
+    """
+    skill = Path(skill_dir).expanduser().resolve()
+    if not (skill / "SKILL.md").is_file():
+        raise ValueError(f"skill directory must contain SKILL.md: {skill}")
+    root = skill / "queries"
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        raise ValueError(f"skill queries entry must be a real directory: {root}")
+    planned: dict[Path, Path] = {}
+    for ws in WS_LIST:
+        if not ws.home.is_dir():
+            raise ValueError(f"workspace directory is missing or unavailable: {ws.home}")
+        name = ws.home.name
+        if not name:
+            raise ValueError("cannot link a filesystem-root workspace; use a named directory")
+        link = root / name
+        target = ws.queries_dir.resolve()
+        if target == root or root in target.parents or target in root.parents:
+            raise ValueError(f"query directory would create a recursive skill link: {target}")
+        if link in planned and planned[link] != target:
+            raise ValueError(f"duplicate workspace name '{name}'; select one with --workspace")
+        if link.is_symlink():
+            if link.resolve() != target:
+                raise ValueError(f"skill link points elsewhere; move it before retrying: {link}")
+        elif link.exists() and not link.is_symlink():
+            raise ValueError(f"skill entry already exists; move it before retrying: {link}")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"query directory is not a directory: {target}")
+        planned[link] = target
+    # Validate all entries before creating any, so conflicts leave files intact.
+    root.mkdir(parents=True, exist_ok=True)
+    for link, target in planned.items():
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except FileExistsError:
+            # Another CLI may have created the same entry after preflight.
+            if not link.is_symlink() or link.resolve() != target:
+                raise ValueError(f"skill entry conflicts with query directory: {link}") from None
+
+
 def _config_path() -> Path:
     return Path(os.environ.get("QUARRY_CONFIG")
                 or (Path.home() / ".config" / "quarry" / "config.toml")).expanduser()
+
+
+def _read_config() -> dict:
+    """The full parsed config.toml (all top-level keys), or {} if absent/malformed."""
+    p = _config_path()
+    if not p.exists():
+        return {}
+    try:
+        with p.open("rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        return {}
 
 
 def _dirs_from_config() -> list[Path]:
@@ -49,45 +107,82 @@ def _dirs_from_config() -> list[Path]:
         # ~/.config/quarry/config.toml
         workspaces = ["~/.config/quarry", "~/workspace/.../dbq"]
     """
-    p = _config_path()
-    if not p.exists():
-        return []
-    try:
-        with p.open("rb") as f:
-            cfg = tomllib.load(f)
-    except Exception:
-        return []
-    ws = cfg.get("workspaces") or []
+    ws = _read_config().get("workspaces") or []
     return [Path(str(x)).expanduser().resolve() for x in ws if str(x).strip()]
 
 
 def config_workspaces() -> list[str]:
     """Raw workspace paths listed in config.toml (as written, unexpanded)."""
+    return [str(x) for x in (_read_config().get("workspaces") or [])]
+
+
+_TOP_LEVEL_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+)\s*=")
+
+
+def _find_top_level_key_span(lines: list[str], key: str) -> tuple[int, int] | None:
+    """Locate a top-level `key = ...` assignment's line span [start, end) in a raw
+    (already split-on-newline) TOML text. Only scans lines before the first
+    top-level `[section]`/`[[array]]` header, since in TOML everything after a
+    section header belongs to that section even if unindented. Handles both
+    single-line and bracket-delimited multi-line array values."""
+    for i, line in enumerate(lines):
+        if line.startswith((" ", "\t")):
+            continue
+        if line.lstrip().startswith("["):
+            break  # first section header -> nothing after this point is top-level
+        m = _TOP_LEVEL_KEY_RE.match(line)
+        if not (m and m.group(1) == key):
+            continue
+        depth = line.count("[") - line.count("]")
+        end = i + 1
+        while depth > 0 and end < len(lines):
+            depth += lines[end].count("[") - lines[end].count("]")
+            end += 1
+        return (i, end)
+    return None
+
+
+def _toml_escape(s: str) -> str:
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _write_config_key(key: str, value: list[str]) -> Path:
+    """Read-modify-write config.toml, touching ONLY `key`'s own top-level
+    assignment as raw text — every other line (unrelated keys, `[section]`
+    tables, comments) is preserved byte-for-byte instead of being dropped.
+    An empty `value` removes the key entirely if present."""
     p = _config_path()
-    if not p.exists():
-        return []
-    try:
-        with p.open("rb") as f:
-            cfg = tomllib.load(f)
-    except Exception:
-        return []
-    return [str(x) for x in (cfg.get("workspaces") or [])]
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        lines = p.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = [
+            "# Quarry 配置 —— qy 每次读这里决定加载哪些 workspace(与终端环境变量无关)。",
+            "# 管理:qy workspace add|remove <dir> / qy workspace list ; qy proxy on|off",
+        ]
+    new_block = (
+        [f"{key} = ["] + [f'  "{_toml_escape(v)}",' for v in value] + ["]"]
+        if value else []
+    )
+    span = _find_top_level_key_span(lines, key)
+    if span is not None:
+        start, end = span
+        lines[start:end] = new_block
+    elif new_block:
+        insert_at = next(
+            (i for i, ln in enumerate(lines) if not ln.startswith((" ", "\t")) and ln.lstrip().startswith("[")),
+            len(lines),
+        )
+        if insert_at > 0 and lines[insert_at - 1].strip() != "":
+            lines[insert_at:insert_at] = [""] + new_block
+        else:
+            lines[insert_at:insert_at] = new_block
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
 
 
 def _write_config_workspaces(dirs: list[str]) -> Path:
-    p = _config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
-        "# Quarry 配置 —— qy 每次读这里决定加载哪些 workspace(与终端环境变量无关)。",
-        "# 管理:qy workspace add|remove <dir> / qy workspace list",
-        "workspaces = [",
-    ]
-    for w in dirs:
-        esc = w.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'  "{esc}",')
-    lines.append("]")
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    return _write_config_key("workspaces", dirs)
 
 
 def _resolved(d: str) -> str:
@@ -110,6 +205,157 @@ def remove_workspace(d: str) -> bool:
         return False
     _write_config_workspaces(new)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Proxy toggle (issue #96) — workspace-granularity, stored alongside `workspaces`
+# in config.toml so it survives across machines/terminals like everything else
+# here. connections.toml is never touched by this.
+# ---------------------------------------------------------------------------
+
+_PROXY_KEY = "proxy_enabled_workspaces"
+_TUNNEL_KEEP_ALIVE_KEY = "tunnel_keep_alive_workspaces"
+_TUNNEL_RECONNECT_KEY = "tunnel_reconnect_workspaces"
+_TUNNEL_SECTION = "tunnel"
+
+
+def proxy_enabled_workspaces() -> list[str]:
+    """Raw (unresolved) workspace dirs with the proxy toggle on."""
+    return [str(x) for x in (_read_config().get(_PROXY_KEY) or [])]
+
+
+def is_proxy_enabled(ws_home: "str | Path") -> bool:
+    target = _resolved(str(ws_home))
+    return target in {_resolved(x) for x in proxy_enabled_workspaces()}
+
+
+def set_proxy_enabled(ws_home: str, enabled: bool) -> Path:
+    """Flip the proxy toggle for one workspace dir; returns the config path written."""
+    current = proxy_enabled_workspaces()
+    target = _resolved(ws_home)
+    without_target = [x for x in current if _resolved(x) != target]
+    new_value = (without_target + [ws_home]) if enabled else without_target
+    return _write_config_key(_PROXY_KEY, new_value)
+
+
+def _workspace_toggle_values(key: str) -> list[str]:
+    return [str(x) for x in (_read_config().get(key) or [])]
+
+
+def _find_table_span(lines: list[str], table: str) -> tuple[int, int] | None:
+    header = f"[{table}]"
+    for i, line in enumerate(lines):
+        if line.strip() == header and not line.startswith((" ", "\t")):
+            end = i + 1
+            while end < len(lines):
+                ln = lines[end]
+                if ln.strip().startswith("[") and not ln.startswith((" ", "\t")):
+                    break
+                end += 1
+            return (i, end)
+    return None
+
+
+def _write_table_bool(table: str, key: str, enabled: bool) -> Path:
+    return _write_table_scalar(table, key, "true" if enabled else "false")
+
+
+def _write_table_scalar(table: str, key: str, val: str) -> Path:
+    """Write a pre-serialized TOML scalar while preserving unrelated config."""
+    p = _config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        lines = p.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = [
+            "# Quarry 配置 —— qy 每次读这里决定加载哪些 workspace(与终端环境变量无关)。",
+            "# 管理:qy workspace add|remove <dir> / qy workspace list ; qy proxy on|off",
+        ]
+    span = _find_table_span(lines, table)
+    if span is None:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.extend([f"[{table}]", f"{key} = {val}"])
+    else:
+        start, end = span
+        replaced = False
+        for i in range(start + 1, end):
+            ln = lines[i]
+            if ln.lstrip().startswith("#"):
+                continue
+            if re.match(rf"^\s*{re.escape(key)}\s*=", ln):
+                lines[i] = f"{key} = {val}"
+                replaced = True
+                break
+        if not replaced:
+            lines.insert(end, f"{key} = {val}")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def _tunnel_table_bool(key: str) -> bool | None:
+    table = _read_config().get(_TUNNEL_SECTION)
+    if not isinstance(table, dict):
+        return None
+    val = table.get(key)
+    return val if isinstance(val, bool) else None
+
+
+def _set_workspace_toggle(key: str, ws_home: str, enabled: bool) -> Path:
+    current = _workspace_toggle_values(key)
+    target = _resolved(ws_home)
+    without_target = [x for x in current if _resolved(x) != target]
+    new_value = (without_target + [ws_home]) if enabled else without_target
+    return _write_config_key(key, new_value)
+
+
+def tunnel_keep_alive_workspaces() -> list[str]:
+    return _workspace_toggle_values(_TUNNEL_KEEP_ALIVE_KEY)
+
+
+def tunnel_reconnect_workspaces() -> list[str]:
+    return _workspace_toggle_values(_TUNNEL_RECONNECT_KEY)
+
+
+def _tunnel_workspace_setting(key: str, legacy_key: str, ws_home: "str | Path") -> bool | None:
+    target = _resolved(str(ws_home))
+    # Explicit false wins even for hand-edited configs containing both lists.
+    disabled_key = key.removesuffix("_workspaces") + "_disabled_workspaces"
+    if target in {_resolved(x) for x in _workspace_toggle_values(disabled_key)}:
+        return False
+    if target in {_resolved(x) for x in _workspace_toggle_values(key)}:
+        return True
+    return _tunnel_table_bool(legacy_key)
+
+
+def is_tunnel_keep_alive_enabled(ws_home: "str | Path") -> bool:
+    return _tunnel_workspace_setting(_TUNNEL_KEEP_ALIVE_KEY, "keep_alive", ws_home) is True
+
+
+def tunnel_reconnect_setting(ws_home: "str | Path") -> bool | None:
+    """Effective explicit setting, or None when no scoped/legacy value exists.
+
+    qy up defaults an absent value to true; an explicit false is preserved.
+    """
+    return _tunnel_workspace_setting(_TUNNEL_RECONNECT_KEY, "reconnect", ws_home)
+
+
+def is_tunnel_reconnect_enabled(ws_home: "str | Path") -> bool:
+    return tunnel_reconnect_setting(ws_home) is True
+
+
+def _set_tunnel_workspace_toggle(key: str, ws_home: str, enabled: bool) -> Path:
+    disabled_key = key.removesuffix("_workspaces") + "_disabled_workspaces"
+    _set_workspace_toggle(disabled_key, ws_home, not enabled)
+    return _set_workspace_toggle(key, ws_home, enabled)
+
+
+def set_tunnel_keep_alive(ws_home: str, enabled: bool) -> Path:
+    return _set_tunnel_workspace_toggle(_TUNNEL_KEEP_ALIVE_KEY, ws_home, enabled)
+
+
+def set_tunnel_reconnect(ws_home: str, enabled: bool) -> Path:
+    return _set_tunnel_workspace_toggle(_TUNNEL_RECONNECT_KEY, ws_home, enabled)
 
 
 def _split_dirs(explicit: str | None) -> list[Path]:
@@ -140,12 +386,27 @@ def build_workspaces(explicit: str | None = None) -> list[Workspace]:
 
 
 # Module-global current workspace(s). WS is the primary; WS_LIST is all of them.
+# _EXPLICIT remembers whatever `explicit` value was last handed to
+# configure_workspace() (e.g. a `--workspace` CLI flag), so long-lived processes
+# (the GUI server) can re-resolve config.toml changes via reload_workspace()
+# without accidentally discarding that override.
 WS_LIST: list[Workspace] = build_workspaces()
 WS: Workspace = WS_LIST[0]
+_EXPLICIT: str | None = None
 
 
 def configure_workspace(explicit: str | None = None) -> Workspace:
-    global WS, WS_LIST
+    global WS, WS_LIST, _EXPLICIT
+    _EXPLICIT = explicit
     WS_LIST = build_workspaces(explicit)
     WS = WS_LIST[0]
     return WS
+
+
+def reload_workspace() -> Workspace:
+    """Re-resolve WS/WS_LIST against config.toml, preserving whatever explicit
+    --workspace override (if any) the process started with. Use this instead of
+    configure_workspace(None) whenever the reload is triggered by a config.toml
+    edit from a long-lived process (e.g. the GUI's workspace-manager add/remove),
+    so an explicit --workspace session doesn't get silently dropped."""
+    return configure_workspace(_EXPLICIT)

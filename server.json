@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.yiminspace/quarry",
+  "description": "Safety-railed database access: Postgres, MySQL, SQLite, Redis. Read-only by default.",
+  "repository": {
+    "url": "https://github.com/yiminspace/quarry",
+    "source": "github"
+  },
+  "websiteUrl": "https://yiminspace.github.io/quarry/",
+  "version": "1.10.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "quarry-db",
+      "version": "1.10.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "quarry-db",
+          "description": "resolve the qy entry point from the quarry-db package"
+        },
+        {
+          "type": "positional",
+          "value": "qy",
+          "description": "Quarry CLI entry point"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp",
+          "description": "serve the MCP face over stdio"
+        },
+        {
+          "type": "named",
+          "name": "--workspace",
+          "description": "path to a Quarry workspace directory (connections.toml + queries/)",
+          "isRequired": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}
