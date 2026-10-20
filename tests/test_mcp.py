@@ -171,6 +171,7 @@ def test_exec_sql_live(tmp_path):
         c.close()
 
 
+@pytest.mark.e2e
 def test_saved_query_lifecycle_and_ping_over_stdio(tmp_path):
     import sqlite3
     with sqlite3.connect(tmp_path / "db.sqlite") as db:

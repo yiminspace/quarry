@@ -10,7 +10,7 @@ Launch:  qy mcp [--workspace PATH] [--write]
 Protocol: JSON-RPC 2.0, newline-delimited, over stdin/stdout (MCP stdio
 transport). Logs go to stderr; stdout carries only protocol messages.
 
-Write policy (graduated, mirrors the CLI):
+Database write policy (graduated, mirrors the CLI):
   - server default            -> every write/DDL is blocked (exit code 8)
   - server started --write    -> a call may pass {"write": true}
   - target connection is production        -> the call must ALSO pass {"confirm_prod": true}

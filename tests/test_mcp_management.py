@@ -8,6 +8,8 @@ import pytest
 
 from quarry import core, mcp, workspace
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
