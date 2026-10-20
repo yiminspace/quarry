@@ -272,6 +272,39 @@ pre-1.0 history followed the earlier development policy.
 
 <!-- version list -->
 
+## v1.11.0 (2026-10-20)
+
+### Bug Fixes
+
+- Reject saved query targets spanning workspaces
+  ([#150](https://github.com/yiminspace/quarry/pull/150),
+  [`3687a69`](https://github.com/yiminspace/quarry/commit/3687a69b057aa493e27931ce8b5be56d313fc07b))
+
+### Build System
+
+- **deps**: Bump actions/checkout from 4 to 7 ([#1](https://github.com/yiminspace/quarry/pull/1),
+  [`5e441d9`](https://github.com/yiminspace/quarry/commit/5e441d98af7ff539ecafca70070142478fb0ad23))
+
+- **deps**: Bump actions/setup-python from 5 to 6
+  ([#2](https://github.com/yiminspace/quarry/pull/2),
+  [`bbcefa0`](https://github.com/yiminspace/quarry/commit/bbcefa026fc16afe8c3a9ba42697e3035455e07a))
+
+### Features
+
+- Add MCP query management and connection diagnostics
+  ([#150](https://github.com/yiminspace/quarry/pull/150),
+  [`3687a69`](https://github.com/yiminspace/quarry/commit/3687a69b057aa493e27931ce8b5be56d313fc07b))
+
+- MCP 支持查看与保存查询及连接诊断 ([#150](https://github.com/yiminspace/quarry/pull/150),
+  [`3687a69`](https://github.com/yiminspace/quarry/commit/3687a69b057aa493e27931ce8b5be56d313fc07b))
+
+### Testing
+
+- Classify MCP database and subprocess coverage by layer
+  ([#150](https://github.com/yiminspace/quarry/pull/150),
+  [`3687a69`](https://github.com/yiminspace/quarry/commit/3687a69b057aa493e27931ce8b5be56d313fc07b))
+
+
 ## v1.10.0 (2026-10-18)
 
 ### Bug Fixes
