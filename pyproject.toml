@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quarry-db"
-version = "0.2.0"
+version = "1.10.0"
 description = "AI-native database workbench: one safety-railed query kernel, many faces (CLI / GUI / agent skill / MCP)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Wangggym" }]
-keywords = ["database", "sql", "postgres", "mysql", "redis", "ai", "agent", "mcp", "cli", "workbench"]
+authors = [{ name = "yiminlab" }]
+keywords = ["database", "sql", "postgres", "mysql", "sqlite", "redis", "ai", "agent", "mcp", "cli", "workbench"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Environment :: Web Environment",
     "Intended Audience :: Developers",
@@ -26,22 +26,98 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/Wangggym/quarry"
-Repository = "https://github.com/Wangggym/quarry"
-Changelog = "https://github.com/Wangggym/quarry/blob/main/CHANGELOG.md"
-Issues = "https://github.com/Wangggym/quarry/issues"
+Homepage = "https://yiminspace.github.io/quarry/"
+Repository = "https://github.com/yiminspace/quarry"
+Changelog = "https://github.com/yiminspace/quarry/blob/main/CHANGELOG.md"
+Issues = "https://github.com/yiminspace/quarry/issues"
 
 [project.optional-dependencies]
-mysql = ["pymysql>=1.1"]
-gui = ["flask>=3.0"]
-dev = ["pymysql>=1.1", "flask>=3.0", "pytest>=8.0"]
+mysql = ["pymysql[rsa]>=1.1"]
+# Retained for compatibility with existing install commands; GUI uses stdlib.
+gui = []
+dev = ["pymysql[rsa]>=1.1", "pytest>=8.0", "pytest-cov>=5.0", "hatchling"]
+# Browser-driven GUI e2e (headless Chromium). After install, run:
+#   python -m playwright install chromium
+e2e = ["pytest>=8.0", "playwright>=1.40"]
 
 [project.scripts]
 qy = "quarry.cli:main"
 quarry = "quarry.cli:main"
 
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/quarry/__init__.py:__version__", "server.json:version"]
+allow_zero_version = true
+major_on_zero = false
+tag_format = "v{version}"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+output_format = "md"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/quarry"]
+# Editable installs map each top-level package to its exact source path instead
+# of just appending a directory to sys.path. If that path later disappears (e.g.
+# a git worktree used for `pip install -e .` gets removed), imports fail with a
+# FileNotFoundError naming the missing path — not a bare, unhelpful
+# ModuleNotFoundError. See CONTRIBUTING.md "Reinstalling after a worktree is
+# removed".
+dev-mode-exact = true
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+# Bundles CHANGELOG.md into standard wheels only — see hatch_build.py for why
+# a plain force-include (which also applies to editable wheels) breaks
+# `pip install -e`.
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+  "/reports",
+  "/web/node_modules",
+  "/web/tsconfig.tsbuildinfo",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# -ra: one-line reason for every skip/xfail at the end (see what the env gated).
+# --strict-markers: a typo'd marker is an error, not a silent no-op.
+addopts = "-ra --strict-markers --tb=short --durations=10"
+markers = [
+    "unit: pure logic; no DB, network, or subprocess",
+    "integration: in-process against a real database engine",
+    "e2e: drives a real qy CLI / GUI server / MCP subprocess",
+    "browser: drives the real GUI frontend in a headless browser (Playwright)",
+]
+
+[tool.coverage.run]
+source = ["quarry"]
+branch = true
+# subprocess-launched code (qy CLI / MCP) is covered in-process by the
+# integration suites, so we don't need coverage's multiprocess plumbing.
+
+[tool.coverage.report]
+# The 95% gate applies to unit + integration (see `make cov`). Frontend JS lives
+# in web/ and is exercised by the browser suite, not by
+# line coverage. Defensive/unreachable lines are excluded explicitly.
+precision = 1
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "def main\\(",
+    "if TYPE_CHECKING:",
+    "# unreachable",          # dead line after err(..., exit_code=) which always raises
+    "\\.\\.\\.",
+]
+omit = ["*/quarry/__main__.py"]

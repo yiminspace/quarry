@@ -4,14 +4,23 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        type: string
+        required: false
+        default: ""
 
 jobs:
+  # Boundary Python versions run the full layered suite; 3.12 is covered by the
+  # `coverage` job (unit+integration under the gate, plus an explicit e2e pass)
+  # so no version×layer combination is ever run twice.
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.13"]
 
     services:
       postgres:
@@ -27,19 +36,58 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: quarry
+          MYSQL_DATABASE: quarry_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pquarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
+      QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build React shell
+        run: npm ci && npm run lint && npm run test:unit && npm run build
+        working-directory: web
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
-      - name: Install psql client
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Install psql + redis clients (skipped when preinstalled)
+        run: |
+          command -v psql >/dev/null && command -v redis-cli >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-client redis-tools
+          }
 
       - name: Install package
         run: pip install -e ".[dev]"
@@ -47,17 +95,177 @@ jobs:
       - name: Seed test database
         run: psql "$QUARRY_TEST_DB_URL" -f tests/seed.sql
 
-      - name: Run tests
-        run: python3 -m pytest -q
+      - name: Run tests (unit → integration → e2e)
+        run: bash scripts/test.sh
+
+  coverage:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: quarry
+          POSTGRES_PASSWORD: quarry
+          POSTGRES_DB: quarry_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: quarry
+          MYSQL_DATABASE: quarry_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -pquarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
+      QUARRY_TEST_MYSQL_URL: mysql://root:quarry@127.0.0.1:3306/quarry_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build React shell
+        run: npm ci && npm run build
+        working-directory: web
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install psql + redis clients (skipped when preinstalled)
+        run: |
+          command -v psql >/dev/null && command -v redis-cli >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-client redis-tools
+          }
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Seed test database
+        run: psql "$QUARRY_TEST_DB_URL" -f tests/seed.sql
+      - name: Coverage gate (unit + integration >= 95%)
+        run: bash scripts/coverage.sh
+      - name: Run e2e layer (3.12)
+        run: bash scripts/test.sh e2e
+
+  browser:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: quarry
+          POSTGRES_PASSWORD: quarry
+          POSTGRES_DB: quarry_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quarry"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      QUARRY_TEST_DB_URL: postgresql://quarry:quarry@localhost:5432/quarry_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build React shell
+        run: npm ci && npm run build
+        working-directory: web
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install psql client (skipped when preinstalled)
+        run: |
+          command -v psql >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          }
+      - name: Install package + Playwright
+        run: pip install -e ".[dev,e2e]"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - name: Install chromium (full, on cache miss)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install --with-deps chromium
+      - name: Install chromium deps only (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: python -m playwright install chromium
+      - name: Seed test database
+        run: psql "$QUARRY_TEST_DB_URL" -f tests/seed.sql
+      - name: Run browser GUI e2e
+        run: bash scripts/test.sh browser
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build React shell
+        run: npm ci && npm run build
+        working-directory: web
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Build sdist + wheel
         run: pipx run build
+      - name: Verify wheel ships web_dist
+        run: |
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          whl = next(Path("dist").glob("*.whl"))
+          names = zipfile.ZipFile(whl).namelist()
+          assert any(n.startswith("quarry/web_dist/") and n.endswith("index.html") for n in names)
+          PY
+      - name: Verify sdist excludes node_modules
+        run: |
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          names = tarfile.open(sdist, "r:gz").getnames()
+          assert not any("node_modules" in n for n in names)
+          assert not any("/reports/" in n for n in names)
+          assert not any(n.endswith("tsconfig.tsbuildinfo") for n in names)
+          PY
       - name: Check metadata
         run: pipx run twine check dist/*

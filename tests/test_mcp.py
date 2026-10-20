@@ -17,6 +17,7 @@ CONNS = """
 url = "postgresql://u@127.0.0.1:5432/blog"
 group = "acme"
 env = "prod"
+production = true
 
 [shop_dev]
 url = "postgresql://u@dev-host/shop"
@@ -27,6 +28,7 @@ env = "dev"
 url = "postgresql://u@prod-host/shop"
 db = "shop"
 env = "prod"
+production = true
 """
 
 

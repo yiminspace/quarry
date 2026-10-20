@@ -1,0 +1,364 @@
+/* quarry 是 voyage 样式系统的原始基准 (slate x dark x classic x normal) ——
+   通用外壳/组件规格已经在 @yiminlab/voyage 的 tokens.css / voyage.css 里
+   (导入见 main.tsx)。这里只剩 quarry 自己独有、其它 App 用不上的部件:
+   Redis key 树、JSON 树查看器、连接信息弹窗行、Workspace 列表、SQL 编辑器的
+   overlay-textarea 双层技巧 —— 全部只消费 voyage 的 token 变量, 不再自己
+   定义颜色字面量。 */
+*{box-sizing:border-box}
+#root,.app-shell{display:contents}
+/* a few inline styles (Modals.tsx) still reach for var(--mono) directly */
+.vg{
+  --mono:var(--vg-mono);
+  --production-accent:color-mix(in srgb,var(--accent) 65%,var(--fg2));
+  --production-fg:color-mix(in srgb,var(--accent) 25%,var(--fg2));
+  --production-surface:color-mix(in srgb,var(--production-accent) 6%,var(--surf-1));
+  --production-line:color-mix(in srgb,var(--production-accent) 40%,var(--line));
+  --production-selection:color-mix(in srgb,var(--production-accent) 10%,var(--surf-1));
+}
+
+/* ---- 侧栏里 voyage 组件层没有覆盖到的边角 ---- */
+.grp .ti{font-size:13px}
+.vg-ws-note{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg3);font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}
+/* Engine type stays quiet like the origin path, but in mono so it doesn't
+   read as another workspace folder. */
+.vg-row small.vg-engine-tag{
+  margin-left:auto;
+  color:var(--fg3);
+  font-size:10px;
+  font-family:var(--vg-mono);
+  letter-spacing:0;
+  font-weight:400;
+  background:none;
+  padding:0;
+}
+.vg-trow{
+  display:flex;
+  align-items:center;
+  gap:2px;
+  padding:4px 8px 6px 10px;
+}
+.vg-tfilter{
+  flex:1;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  background:var(--bg2);
+  border:1px solid transparent;
+  border-radius:var(--r-btn);
+  padding:0 8px;
+}
+.vg-tfilter:focus-within{border-color:var(--line2-c, var(--line2))}
+.vg-tfilter .ti{font-size:13px;color:var(--fg3);flex:none}
+.trow .tsearch{flex:1;width:auto;margin:0;min-width:0}
+.vg-trow .tsearch, .sidebar-searchbar .tsearch{
+  background:transparent;
+  border:0;
+  border-radius:0;
+  padding:5px 0;
+  font-size:12px;
+  box-shadow:none;
+}
+.vg-trow .tsearch:focus, .sidebar-searchbar .tsearch:focus{outline:none}
+.vg-trow .treload{flex:none}
+.dbrow.down{opacity:.5}
+.dbrow.down:hover{opacity:.85}
+.tname .ti,.qname .ti{font-size:14px;color:var(--fg3);flex:none}
+.vg-qsrc{font-size:11px;color:var(--fg3);padding:8px 12px 2px 22px;font-family:var(--vg-mono)}
+.vg-qname-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.esw{display:flex;gap:5px}
+
+/* ---- SQL 编辑器: 高亮 <pre> 叠在透明 <textarea> 上的经典双层技巧 ---- */
+.edwrap{position:relative;background:var(--surf-2);overflow:hidden}
+.edwrap pre,.edwrap textarea{margin:0;padding:11px 14px;font-family:var(--vg-mono);font-size:13.5px;line-height:1.6;border:0;white-space:pre-wrap;word-break:break-word;width:100%;height:100%;box-sizing:border-box}
+.edwrap pre{position:absolute;inset:0;pointer-events:none;color:var(--fg);overflow:hidden}
+.edwrap textarea{position:relative;background:transparent;color:transparent;caret-color:var(--acc);resize:none;outline:none;overflow:auto}
+
+/* ---- Redis: key 树 ---- */
+.rbadge{font-size:9.5px;padding:0 5px;border-radius:8px;background:var(--bg3);color:var(--fg2);margin-left:auto;flex:none}
+.rbadge.ttl{color:var(--acc)}
+.knode{cursor:pointer;user-select:none}
+.kchild{padding-left:12px}
+
+/* ---- 连接信息弹窗 (ConnInfoModal / UpdatePanel / WhatsNewPanel 共用行样式) ---- */
+.cirow{display:flex;gap:10px;padding:3px 0;font-size:12.5px;align-items:baseline}
+.cik{width:96px;flex:none;color:var(--fg3)}
+.civ{font-family:var(--vg-mono);word-break:break-all;color:var(--fg)}
+.ciact{flex:none;display:flex;gap:2px;margin-left:auto}
+.ciact .iconbtn{width:22px;min-width:22px;height:22px;font-size:13px}
+.ciactions{margin-top:10px;padding-top:9px;border-top:1px solid var(--line2);display:flex;gap:8px}
+.cihealth{margin-top:10px;padding-top:9px;border-top:1px solid var(--line2);font-size:12.5px;color:var(--fg2);display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.cihealth.ok{color:#4e9a6b}
+.cihealth.down{color:var(--red-fg)}
+.cihealth pre{flex-basis:100%;margin:6px 0 0;padding:8px;background:var(--bg2);border-radius:6px;font-family:var(--vg-mono);font-size:11.5px;white-space:pre-wrap;word-break:break-word;color:var(--red-fg)}
+
+/* ---- Workspace 管理弹窗 ---- */
+.wslist{max-height:240px;overflow:auto;margin-bottom:8px}
+.wsrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+.wsrow:last-child{border-bottom:0}
+.wspath{font-family:var(--vg-mono);font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.wswarn{color:var(--red-fg);font-size:11px;flex:none}
+.wsadd{display:flex;gap:8px;margin-top:4px}
+.wsadd input{flex:1;background:var(--bg2);border:1px solid var(--line2);border-radius:6px;color:var(--fg);padding:6px 9px;font-family:var(--vg-mono);font-size:12.5px}
+.wsconfig{margin-top:10px;padding-top:9px;border-top:1px solid var(--line2);color:var(--fg3);font-size:11px;word-break:break-all}
+
+/* ---- 单元格 JSON 值的可折叠树 (Modals.tsx 的 JsonTree) ---- */
+.jt{margin-left:14px}
+.jt>summary{cursor:pointer;color:var(--fg2);font-family:var(--vg-mono);font-size:12.5px;user-select:none}
+.jrow{margin-left:30px;font-family:var(--vg-mono);font-size:12.5px;word-break:break-word}
+.jk{color:var(--acc-hi)}
+.jstr{color:var(--ok)}
+.jnum{color:var(--num)}
+.jbool{color:var(--bool)}
+.jnull{color:var(--null);font-style:italic}
+.jm{color:var(--fg3);font-size:11px}
+
+/* ---- 查询历史弹窗 ---- */
+.hsearch{width:100%;margin:0 0 8px;box-sizing:border-box}
+.hmeta{color:var(--fg3);font-size:11px;margin-top:3px}
+
+/* ---- 代理徽标 (issue #101) — env pill 内, 标记该隧道正经 HTTP(S) 代理转发 ---- */
+.proxy-badge{margin-left:4px;font-size:10px;color:var(--acc)}
+
+/* ---- workspace 管理弹窗: 每行的代理开关状态 (issue #101) ---- */
+.wsproxy{color:var(--fg3);font-size:11px;flex:none}
+.wsproxy.on{color:var(--acc)}
+
+/* Connection-scoped query tabs: fixed controls, readable labels, horizontal overflow. */
+.tab-navigation{display:flex;min-width:0;height:36px;background:var(--surf-1);position:relative;flex:none;border-bottom:1px solid var(--line)}
+.tab-navigation .vg-tabs{flex:1;min-width:0;align-items:stretch;gap:0;padding:0;scrollbar-width:none;overflow-y:hidden}
+.tab-navigation .vg-tabs::-webkit-scrollbar{display:none}
+.tab-navigation .vg-tab{box-sizing:border-box;position:relative;flex:0 0 auto;min-width:0;max-width:240px;height:100%;padding:0 14px;gap:8px;font-size:12px;line-height:20px;border:0;border-radius:0;color:var(--fg3);background:var(--surf-1)}
+.tab-navigation .vg-tab::before{content:"";position:absolute;right:0;top:10px;bottom:10px;width:1px;background:var(--line)}
+.tab-navigation .vg-tab.on{background:color-mix(in srgb,var(--acc) 12%,var(--surf-2));color:var(--fg);font-weight:600}
+.tab-navigation .vg-tab.on::after{content:"";position:absolute;bottom:0;left:14px;right:14px;height:2px;background:var(--acc)}
+.tab-navigation .vg-tab:not(.on):hover{background:var(--surf-2);color:var(--fg)}
+.tab-navigation .vg-tab.dragover{box-shadow:inset 2px 0 var(--acc)}
+.tab-navigation .vg-x{background:inherit;border:0;font:inherit;cursor:pointer}
+.tab-navigation .vg-tab:focus-visible,.tab-controls button:focus-visible,.tab-menu summary:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.tab-controls{display:flex;flex:none;align-items:center;gap:4px;padding:0 8px;border-left:1px solid var(--line)}
+.tab-scroll-controls{display:flex;gap:0;padding-right:4px;border-right:1px solid var(--line)}
+.tab-scroll-controls button:disabled{opacity:.3;cursor:default}
+.tab-menu summary{display:flex;align-items:center;justify-content:center;height:26px;gap:4px;cursor:pointer;color:var(--fg2);padding:0 4px;list-style:none;font-size:12px;line-height:20px}
+.tab-controls .ti{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;font-size:14px;line-height:1}
+.tab-menu summary::-webkit-details-marker{display:none}
+.tab-menu-panel{position:absolute;right:8px;top:100%;z-index:30;width:300px;max-width:calc(100vw - 32px);padding:8px;background:var(--surf-1);border:1px solid var(--line2);border-radius:6px;box-shadow:0 8px 24px var(--bg0)}
+.tab-menu-panel input{box-sizing:border-box;width:100%;padding:8px;color:var(--fg);background:var(--surf-2);border:1px solid var(--line2);border-radius:4px}
+.tab-menu-items{max-height:280px;overflow-y:auto;margin:6px 0}
+.tab-menu-panel button{display:block;width:100%;text-align:left;padding:8px;border:0;border-radius:4px;background:var(--surf-1);color:var(--fg2);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab-menu-panel button:hover,.tab-menu-panel button.on{background:var(--surf-2);color:var(--acc)}
+.tab-menu-panel button:disabled{opacity:.45;cursor:default}
+.tab-menu-actions{border-top:1px solid var(--line);padding-top:6px}
+.tab-menu-empty{padding:10px;color:var(--fg3);font-size:12px}
+
+.query-empty-state{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:32px;text-align:center;color:var(--fg3);background:var(--bg0)}
+.query-empty-state>i{font-size:36px;color:var(--fg3);margin-bottom:8px}
+.query-empty-state h2{font-size:16px;font-weight:500;color:var(--fg2);margin:12px 0 0}
+.query-empty-state p{font-size:13px;margin:10px 0 20px}
+.query-empty-actions{display:flex;gap:8px}
+
+/* Keep the active document prominent; environment and Run are quieter context/actions. */
+#esw .vg-ep{padding:4px 10px;border-color:var(--line);color:var(--fg3);background:var(--surf-1);box-shadow:none}
+#esw .vg-ep.on:not(.prod){background:color-mix(in srgb,var(--acc) 20%,var(--surf-1));border-color:var(--acc);color:var(--fg);font-weight:600;box-shadow:none}
+#esw .vg-ep.prod{color:var(--production-fg)}
+#esw .vg-ep.on.prod{background:var(--production-selection);border-color:var(--production-line);color:var(--production-fg);font-weight:600}
+/* Production stays beside the query tabs, with a quiet tint at SQL entry. */
+.tab-context{display:flex;align-items:center;justify-content:flex-end;flex:0 0 104px;padding:0 10px}
+.production-tag{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:4px;background:var(--production-selection);color:var(--production-fg);font-size:11px;font-weight:500;line-height:16px;white-space:nowrap}
+.app-shell[data-production='true'] .edwrap{background:var(--production-surface)}
+.app-shell[data-production='true'] .dbrow.on{background:var(--production-selection);color:var(--fg)}
+.app-shell[data-production='true'] .dbrow.on::before{background:var(--production-accent)}
+.app-shell[data-production='true'] .tab-navigation .vg-tab.on::after{background:var(--production-accent)}
+
+/* Shared workbench rhythm: one inset, compact context and equal action heights. */
+.vg-qhead.qhead{min-height:46px;padding:8px 14px;gap:10px;flex-wrap:nowrap}
+.connection-context{display:flex;align-items:center;gap:10px;flex:1;min-width:0;flex-wrap:wrap}
+.vg-qhead .qtitle{font-size:13px;line-height:20px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vg-qhead .runon{font-size:12px;line-height:20px}
+#esw{gap:6px;flex-wrap:wrap}
+#esw .vg-ep{display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;font-size:12px;font-weight:600;line-height:20px;border-radius:6px}
+.vg-toolbar.toolbar{padding:8px 14px;gap:8px;flex-wrap:wrap}
+.vg-toolbar.toolbar .vg-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:30px;padding:0 10px;font-size:12px;line-height:20px;border-radius:6px}
+.vg-toolbar.toolbar .vg-btn .ti{font-size:15px}
+/* One execution action, with its connection-scoped mode always visible. */
+.run-controls{position:relative;flex:none}
+.run-split{display:flex;height:30px;border:1px solid var(--line);border-radius:6px;background:var(--surf-1)}
+.run-split #runBtn{height:28px;border:0;border-radius:5px 0 0 5px;background:transparent;color:var(--acc);box-shadow:none;font-weight:500}
+.run-split #runBtn:hover{background:var(--surf-2);filter:none}
+.app-shell[data-production='true'] .run-split #runBtn{color:var(--production-fg)}
+#runModeBtn{display:inline-flex;align-items:center;justify-content:space-between;gap:8px;width:86px;padding:0 10px;border:0;border-left:1px solid var(--line);border-radius:0 5px 5px 0;background:transparent;color:var(--fg2);font:inherit;font-size:12px;line-height:20px;cursor:pointer}
+#runModeBtn .ti{font-size:12px;color:var(--fg3)}
+#runModeBtn[data-auto='true']{color:var(--acc)}
+#runModeBtn:hover,#runModeBtn[aria-expanded='true']{background:var(--surf-2)}
+#runModeBtn:disabled{opacity:.45;cursor:default}
+.run-split button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.run-mode-menu{position:absolute;left:0;top:calc(100% + 6px);z-index:30;width:286px;padding:5px;border:1px solid var(--line);border-radius:8px;background:var(--surf-1);box-shadow:var(--vg-shadow-popover)}
+.run-mode-menu>button{display:flex;align-items:flex-start;gap:9px;width:100%;padding:9px 8px;border:0;border-radius:4px;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer}
+.run-mode-menu>button[aria-checked='true'],.run-mode-menu>button:hover{background:var(--surf-2)}
+.run-mode-menu>button:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.run-mode-menu>button>.ti{flex:none;margin-top:2px;font-size:14px;line-height:16px;color:var(--acc);visibility:hidden}
+.run-mode-menu>button[aria-checked='true']>.ti{visibility:visible}
+.run-mode-menu strong{display:block;font-size:12px;line-height:20px;font-weight:500}
+.run-mode-menu small{display:block;margin-top:2px;color:var(--fg2);font-size:11px;line-height:17px}
+.run-mode-scope{margin:5px 8px 0;padding:8px 0 4px;border-top:1px solid var(--line);color:var(--fg3);font-size:10px;line-height:16px;overflow-wrap:anywhere}
+.row-limit{position:relative;flex:none;width:112px}
+.row-limit #maxRows{display:block;appearance:none;-webkit-appearance:none;width:100%;padding:0 32px 0 10px;background-image:none}
+.row-limit>.ti{position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:14px;line-height:1;color:var(--fg2);pointer-events:none}
+.row-limit #maxRows:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+/* Saved-query disclosure is independent from table preview. */
+.table-query-group { display: block; }
+.table-query-group > .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.query-disclosure { display: contents; }
+.query-children { grid-column: 1 / -1; padding-left: 24px; min-width: 0; }
+.query-children .qname { width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+.other-queries { padding: 8px 12px; color: var(--fg3); font-size: 12px; }
+
+#side .dbrow { display: grid; grid-template-columns: 8px minmax(0, 1fr) 64px; gap: 8px; align-items: center; }
+.db-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#side .dbrow .vg-engine-tag { margin-left: 0; text-align: right; }
+#side .dbrow .treload { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 24px; height: 24px; padding: 2px; opacity: 0; pointer-events: none; }
+#side .dbrow:hover .treload, #side .dbrow:focus-within .treload { opacity: 1; pointer-events: auto; }
+#side .dbrow:has(.treload):hover .vg-engine-tag, #side .dbrow:has(.treload):focus-within .vg-engine-tag { opacity: 0; }
+@media (hover: none) {
+  #side .dbrow .treload { opacity: 1; pointer-events: auto; }
+  #side .dbrow:has(.treload) .vg-engine-tag { opacity: 0; }
+}
+.query-index-heading { display: flex; gap: 8px; align-items: center; padding: 9px 12px 9px 24px; font-size: 12px; color: var(--fg3); cursor: pointer; }
+#side .query-item { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-height: 32px; padding: 7px 12px; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 12px; text-align: left; cursor: pointer; white-space: normal; }
+#side .query-item:hover, #side .query-item.selected { background: var(--bg2); }
+.query-copy { flex: 1; min-width: 0; }
+.query-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.5; }
+.query-description { display: block; margin-top: 4px; color: var(--fg3); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.query-item > .ti { margin-top: 3px; color: var(--fg3); }
+.query-item:focus-visible, .other-query-heading:focus-visible, [data-t]:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+#side { scrollbar-gutter: stable; }
+#tbl-panel, #grid, .wslist, .tab-menu-items { scrollbar-gutter: stable; }
+.qhead .collapse-all { flex: none; }
+.sidebar-searchbar { position: sticky; top: -7px; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 7px 8px; background: var(--surf-1); }
+.sidebar-searchbar .vg-tfilter { flex: 1; min-width: 0; }
+.sidebar-searchbar input { width: 100%; min-width: 0; }
+.sidebar-searchbar .collapse-all { flex: none; }
+.search-scope { padding: 6px 12px; font-size: 11px; color: var(--fg3); }
+.search-db, .search-object { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: transparent; color: var(--fg); text-align: left; cursor: pointer; font: inherit; font-size: 12px; padding: 7px 16px; overflow-wrap: anywhere; }
+.search-object { padding-left: 28px; }
+.search-object small { margin-left: auto; color: var(--fg3); }
+.search-db:hover, .search-object:hover { background: var(--bg2); }
+#side .sidebar-search-results .query-item { padding-left: 28px; }
+.edwrap textarea[readonly] { cursor: not-allowed; }
+#side .query-index-children { padding-left: 24px; }
+#side .query-index-children .query-item { padding-left: 24px; }
+.other-query-heading { display: block; width: 100%; border: 0; background: transparent; color: var(--fg3); font: inherit; padding: 6px 0; text-align: left; cursor: pointer; }
+
+/* Keep-alive status and start/stop action share one header control. */
+.keeper-control{display:inline-flex;align-items:center;gap:6px;font-family:inherit;background:var(--bg1);color:var(--fg2);cursor:pointer}
+.keeper-control:hover{opacity:.85}
+.keeper-control:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Expanded chat spans the editor and its toolbar; results always stay full width. */
+.editor-workspace{display:flex;min-width:0;flex:none;overflow:hidden;background:var(--surf-2)}
+.editor-document{flex:1;min-width:0;position:relative;overflow:hidden}
+.assistant-rail{display:flex;align-items:center;justify-content:center;flex:0 0 32px;padding:8px 0;border:0;border-right:1px solid var(--line);border-radius:0;background:color-mix(in srgb,var(--acc) 8%,var(--surf-2));color:var(--acc);cursor:pointer;overflow:hidden}
+.assistant-rail-name{writing-mode:vertical-rl;white-space:nowrap;font-family:inherit;font-size:12px;line-height:1}
+.assistant-rail:hover{background:color-mix(in srgb,var(--acc) 14%,var(--surf-2))}
+.assistant-rail:focus-visible,.assistant-close:focus-visible,.assistant-text-action:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+.assistant-divider-slot{position:relative;z-index:1;width:6px}
+/* Keep the left border and join the toolbar's bottom edge without a gap. */
+.assistant-divider{position:absolute;inset:0;height:auto;cursor:col-resize;touch-action:none;border-left:1px solid var(--line-c,var(--line))}
+.assistant-divider::after{left:1px;top:50%;width:2px;height:30px;transform:translateY(-50%)}
+.assistant-divider:focus-visible{background:var(--bg3);outline:2px solid var(--acc);outline-offset:-2px}
+.assistant-divider:focus-visible::after{background:var(--acc);opacity:1}
+.assistant-pane{display:flex;flex:none;flex-direction:column;position:relative;min-width:210px;min-height:0;background:var(--surf-2);overflow:hidden}
+.assistant-close{position:absolute;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;justify-content:center;width:22px;height:26px;padding:0;border:1px solid var(--line);border-radius:var(--r-btn);color:var(--fg3);background:var(--surf-2);box-shadow:none;outline:none;cursor:pointer}
+.assistant-close i{font-size:16px;line-height:1}
+.assistant-close:hover{color:var(--fg);background:var(--bg3);border-color:var(--line2)}
+.assistant-messages{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px 16px 12px;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+/* A slim track sits flush against the divider; only its top clears the handle. */
+@supports selector(::-webkit-scrollbar){
+  .assistant-messages{scrollbar-width:auto;scrollbar-color:auto}
+  .assistant-messages::-webkit-scrollbar{width:4px;height:4px}
+  .assistant-messages::-webkit-scrollbar-track{background:none}
+  .assistant-messages::-webkit-scrollbar-track:vertical{margin-top:38px}
+  .assistant-messages::-webkit-scrollbar-thumb{border:0;background:var(--line2);background-clip:border-box;border-radius:var(--r-btn)}
+  .assistant-messages::-webkit-scrollbar-thumb:hover{background:var(--fg3)}
+  .assistant-messages::-webkit-scrollbar-button{display:none}
+  .assistant-messages::-webkit-scrollbar-corner{background:none}
+}
+.assistant-message{margin:0 0 16px;color:var(--fg2);font-size:13px;line-height:1.55;overflow-wrap:anywhere}
+.assistant-message-user{background:var(--bg3);border-radius:var(--r-btn);padding:8px 11px;color:var(--fg)}
+.assistant-prose{white-space:pre-wrap}
+.assistant-markdown{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+.assistant-markdown>:first-child{margin-top:0}
+.assistant-markdown>:last-child{margin-bottom:0}
+.assistant-markdown p{margin:0 0 8px}
+.assistant-markdown h1,.assistant-markdown h2,.assistant-markdown h3,.assistant-markdown h4,.assistant-markdown h5,.assistant-markdown h6{margin:14px 0 6px;color:var(--acc);font-family:inherit;font-weight:600;line-height:1.4}
+.assistant-markdown h1{font-size:18px}
+.assistant-markdown h2{font-size:16px}
+.assistant-markdown h3{font-size:14px}
+.assistant-markdown h4,.assistant-markdown h5,.assistant-markdown h6{font-size:13px}
+.assistant-markdown strong{font-weight:600;color:var(--fg)}
+.assistant-markdown :is(h1,h2,h3,h4,h5,h6) strong{color:inherit}
+.assistant-markdown ul,.assistant-markdown ol{margin:0 0 8px;padding-left:20px}
+.assistant-markdown li{padding-left:2px;margin:2px 0}
+.assistant-markdown li>p{margin:0 0 4px}
+.assistant-markdown li>ul,.assistant-markdown li>ol{margin-bottom:2px}
+.assistant-markdown blockquote{margin:8px 0;padding:0 0 0 10px;border-left:2px solid var(--line2);color:var(--fg3)}
+.assistant-markdown blockquote p:last-child{margin-bottom:0}
+.assistant-markdown code{padding:2px 4px;border-radius:3px;background:var(--bg3);color:var(--fg);font:12px/1.55 var(--vg-mono)}
+.assistant-markdown pre{max-width:100%;margin:8px 0;padding:10px;border:1px solid var(--line);border-radius:var(--r-btn);background:var(--bg3);color:var(--fg);overflow-x:auto;white-space:pre;overflow-wrap:normal;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+.assistant-markdown pre code{padding:0;border:0;border-radius:0;background:none;white-space:pre;overflow-wrap:normal}
+.assistant-markdown .hljs-keyword{color:var(--acc)}
+.assistant-markdown .hljs-string{color:var(--ok)}
+.assistant-markdown .hljs-number,.assistant-markdown .hljs-built_in,.assistant-markdown .hljs-type{color:var(--num)}
+.assistant-markdown .hljs-literal{color:var(--bool)}
+.assistant-markdown .hljs-comment{color:var(--fg3)}
+.assistant-markdown .hljs-operator,.assistant-markdown .hljs-punctuation{color:var(--fg2)}
+.assistant-markdown a{color:var(--acc);text-decoration:underline;text-underline-offset:3px}
+.assistant-markdown a:hover{color:var(--fg)}
+.assistant-markdown a:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.assistant-markdown hr{margin:12px 0;border:0;border-top:1px solid var(--line)}
+.assistant-table-scroll{max-width:100%;margin:8px 0;overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-btn);scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+.assistant-markdown table{width:max-content;min-width:100%;border-collapse:collapse;font:inherit}
+.assistant-markdown th,.assistant-markdown td{padding:6px 9px;border:0;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;color:var(--fg2)}
+.assistant-markdown th{background:var(--bg3);color:var(--fg);font-weight:600;cursor:default}
+.assistant-markdown tr:last-child td{border-bottom:0}
+.assistant-markdown .task-list-item{list-style:none}
+.assistant-markdown input[type=checkbox]{margin-right:5px;accent-color:var(--acc)}
+.assistant-image-alt{color:var(--fg3)}
+.assistant-message-system{color:var(--fg3);font-size:12px}
+.assistant-proposal pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:8px 0;font:12px/1.55 var(--vg-mono);color:var(--fg)}
+.assistant-text-action{display:inline-flex;align-items:center;gap:6px;background:none;border:0;padding:3px 0;color:var(--acc);font:inherit;font-size:12px;cursor:pointer}
+.assistant-text-action:hover{text-decoration:underline;text-underline-offset:3px}
+.assistant-text-action:disabled{opacity:.45;cursor:default}
+.assistant-restore{color:var(--fg3);margin-top:8px}
+.assistant-restore:hover{color:var(--acc)}
+.assistant-restore-status{display:block;margin-top:8px;color:var(--fg3);font-size:12px}
+.assistant-empty,.assistant-thinking,.assistant-notice{color:var(--fg3);font-size:12px;line-height:1.55;margin:0 0 12px}
+.assistant-error{color:var(--red-fg);font-size:12px;line-height:1.55;margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.assistant-compose{flex:none;padding:0 12px 12px}
+.assistant-compose textarea{display:block;width:100%;min-height:70px;max-height:140px;padding:10px 11px;resize:vertical;background:var(--surf-2);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-btn);font-family:inherit;font-size:13px;line-height:1.5;outline:none;box-shadow:none}
+.assistant-compose textarea::placeholder{color:var(--fg3)}
+.assistant-compose textarea:hover{border-color:var(--line2)}
+.assistant-compose textarea:focus{border-color:color-mix(in srgb,var(--acc) 55%,var(--line2));outline:none;box-shadow:none}
+.assistant-prompt-input{position:relative}
+.assistant-ghost{position:absolute;top:11px;left:12px;right:12px;bottom:11px;color:var(--fg3);font-family:inherit;font-size:13px;line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;overflow:hidden;pointer-events:none;opacity:.75}
+.app-shell[data-production='true'] .editor-workspace,.app-shell[data-production='true'] .assistant-pane{background:var(--production-surface)}
+.history-sections{display:flex;gap:20px;margin:0 0 14px;border-bottom:1px solid var(--line)}
+.history-sections button{padding:8px 0;border:0;border-bottom:2px solid transparent;background:none;color:var(--fg3);font:inherit;font-size:13px;cursor:pointer}
+.history-sections button[aria-selected='true']{color:var(--fg);border-bottom-color:var(--acc)}
+.history-sections button:focus-visible,.conversation-item:focus-visible{outline:2px solid var(--acc)}
+.conversation-list{max-height:50vh;overflow:auto}
+.conversation-item{display:flex;flex-direction:column;gap:5px;width:100%;text-align:left;padding:12px 6px;border:0;border-bottom:1px solid var(--line);background:none;color:var(--fg);font:inherit;cursor:pointer}
+.conversation-item:hover{background:var(--bg3)}
+.conversation-item small{color:var(--fg3);font-size:11px}
+@media(max-width:760px){.assistant-pane{min-width:180px}.assistant-messages{padding-left:12px;padding-right:12px}.assistant-compose{padding-left:8px;padding-right:8px}}
+.conversation-item small{display:flex;gap:12px;justify-content:space-between}
+.conversation-item time{white-space:nowrap}
+/* Expanded chat reaches the toolbar's lower edge; controls remain with SQL. */
+.vg-section{min-height:0}
+.vg-section>.gridwrap{min-height:0}
+.editor-workspace.assistant-expanded{position:relative;display:grid;grid-template-columns:minmax(210px,var(--assistant-width)) 6px minmax(0,1fr);align-items:stretch;overflow:visible}
+.assistant-expanded .editor-document{overflow:visible}
+.assistant-expanded .assistant-pane{min-width:0;contain:size}
+.assistant-expanded .assistant-divider{width:6px}
+@media(max-width:760px){.editor-workspace.assistant-expanded{grid-template-columns:minmax(180px,var(--assistant-width)) 6px minmax(0,1fr)}}
+.editor-input{position:relative;min-width:0}
