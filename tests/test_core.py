@@ -66,6 +66,22 @@ def test_enforce_safety_skips_limit_for_explain_and_show():
         assert lim is None and "LIMIT" not in sql.replace(stmt, "")
 
 
+def test_enforce_safety_injects_offset_alongside_limit():
+    sql, lim = enforce_safety("select * from t", allow_write=False, max_rows=100, offset=200)
+    assert lim == 100 and sql.rstrip().endswith("LIMIT 101 OFFSET 200")
+
+
+def test_enforce_safety_offset_zero_omits_offset_clause():
+    sql, lim = enforce_safety("select * from t", allow_write=False, max_rows=100, offset=0)
+    assert lim == 100 and "OFFSET" not in sql
+
+
+def test_enforce_safety_ignores_offset_when_sql_has_own_limit():
+    # grid "load more" never rewrites hand-written SQL that already has a LIMIT
+    sql, lim = enforce_safety("select * from t limit 5", allow_write=False, max_rows=100, offset=10)
+    assert lim is None and "OFFSET" not in sql
+
+
 # ---- run_query: real Postgres ----
 
 @requires_db
@@ -78,6 +94,8 @@ def test_run_query_returns_rows(ws):
     assert res.engine == "postgres"
     assert res.elapsed_ms >= 0
     assert res.truncated is False
+    assert res.download_bytes > 0
+    assert res.size_is_estimated is True
 
 
 @requires_db
@@ -85,6 +103,16 @@ def test_run_query_truncates(ws):
     conn = core.get_connection("testpg")
     res = run_query(conn, "select id from customers order by id", max_rows=2)
     assert res.row_count == 2 and res.truncated is True
+
+
+@requires_db
+def test_run_query_offset_pages_through_results(ws):
+    # grid "load more": same SQL, growing offset, until the tail page isn't truncated
+    conn = core.get_connection("testpg")
+    page1 = run_query(conn, "select id from customers order by id", max_rows=2, offset=0)
+    assert [r["id"] for r in page1.rows] == [1, 2] and page1.truncated is True
+    page2 = run_query(conn, "select id from customers order by id", max_rows=2, offset=2)
+    assert [r["id"] for r in page2.rows] == [3] and page2.truncated is False
 
 
 @requires_db

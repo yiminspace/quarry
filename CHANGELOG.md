@@ -2,9 +2,1423 @@
 
 All notable changes to Quarry are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[SemVer](https://semver.org/) (pre-1.0: minor bumps may break).
+[SemVer](https://semver.org/). Public breaking changes require a major release;
+pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
+
+### Added
+
+- A SQL assistant alongside the editor explains existing queries and generates or
+  changes SQL using the current connection's table metadata. Replies stream into
+  a collapsible panel; changes offer Restore previous SQL and never execute a
+  query. Conversations and checkpoints remain available from History after a
+  tab is closed. Model configuration is managed through `qy ai configure`, and
+  CLI commands for explaining and generating SQL use the same assistant service.
+
+- SQLite support across CLI, GUI, MCP and Python for existing local database
+  files, using Python's standard library. Connections support workspace-relative
+  or absolute paths, environment grouping and explicit production protection.
+  Queries default to read-only; authorized writes never create a missing file.
+  Table/view browsing, schema inspection, query plans, paging, exports and
+  primary/unique-key record links use the existing workbench. BLOB values use
+  tagged base64 objects so binary data stays distinct from text. Returned SQL
+  retains parameter placeholders when saved-query results are persisted.
+
+- Local Neptune response fixtures accept `query_exact` and `parameters_exact`
+  to require the complete query and parameter set, preventing broad rules from
+  accepting unrelated requests. Existing substring/subset rules remain supported.
+
+- Row detail offers Copy record link: a Quarry URL with a single-record SELECT
+  based on verified primary/unique keys and the result's database/environment.
+  Ambiguous queries or unavailable keys show a disabled reason; copying preserves
+  the editor and does not execute SQL. PostgreSQL strings use ordinary quotes;
+  escape-string prefixes are only added for values containing backslashes. Quoted
+  SQL values do not trigger complex-query detection; MySQL keys match column names
+  regardless of casing, and binary keys remain unavailable rather than copying
+  a query that compares serialized display text.
+
+- A split Run button exposes the current Manual/Auto execution mode. Its mode
+  menu controls table previews, environment switches and opened queries.
+  Preferences are remembered separately per workspace, database and environment. Production defaults to off and supports explicit
+  opt-in; typing SQL or changing the mode never executes a query.
+
+- Local Neptune can opt into a fixture-backed openCypher response mock with strict
+  unmatched-query errors and cursor-based call inspection; the default empty
+  endpoint remains unchanged.
+
+- Sidebar-wide search covers configured databases, saved query names/descriptions,
+  and cached tables/Redis keys across environments without connecting on input.
+  A sticky search bar shares its row with Collapse all; clearing search restores
+  the previous tree, and Collapse all clears search while preserving SQL/results.
+
+- Saved queries reuse a read-only tab per file and environment, synchronize sidebar
+  selection, and offer Copy as new query for editing. Existing execution and parameter
+  confirmation flows are retained. History shortcuts restore SQL into an editable
+  tab even when invoked from a read-only query.
+- Sidebar queries appear below their tables, with Neptune label grouping, two-line
+  titles and wrapped selected descriptions. Whole table rows expand queries and open
+  table previews; query counts are hidden and Collapse all preserves the active editor
+  and result. A quieter All queries index keeps unassociated queries discoverable.
+
+### Changed
+
+- The GUI starts in Chinese and remembers a switch to English. Assistant controls,
+  conversation history follow the selected interface language.
+  The expanded chat panel reaches the bottom of the query toolbar, with query
+  controls below the right editor and the chat input at the bottom on the left.
+  Hiding the assistant restores the toolbar to full width.
+
+- The assistant opens on the left of the SQL editor. Vertical resizing can use
+  the available height above the status bar, with the toolbar and chat input
+  kept visible as the window changes; dragging upward restores result space.
+
+- Assistant explanations now render Markdown headings, lists, code and tables
+  while streaming and after reopening history. Wide examples scroll inside the
+  chat panel; headings and SQL syntax use theme colors. Code examples do not
+  change or execute the editor's SQL.
+
+- Restoring SQL now marks the original change as restored without creating a
+  chain of restore messages and buttons. The assistant stays above result
+  headers when resized.
+
+- Opening the assistant keeps model requests idle. An empty chat input offers
+  a faint, complete explanation prompt: Tab fills exactly the displayed text
+  and Enter sends it. Chat uses tighter line and paragraph spacing, with a
+  small collapse handle at the top of the divider. Chat starts at the panel
+  top without a reserved header row. Its 4px scrollbar sits against the divider
+  and leaves only the top of the track clear of the handle. The collapsed rail shows the full
+  SQL Assistant label vertically. The vertical divider shares the horizontal
+  resize bar's thickness, centered grip, colors and hover feedback, with its
+  thin border on the left and its bottom edge joined to the toolbar border.
+  Keyboard resizing keeps a visible focus outline.
+
+- GUI assistant reply language is configured through `qy ai language zh|en|system`
+  and defaults to the system language. The GUI reads this preference without
+  displaying language settings; it preserves drafts and history, and CLI replies
+  and model settings are unaffected. Tab suggestions use neutral explanation text.
+
+- GUI URLs now use `/quarry/?db=…&env=…&table=…`, following the active
+  connection and tab without including workspace folder names.
+  The former `/app/` route is removed.
+
+- Align the tab bar's add icon, list chevron and tab count with consistent
+  control heights and icon sizing.
+
+- The header tunnel-keeper status is now a single clickable badge for start/stop,
+  replacing the separate action icon and retaining keyboard controls and hover hints.
+
+- Publish MCP Registry releases under `io.github.yiminspace/quarry` after verifying
+  the matching PyPI distribution and ownership marker. Retiring the former
+  personal listing remains a separate migration step.
+- Update contributor links and package author metadata after the GitHub account rename.
+
+- Production connections tint the SQL editor with muted theme accents and show
+  a compact Production label at the end of the query tab bar. The selected tab
+  keeps its original short underline, without an additional line across the editor.
+  Switching to production no longer shows a repeated warning toast and still
+  preserves SQL without executing it unless Auto-run has been explicitly enabled
+  for that production connection.
+
+### Fixed
+
+- Retrying an assistant SQL change after a lost response reuses the saved
+  checkpoint. Pending suggestions remain available while recovering from a
+  conflict, without overwriting handwritten SQL or executing a query.
+
+- Reopening an active SQL conversation from History preserves its running reply,
+  unsent input and latest checkpoint instead of replacing them with an older read.
+
+- SQL assistant metadata preserves MySQL composite primary-key order. Model
+  configuration accepts commented or quoted TOML table headers and validates
+  changes before replacing configuration or credentials.
+
+- The update panel opens release notes in the canonical `yiminspace/quarry` repository.
+
+- The result-limit selector now displays localized row-count labels with a
+  properly inset chevron, keeping the text and arrow clearly separated.
+
+- Keeper and shared-tunnel process identities now use a versioned, fixed-locale
+  UTC start time, so GUI and CLI timezone or language settings cannot disagree.
+  A pre-v2 keeper record is recognized only when its PID-file timestamp also
+  verifies the process start; unverifiable records are never signalled. Pre-v2
+  tunnel registry entries are not reused until the keeper restarts and registers
+  new identities.
+
+- Successful GUI keep-alive status polls no longer flood the terminal log.
+
+- `qy local up <db>` writes new local connections beside their source database,
+  reuses them across configured workspaces within the same project scope,
+  rejects duplicate scoped identities and accidental `_local_local` names, and
+  namespaces physical Postgres databases by group/workspace so unrelated
+  projects can safely share a logical DB name and Docker container.
+
+- Redis key metadata is fetched in one bounded read-only batch instead of hundreds
+  of serial TYPE/TTL calls. Table/key requests time out after 30 seconds; failed
+  refreshes restore cached lists and show an error instead of spinning indefinitely.
+
+- List refresh now appears on the active database row on hover or keyboard focus;
+  removed its empty toolbar row. Refresh keeps the active connection, SQL and panel.
+
+- All queries children have nested indentation, and sidebar/result scrollbars
+  reserve space before overflow.
+- Removed the duplicate Other queries section; saved-query table selection waits
+  for schema loading. Read-only editors show a prohibited cursor and editing guidance.
+
+- SSH direct mode ignores inherited SSH proxy/jump settings. Tunnel registry
+  updates are serialized across processes and shared forwards are checked against
+  owner and SSH process identities before reuse. Proxy changes let active users
+  finish, and unrelated destinations no longer wait behind one slow SSH setup.
+- PostgreSQL tunnels preserve the database hostname for `sslmode=verify-full`
+  while connecting through the local forwarded port.
+- Tunnel keepers enforce single-instance ownership, avoid signalling stale PIDs,
+  honor disabled reconnection, and stop retrying permanent configuration failures
+  until the relevant configuration changes. Workspace toggles no longer change
+  other workspaces through the legacy global tunnel setting.
+- Text `qy status` reports the reason for blocked tunnels and keeper configuration
+  failures, including when no tunnels have been loaded yet.
+
+- Connection files are atomically replaced using unique private (0600) temporary
+  files. PostgreSQL URL passwords are passed through a temporary private
+  `PGPASSFILE` instead of appearing in process arguments.
+
+- Saved queries appear inside their owning workspace in the sidebar, with independent
+  collapse state and distinct file identities for same-named queries. Malformed
+  query files are skipped without hiding valid queries.
+
+- Redis INFO output is accepted as text when redis-cli bypasses JSON formatting;
+  malformed output from other commands remains an error.
+- Concurrent CLI calls can create the same skill query link without failing.
+- Local connection failures distinguish Docker availability and occupied ports;
+  SQL errors do not trigger unrelated Docker or credential diagnostics.
+- Skill query linking rejects missing workspaces without recreating their directories.
+
+### Added
+
+- `qy local up --engine postgres|redis --port PORT` persists a host port and
+  updates Quarry-managed connections in loaded workspaces. A stopped container
+  can be recreated on that port while retaining its named data volume; running
+  containers and unrelated services are never stopped automatically.
+
+- A portable Quarry agent skill and `--skill-dir` CLI option that exposes
+  workspace-owned saved queries under `skill/queries/<workspace-name>/`,
+  recreating missing links without replacing existing files or other links.
+- Query save rejects path separators and control characters in query names
+  and database keys to keep generated files within the selected query directory.
+
+- Query tabs are grouped by workspace, database and environment, with recent-tab
+  restoration, synchronized table selection, horizontal scrolling, a searchable
+  tab list, keyboard navigation and scoped bulk closing that preserves drafts.
+
+- Status bar metrics (rows, elapsed, size, speed, truncation, Load more, and
+  the result target) now have hover explanations, matching the existing
+  large-result session notice. The max-rows control also spells out that the
+  number is per fetch.
+
+### Changed
+
+- Removed the permanent read-only / auto LIMIT header badge. Added hover
+  explanations for language, appearance, sidebar disclosure and query actions;
+  dynamic hints follow the current state and interface language.
+
+- Unified workbench spacing with compact environment controls, a 36px tab strip
+  and consistent 30px query actions. Switching environments restores or carries
+  SQL and executes it on non-production connections when no saved result exists.
+  Returning restores the previous SQL and result without re-running; production keeps SQL ready
+  for manual Run, while existing destination drafts remain intact.
+
+- Rebalanced workbench emphasis: the active query tab has a warm filled selection
+  and stronger title, ordinary environments use a tinted selection with an accent border, and Run uses
+  an accent outline with hover fill. Production warnings retain their red styling.
+
+- Query tabs use a compact flat strip with an accent underline for the active
+  tab, natural label widths and overflow-only scroll arrows instead of a visible scrollbar.
+
+- SQL History now retains up to 1000 entries so bulk-closing a large tab group
+  preserves drafts beyond the previous 100-entry boundary.
+
+- Closing the last query tab now shows an empty workbench instead of opening a
+  replacement tab. Empty groups survive reloads and environment changes; the
+  tab menu can close all tabs in the current connection, preserving SQL in History.
+
+- Switching connections or environments restores cached results; an unexecuted
+  table preview runs once on a non-production connection. New environments can
+  inherit the selected table preview; handwritten SQL and closed groups stay intact.
+  New Neptune tabs include a starter query ready for Run.
+- Production classification is now explicitly configured with `production = true`
+  (or `qy connections add/set --production`), independent of environment names.
+  Existing production connections must be marked explicitly; GUI navigation and
+  CLI/MCP write confirmation all use this flag.
+
+- Sidebar no longer shows environment pills. Switch env from the query header
+  `runs on` control; a live proxy mark stays on that header env.
+- Connections inside a workspace group are ordered by engine (postgres, mysql,
+  redis, neptune) with a quiet mono type suffix, distinct from the sans
+  workspace origin path on group headers.
+- Table and key filtering is an inline search field plus a refresh icon,
+  instead of a boxed full-width input.
+- A group's workspace origin label follows the workspace that owns most of
+  its members, so a few local copies in another directory no longer relabel
+  the whole group.
+- The sidebar query list is titled `queries` and grouped by logical database
+  (`@db` connection keys resolve to the same sidebar db; environments are not
+  split). Long names ellipsize.
+
+<!-- version list -->
+
+## v1.10.0 (2026-10-18)
+
+### Bug Fixes
+
+- Preserve SQL assistant retries and live conversations
+  ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+### Features
+
+- Add configurable SQL assistant with conversation checkpoints
+  ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+- 添加可配置的 SQL 助手与会话恢复 ([#149](https://github.com/yiminspace/quarry/pull/149),
+  [`04b34df`](https://github.com/yiminspace/quarry/commit/04b34dff35851fe5596bd077913cec0e5d3c9cf7))
+
+
+## v1.9.0 (2026-10-18)
+
+### Features
+
+- **gui**: Use a workspace-independent /quarry/ URL
+  ([#148](https://github.com/yiminspace/quarry/pull/148),
+  [`bfbe162`](https://github.com/yiminspace/quarry/commit/bfbe16283ac7621d33007f4807d9b99799c6306d))
+
+
+## v1.8.0 (2026-10-12)
+
+### Bug Fixes
+
+- SQLite 结果 SQL 保留参数占位符 ([#147](https://github.com/yiminspace/quarry/pull/147),
+  [`1904926`](https://github.com/yiminspace/quarry/commit/190492607e4c3b8068d618abe9ff380e3b67b6ae))
+
+### Features
+
+- 支持 SQLite 本地文件查询与工作台 ([#147](https://github.com/yiminspace/quarry/pull/147),
+  [`1904926`](https://github.com/yiminspace/quarry/commit/190492607e4c3b8068d618abe9ff380e3b67b6ae))
+
+
+## v1.7.0 (2026-10-10)
+
+### Bug Fixes
+
+- Preserve JSON value types in exact fixture matching
+  ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+### Features
+
+- Add exact matching options for Neptune fixtures
+  ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+- Neptune fixture 支持完整查询与参数匹配 ([#146](https://github.com/yiminspace/quarry/pull/146),
+  [`c1731ae`](https://github.com/yiminspace/quarry/commit/c1731ae79633e014758114cd2f6a0b6455897564))
+
+
+## v1.6.0 (2026-10-10)
+
+### Bug Fixes
+
+- **gui**: 修正记录链接的字面量与 MySQL 键匹配 ([#145](https://github.com/yiminspace/quarry/pull/145),
+  [`681c8f6`](https://github.com/yiminspace/quarry/commit/681c8f6b5af8d1378d40da5fba76014eb16e2203))
+
+### Features
+
+- **gui**: 添加记录链接并精简顶部控件 ([#145](https://github.com/yiminspace/quarry/pull/145),
+  [`681c8f6`](https://github.com/yiminspace/quarry/commit/681c8f6b5af8d1378d40da5fba76014eb16e2203))
+
+
+## v1.5.3 (2026-10-06)
+
+### Bug Fixes
+
+- 标记 MCP 组织条目已发布 ([#144](https://github.com/yiminspace/quarry/pull/144),
+  [`1be8022`](https://github.com/yiminspace/quarry/commit/1be8022e912977557dd7b778113c3e20de8a8124))
+
+
+## v1.5.2 (2026-10-06)
+
+### Bug Fixes
+
+- 更新 GitHub 身份并发布组织 MCP 条目 ([#143](https://github.com/yiminspace/quarry/pull/143),
+  [`a0e822b`](https://github.com/yiminspace/quarry/commit/a0e822b8ca347c7c281cf8c5ab60ff6d5881c5c8))
+
+
+## v1.5.1 (2026-10-03)
+
+### Bug Fixes
+
+- Keep tunnel identity stable across locales ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+- Preserve keeper identity safety across upgrades
+  ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+- 修复不同系统语言下 keeper 状态误报 ([#140](https://github.com/yiminspace/quarry/pull/140),
+  [`00f8350`](https://github.com/yiminspace/quarry/commit/00f835077ea79b0bc264ba58f4334384a3cac0b2))
+
+
+## v1.5.0 (2026-09-21)
+
+### Features
+
+- Add fixture-backed local Neptune mock ([#138](https://github.com/yiminspace/quarry/pull/138),
+  [`37823e9`](https://github.com/yiminspace/quarry/commit/37823e9b06e5c490999ca94609ebebd84ded9668))
+
+
+## v1.4.1 (2026-09-20)
+
+### Bug Fixes
+
+- Reuse local connections across workspaces ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+- Scope local connections by project ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+- 修复 local 连接的跨 workspace 复用 ([#137](https://github.com/yiminspace/quarry/pull/137),
+  [`3fbb7d8`](https://github.com/yiminspace/quarry/commit/3fbb7d8c1d1d08b6dea21253e411673b1ea2cb8d))
+
+
+## v1.4.0 (2026-09-12)
+
+### Features
+
+- **gui**: 改善查询导航并修复 Redis 列表加载 ([#136](https://github.com/yiminspace/quarry/pull/136),
+  [`3036c5b`](https://github.com/yiminspace/quarry/commit/3036c5b9d4f7fe67246deba792751a9facd83520))
+
+- **gui**: 统一侧栏搜索和查询导航，修复 Redis 列表加载 ([#136](https://github.com/yiminspace/quarry/pull/136),
+  [`3036c5b`](https://github.com/yiminspace/quarry/commit/3036c5b9d4f7fe67246deba792751a9facd83520))
+
+
+## v1.3.2 (2026-09-12)
+
+### Bug Fixes
+
+- 加固 SSH 隧道共享、keeper 重连和 PostgreSQL 凭据处理 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+- 加固隧道共享、keeper 重连与 PostgreSQL 凭据处理 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+- 显示 keeper 阻塞原因并补充进程故障回归测试 ([#135](https://github.com/yiminspace/quarry/pull/135),
+  [`acc214f`](https://github.com/yiminspace/quarry/commit/acc214f25376efac44329854155fcaf68ba32a38))
+
+
+## v1.3.1 (2026-09-11)
+
+### Bug Fixes
+
+- **gui**: 按 workspace 展示保存查询并区分同名文件 ([#134](https://github.com/yiminspace/quarry/pull/134),
+  [`3d04e2f`](https://github.com/yiminspace/quarry/commit/3d04e2f62b57a4d67f0a9e5a4eba7121c82c577d))
+
+
+## v1.3.0 (2026-09-11)
+
+### Features
+
+- 提供双语查询 skill 并完善本地数据库管理 ([#133](https://github.com/yiminspace/quarry/pull/133),
+  [`24c1548`](https://github.com/yiminspace/quarry/commit/24c1548b7ab298caca31c4d42a644563ade272ab))
+
+
+## v1.2.2 (2026-09-11)
+
+### Bug Fixes
+
+- **gui**: 移除常驻只读标签并补齐图标悬停提示 ([#132](https://github.com/yiminspace/quarry/pull/132),
+  [`f5628fd`](https://github.com/yiminspace/quarry/commit/f5628fde428bd1a7f1acc8b676c5684f8489933a))
+
+
+## v1.2.1 (2026-09-10)
+
+### Bug Fixes
+
+- **gui**: 协调工作台间距并保留环境查询状态 ([#131](https://github.com/yiminspace/quarry/pull/131),
+  [`04923a5`](https://github.com/yiminspace/quarry/commit/04923a5ce76f4bce349cd9c378ad636b9d3b9da4))
+
+
+## v1.2.0 (2026-09-10)
+
+### Features
+
+- **gui**: 完善连接作用域查询标签与环境切换 ([#130](https://github.com/yiminspace/quarry/pull/130),
+  [`9fd8180`](https://github.com/yiminspace/quarry/commit/9fd818090291012deb9ff279e6b4e78d0e0c7f64))
+
+### Testing
+
+- **gui**: 避免非浏览器任务依赖 Playwright ([#130](https://github.com/yiminspace/quarry/pull/130),
+  [`9fd8180`](https://github.com/yiminspace/quarry/commit/9fd818090291012deb9ff279e6b4e78d0e0c7f64))
+
+
+## v1.1.0 (2026-09-09)
+
+### Bug Fixes
+
+- **gui**: 侧栏查询分组时精确连接 key 优先于逻辑库名 ([#129](https://github.com/yiminspace/quarry/pull/129),
+  [`83f30cf`](https://github.com/yiminspace/quarry/commit/83f30cf1facc0b317e6abfd2ee5949c28f4f6375))
+
+### Features
+
+- **gui**: 侧栏按引擎整理连接，状态栏补指标说明 ([#129](https://github.com/yiminspace/quarry/pull/129),
+  [`83f30cf`](https://github.com/yiminspace/quarry/commit/83f30cf1facc0b317e6abfd2ee5949c28f4f6375))
+
+
+## [1.0.0] — 2026-09-09
+
+### Stable interface
+
+- First stable release of Quarry's CLI, local GUI, MCP server and public Python
+  query API. The documented commands, workspace/saved-query formats and result
+  contracts follow the compatibility policy in COMPATIBILITY.md.
+- PostgreSQL, MySQL and Redis are the stable engine scope within the documented
+  test matrix. Neptune/openCypher remains experimental; its local empty endpoint
+  is not a graph database emulator or proof of AWS/IAM compatibility.
+- Default query execution is read-only. CLI and MCP writes require explicit
+  authorization with additional prod confirmation; GUI queries stay read-only.
+  Python callers are responsible for authorizing `allow_write=True`.
+- Exact numeric strings, duplicate/empty column metadata, Redis JSON replies,
+  bounded results and active-tab exports form the stable result contract.
+  GUI SQL drafts and bounded result snapshots persist when browser storage is
+  available. Large results remain in-session.
+
+### Upgrade from 0.x
+
+- No workspace or saved-query migration is required from 0.25.1. The 1.0 change
+  establishes the stable contract and package metadata; database query behavior
+  is unchanged from the audited 0.25.1 implementation.
+- Upgrading from older 0.x versions also adopts the 0.25.1 corrections: CLI
+  defaults to 500 rows (`--max-rows 0` disables the cap), big integers/exact
+  decimals are strings, and duplicate object-result columns get unique suffixes.
+  CLI JSON stays a row array; GUI/MCP/Python return QueryResult.
+- SQL batches, psql backslash commands and PostgreSQL data-modifying CTEs are
+  explicitly unsupported. Use individual authorized statements, with RETURNING
+  where rows are needed.
+
+### Fixed
+
+- GUI autocomplete stays closed after Escape even when an earlier input refresh
+  or column lookup finishes late. Typing again enables suggestions normally.
+
+### Release validation
+
+- Source distributions exclude local audit reports and development artifacts.
+- Candidate acceptance covers clean CLI/GUI/MCP installation and upgrade from
+  0.25.1, including connections, saved queries, drafts, prior results and no
+  automatic query execution on reload.
+- PyPI publication requires passing tests, coverage, browser and package checks
+  against the exact release tag. See COMPATIBILITY.md for platform and network
+  boundaries; the stable package does not promote experimental Neptune support.
+
+## Pre-1.0 development notes
+
+### Documentation
+
+- Align the English/Chinese landing pages and READMEs with entry-specific write
+  authorization, error codes, browser persistence limits and network behavior.
+  Correct TOML examples, list Redis namespace browsing as available, label
+  Neptune/openCypher experimental, and document the final 1.0 acceptance checks.
+
+### Release contract corrections
+
+- **Read-only queries cannot execute mutations through EXPLAIN ANALYZE or
+  Cypher write clauses.** PostgreSQL/MySQL also enforce read-only transactions;
+  Redis unknown commands require explicit write authorization. Every CLI prod
+  `--write` opt-in requires confirmation, including SELECTs that may call functions.
+- **PostgreSQL authorized writes execute and commit**, with INSERT/UPDATE/DELETE
+  RETURNING supported. Client backslash commands, batches and data-modifying
+  CTEs are rejected with an actionable error.
+- **Results preserve precision and columns**: large integers and exact decimals
+  use strings; duplicate object-result columns get unique suffixes; empty
+  relational results retain metadata. GUI sorting and exports preserve exact
+  values, and empty grids show headers. Invalid UTF-8 MySQL bytes use base64
+  rather than replacement characters; datetime fractions are retained.
+- **Redis replies preserve nil, empty strings, newlines and nested arrays**;
+  server errors now fail instead of appearing as successful data. This requires
+  redis-cli 6+ for JSON output.
+- **Redis `--scan` remains supported**, using cursor-based JSON replies to
+  preserve keys with whitespace/newlines. Cypher property/map/label names such
+  as `n.set` are recognized as identifiers without allowing mutation clauses.
+- **CLI defaults to 500 rows**, with `--max-rows 0` for explicitly unlimited
+  results and stderr notices on truncation. Inner LIMIT clauses no longer disable
+  outer pagination; openCypher RETURN queries receive a limit too. CLI JSON
+  remains a row array for compatibility; interface differences are documented.
+- **MCP accepts `--workspace` after the subcommand**, matching the setup examples.
+  Schema sync strips pg_dump's non-schema `transaction_timeout` setting so
+  pg_dump 17 can target PostgreSQL 16. The test runner supports macOS Bash 3.2.
+- **Release publication requires CI on the exact tag**, including real MySQL 8.4
+  regressions and frontend unit tests. GUI no longer installs unused Flask;
+  the empty `[gui]` extra remains compatible. Documentation now defines support,
+  result and compatibility boundaries without stale test-count/coverage claims.
+
+### Fixed
+
+- **MySQL writes now persist**: successful statements executed through the
+  shared MySQL query path are committed before the connection closes, so
+  `qy exec --write` and authorized MCP/Python calls no longer report success while silently
+  rolling the transaction back.
+
+### Changed
+
+- **Table-click preview no longer bakes in `LIMIT 5`**: clicking a sidebar
+  table now generates `select * from <table>` and runs it under the toolbar
+  max-rows cap (default 500), so "load more" can page through the rest.
+
+- **Clicking a table opens its own tab**: a click reuses an empty tab or an
+  existing same-table preview; a tab that already has SQL is left intact.
+  Alt+click still inserts into the current editor without running.
+
+- **The GUI now has a distinctive crystal-in-rock favicon** instead of the
+  temporary lettermark, making a persistent Quarry tab easier to recognize.
+
+### Added
+
+- **Empty local Neptune endpoint**: `qy local up` now includes a local HTTPS
+  openCypher service on port 18182 alongside Postgres and Redis. It accepts
+  Quarry and AWS Neptune Data API request shapes, always returns empty results,
+  and never persists writes; `qy local up neptune --engine neptune` can manage
+  and register it independently. Selecting a Neptune connection in the GUI now
+  opens or reuses a query tab prefilled with a safe read query for both dev and
+  local environments, runs it immediately, and does not overwrite an existing
+  draft or re-run an already-loaded starter tab. Production retains the GUI's
+  existing no-auto-run guard.
+
+- **GUI address bar and tab title follow the current selection**: selecting
+  a connection or table updates `?db=&env=&table=` and `document.title`
+  (`db@env · table`) so a shared GUI host tells an agent what you mean.
+  Opening a focus URL restores that selection in a new/reused/empty tab
+  without auto-running or rebinding a nonempty draft (share links that
+  include `sql` still auto-run). Schema-qualified tables stay qualified
+  in the generated focus URL.
+
+- **`qy speedtest <db>` tunnel-path benchmark**: generate a bounded
+  PostgreSQL/MySQL result payload without printing it, repeat the same
+  end-to-end query path, and report per-run plus median elapsed time and
+  effective download speed. `--bytes`, `--runs`, `--env`, `--timeout`, and
+  machine-readable `--format json` make proxy-node comparisons reproducible;
+  the probe deliberately skips the GUI's separate column-type lookup.
+
+- **Workspace tunnel keep-alive keeper + shared tunnel attach** (#112): `qy
+  up/down/status` now manage a workspace-owned keeper that keeps SSH tunnels
+  warm and reconnects dropped forwards with exponential backoff. CLI/GUI/MCP
+  processes now attach to an already-live registry entry for the same
+  ssh/db/proxy dimension instead of spawning duplicate tunnels, so warm
+  forwards are reused cross-process. Keep-alive/reconnect opt-ins are persisted
+  per workspace in `config.toml`; `qy status` and the GUI header expose
+  `up/reconnecting/down` state; and `qy exec`/`qy run` print a one-line hint
+  when keep-alive is configured but the keeper is down. Neptune tunnel defaults
+  now align with its standard port (`8182`) and the same `ssh_*` participation
+  model.
+
+- **`qy ping <connection>|--all`** (#110): a lightweight reachability probe
+  for configured connections, distinct from `connections test`'s richer
+  "connected to \<db\>" report. PG/MySQL run `select 1`, Redis runs `PING`,
+  Neptune reuses `connections test`'s existing probe — no new per-engine
+  protocol. Reports ok/fail and elapsed time per connection (`--all` walks
+  every configured connection and adds a reachable-count summary); exits 0
+  when every probed connection is reachable, 1 if any failed (including a
+  timeout), with the failure reason included. Probe timeout defaults to 10s,
+  overridable with `--timeout`.
+
+- **GUI result status bar shows download size and average speed** (#106):
+  alongside row count and elapsed time, the status bar now reports the
+  download size (auto-scaled B/KB/MB) and average speed (auto-scaled
+  B/KB/MB per second), building on #104's `downloadBytes`/`sizeIsEstimated`.
+  Estimated sizes (Postgres/MySQL/Redis) are marked with `≈` and a tooltip;
+  "Load more" accumulates both figures across pages instead of resetting them.
+
+- **`qy exec`/`qy run` print a query stats summary** (#105): after the result
+  data, a one-line stderr summary reports elapsed time, download size
+  (auto-scaled B/KB/MB), and average speed (auto-scaled KB/s/MB/s), building
+  on #104's `elapsed_ms`/`download_bytes`/`size_is_estimated`. Postgres/MySQL/
+  Redis mark the size and speed with `≈` since their byte counts are
+  approximations; Neptune's is exact. The summary never touches stdout, so
+  `--format json/csv/ndjson` piping is unaffected.
+
+- **Query results now report download size** (#104): `QueryResult` (used by
+  the GUI, MCP, and `--format json`) carries `downloadBytes` and
+  `sizeIsEstimated` alongside `elapsedMs` — an exact response-body byte count
+  for Neptune, and an approximation (subprocess/serialized-rows size) for
+  Postgres/MySQL/Redis. Display of these values (e.g. average speed) is left
+  to downstream CLI/GUI work.
+
+- **Proxy effect is now observable, not just configurable** (#101): when a
+  workspace has the proxy enabled but a query still ran direct, `qy
+  exec`/`qy run` print a one-line reason to stderr (no proxy discovered /
+  discovered but unreachable / target in the exceptions list) — suppressed
+  by `--no-proxy`. `qy proxy` now also lists every pooled SSH tunnel (ssh
+  target, local port, whether it's actually proxied and through which
+  address, and whether the `ssh` process is still alive), with a matching
+  `tunnels` array under `--format json`. The GUI shows the same
+  server-computed state: a badge on proxied connections' env pills, and each
+  workspace's proxy toggle plus the currently discovered proxy address in
+  the workspace manager. Flipping a workspace's proxy toggle now also tears
+  down the stale-dimension SSH tunnel for any connection already pooled
+  under the old toggle state, instead of leaving it running until process
+  exit.
+
+- **SSH tunnels can route through the system's HTTP(S) proxy, per workspace**
+  (#96): a cross-border `ssh -L` forward can throttle to a crawl even though
+  the handshake itself connects fine, so `qy` can now tunnel the same SSH
+  session through your machine's proxy instead. `qy proxy` shows the
+  discovered proxy (macOS system settings via `scutil`, falling back to
+  `ALL_PROXY`/`HTTPS_PROXY`) and each workspace's toggle state; `qy proxy
+  on|off [--workspace <dir>]` persists the toggle to `config.toml` (never
+  touches `connections.toml`); `--no-proxy` overrides an enabled toggle for a
+  single `qy exec`/`qy run` call. The toggle only applies to connections with
+  an `ssh_host` (routed via `ProxyCommand`) and to Neptune's direct HTTPS
+  requests — `qy connections add/set` now warns if the proxy is enabled but
+  the connection has neither. If the proxy is enabled but nothing is
+  listening on its port, `qy` silently falls back to a direct connection
+  rather than erroring; the system proxy's exceptions list (loopback +
+  private CIDR ranges) is always respected.
+
+- **Configurable query timeout, split into connect/execute phases, with a
+  database-side backstop** (#94): `qy exec`/`qy run` gained `--timeout N`
+  (seconds, must be positive); it's also settable via the `QUARRY_TIMEOUT`
+  env var or a per-connection `timeout` field in `connections.toml`
+  (`qy connections add/set --timeout N`) — priority: `--timeout` >
+  `QUARRY_TIMEOUT` > connection setting > default. Connection establishment
+  (including SSH tunnel setup) is now capped independently (15s) from query
+  execution (300s default for CLI/GUI, 120s for MCP), so an unreachable host
+  fails fast instead of eating the whole query budget — this now overrides
+  any `connect_timeout` already present in a PostgreSQL connection URL, since
+  libpq would otherwise honor the URL's value over ours. On PostgreSQL, `qy`
+  also sets a server-side `statement_timeout` (~90% of the execute timeout);
+  on MySQL/MariaDB it sets the equivalent session variable best-effort
+  (`MAX_EXECUTION_TIME` / `max_statement_time`, whichever the server
+  supports) — so the database cancels a runaway query itself and reports the
+  real reason, instead of leaving a zombie query running after the client
+  gives up. Every timeout error now says how to raise it.
+
+### Changed
+
+- **Connection env-sets no longer split across a project group and `OTHER` when
+  one member omits `group`**: if the logical DB's grouped siblings agree,
+  CLI/GUI/MCP inherit that sole group for presentation. `qy connections
+  add/set` now also accept `--db` and `--group`, and automatically inherit an
+  existing env-set's identity for conventional keys such as `shop_prod`, so
+  newly added environments persist complete metadata.
+
+- **PostgreSQL GUI table browser now includes every user schema**: non-public
+  tables appear as `schema.table` and work end-to-end with preview queries,
+  structure inspection, and qualified column completion. Public tables keep
+  their existing short names. The shared metadata path also lets `qy schema`
+  and MCP table discovery resolve schema-qualified tables.
+
+- **GUI design system upgraded to `@yiminlab/voyage` 0.15** (#116): the header
+  now uses Voyage's dedicated `.vg-topbar` contract while the query action row
+  keeps its own toolbar chrome. The new Signal theme is available with true
+  black/white dark and light surfaces and persisted four-axis preferences;
+  Quarry continues to omit the optional account area. Selected production
+  environment controls retain accessible white-on-red contrast in light mode.
+
+- **Large GUI results no longer freeze the browser main thread**: grid and
+  row-detail cells render a bounded 512-character preview instead of copying
+  multi-megabyte values into text, `title`, and `data-*` DOM slots. Full values
+  remain available for copy/export and open in a chunked inspector; JSON trees
+  now mount branches only when expanded. Results above 512 KiB stay available
+  for the current session but skip synchronous `localStorage` persistence (with
+  a visible status notice), and editing SQL or switching tabs no longer
+  reserializes unchanged result snapshots.
+
+- **`qy schema`/`describe-table` and the MCP server now cache table and
+  column lookups like the GUI already did** (#97): repeat metadata lookups
+  over a slow SSH-tunneled connection used to re-query the database every
+  time from the CLI or an MCP-connected agent, even though the GUI's schema
+  panel was already caching the same information. All three now share one
+  on-disk cache (`~/.cache/quarry/gui-cache.json`, unchanged location and
+  format — an existing cache file from before this change keeps working),
+  so a lookup already made in one is instant in the others. This covers
+  `qy schema`'s default (plain, unflagged) output too, not just `--format
+  json`. The MCP server's Redis key listing now shares the GUI's cached key
+  list rather than always re-scanning, capped at the same 400 keys.
+  Connectivity checks (`qy connections test`, the GUI's status dots) still
+  self-invalidate automatically whenever a connection's URL, SSH settings, or
+  proxy toggle changes — no stale "connected" dot after an edit.
+
+- **Upgraded `@yiminlab/voyage` to 0.8.0** (#92): the header's language,
+  theme, and palette buttons now render through the new `VoyageToolbar`
+  composite instead of two separately-arranged components, so their DOM
+  order (language → theme → palette) is fixed by the design system rather
+  than left to the host's JSX. The language button's width is also locked
+  regardless of its "中"/"EN" text, so switching language no longer nudges
+  the theme/palette buttons sideways. Purely structural — no visual change.
+  (Voyage's `.vg-toolbar` class name is shared between the new header
+  composite and the existing query toolbar's chrome; the header now resets
+  the query-toolbar's padding/background/border-bottom so it doesn't leak
+  into the header row.)
+
+- **Upgraded `@yiminlab/voyage` to 0.7.0** (#90): the header's language,
+  theme, and palette buttons now share one unified `.vg-iconbtn` box spec
+  (same height, min-width, and border-radius — the radius follows the
+  current style axis instead of being hardcoded), so all three sit
+  pixel-aligned instead of the language button being a differently-shaped
+  badge. The connection-info modal's smaller action icons (`.ciact
+  .iconbtn`) got their `min-width` override added alongside `width` so they
+  no longer get stretched back up by voyage's new fixed-box sizing.
+
+- **The header's language toggle now uses `@yiminlab/voyage`'s
+  `VoyageLangSwitcher`** (#88) instead of bare "中"/"EN" text stuffed into
+  the circular icon-button slot, matching the rest of the header's icon
+  styling. Behavior is unchanged: click to switch locale and reload.
+
+### Fixed
+
+- **PyPI releases resume after semantic-release**: a successful version/tag
+  creation now explicitly dispatches the trusted publishing workflow for that
+  exact tag. The publisher validates the tag against both package version
+  declarations and checks built distribution metadata before uploading.
+
+- **`pip install -e` no longer breaks `qy`**: the bundled CHANGELOG.md (#80)
+  was also force-included into editable wheels, creating a stray
+  `site-packages/quarry/` directory that shadowed the editable install's
+  redirect to the source tree (`ModuleNotFoundError: No module named
+  'quarry.cli'`). CHANGELOG.md now ships in standard wheels only; editable
+  installs keep reading the repo-root copy.
+
+### Added
+
+- **The GUI now shows what changed after you upgrade** (#80): CHANGELOG.md
+  ships inside the package, and a new `GET /api/changelog` parses it into
+  structured version entries. When the running version differs from the one
+  last recorded in the browser, the header's What's New panel (sharing the
+  update badge's panel styling from #79) opens automatically with the
+  changelog entries for the new version(s), then stays quiet until the next
+  real upgrade.
+
+- **The GUI now tells you when a new Quarry release is out** (#79): a
+  throttled background check (once per 24h, `QUARRY_UPDATE_CHECK=0` to
+  disable) polls PyPI for `quarry-db` and, when a newer version exists, shows
+  a badge in the header — click it for the current/latest version, the exact
+  `pipx upgrade quarry-db` command, and a link to the release notes. Editable/
+  dev installs are skipped automatically, and any network hiccup stays
+  completely silent.
+
+- **The GUI now notices the world changing under it** (#78): a new
+  `GET /api/events` SSE channel plus a backend file watcher. Editing
+  `connections.toml` or `queries/**/*.sql` on disk (CLI, agent, `git pull`…)
+  refreshes the sidebar lists in the open page without a manual reload, and
+  after upgrading Quarry a restarted backend triggers a persistent
+  "reload page" banner instead of leaving a stale UI running. Events are
+  refetch hints (`{type, ts}`), never data carriers — the contract future
+  update/What's-New notifications build on.
+
+- **`qy connections add`/`set` now catch local-dev-.env misconfigurations
+  before writing to `connections.toml`** (#76): a new connection whose
+  `host:port` is already claimed by another entry is rejected by default
+  (with the occupant's key and purpose printed) unless `--force` is passed;
+  a loopback host (`127.0.0.1`/`localhost`) with no `ssh_host` prints a
+  non-blocking reminder to double-check the target isn't actually meant to
+  be a remote server (fixable in place with the new `--ssh-host`/
+  `--ssh-user`/`--ssh-key`/`--ssh-port` flags); and an `env=local` key that
+  doesn't follow the `<name>_local` convention gets a naming suggestion.
+
+
+## v0.25.1 (2026-09-09)
+
+### Bug Fixes
+
+- Resolve scan and Cypher review regressions ([#126](https://github.com/yiminspace/quarry/pull/126),
+  [`c71a879`](https://github.com/yiminspace/quarry/commit/c71a8799535e88eebb0cd58215cb9a8787528590))
+
+- 修复 1.0 发布前的查询安全、结果保真与兼容性问题 ([#126](https://github.com/yiminspace/quarry/pull/126),
+  [`c71a879`](https://github.com/yiminspace/quarry/commit/c71a8799535e88eebb0cd58215cb9a8787528590))
+
+
+## v0.25.0 (2026-09-08)
+
+### Bug Fixes
+
+- Preserve Neptune prod query guard ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+### Features
+
+- Add empty local Neptune service ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+- 增加本地空 Neptune 服务 ([#125](https://github.com/yiminspace/quarry/pull/125),
+  [`5e2ce5a`](https://github.com/yiminspace/quarry/commit/5e2ce5ac7547242d37e3e157d5d04143a5caf8de))
+
+
+## v0.24.0 (2026-09-07)
+
+### Bug Fixes
+
+- **gui**: 刷新时不要把当前查询拆成新的预览 tab ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+- **gui**: 焦点 URL 不改写已有 tab，并保留 schema 限定表名 ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+### Features
+
+- **gui**: 点表开新 tab，并把当前库表写进地址栏 ([#124](https://github.com/yiminspace/quarry/pull/124),
+  [`a75c32e`](https://github.com/yiminspace/quarry/commit/a75c32e91614f8d981b3e2993ef658a4fbdafc29))
+
+
+## v0.23.1 (2026-08-25)
+
+### Bug Fixes
+
+- Commit successful MySQL writes ([#123](https://github.com/yiminspace/quarry/pull/123),
+  [`a5880a2`](https://github.com/yiminspace/quarry/commit/a5880a27ccfd1be8c2735e02661ef2ad82988721))
+
+### Code Style
+
+- Refine Quarry favicon ([#122](https://github.com/yiminspace/quarry/pull/122),
+  [`521abc7`](https://github.com/yiminspace/quarry/commit/521abc74d3dc00418719f751655b2bd8ebf74c95))
+
+
+## v0.23.0 (2026-08-25)
+
+### Features
+
+- Replace GUI favicon with crystal mark ([#121](https://github.com/yiminspace/quarry/pull/121),
+  [`2af7f7a`](https://github.com/yiminspace/quarry/commit/2af7f7ae7684e6eee7780a6cdc3f2172bf5ef17e))
+
+
+## v0.22.0 (2026-08-20)
+
+### Features
+
+- 支持 PostgreSQL 多 schema 表浏览 ([#119](https://github.com/yiminspace/quarry/pull/119),
+  [`038e57b`](https://github.com/yiminspace/quarry/commit/038e57bd597065b61a9297f5caed9eb33327fc87))
+
+
+## v0.21.3 (2026-08-09)
+
+### Bug Fixes
+
+- **release**: 恢复 semantic-release 后的 PyPI 发布
+  ([`49c4ed3`](https://github.com/yiminspace/quarry/commit/49c4ed39a4477381e3a644d40121ea9eb3ff450b))
+
+
+## v0.21.2 (2026-08-09)
+
+### Bug Fixes
+
+- 升级 Voyage 0.15 并适配顶栏与 Signal 主题 ([#117](https://github.com/yiminspace/quarry/pull/117),
+  [`f10ad6f`](https://github.com/yiminspace/quarry/commit/f10ad6f996638e932d6f7f31522e8f947d269855))
+
+
+## v0.21.1 (2026-08-05)
+
+### Bug Fixes
+
+- **gui**: 修复大结果查询卡顿 ([#115](https://github.com/yiminspace/quarry/pull/115),
+  [`7d4e88d`](https://github.com/yiminspace/quarry/commit/7d4e88d1cb83511575970039da5d73f66e41673c))
+
+
+## v0.21.0 (2026-07-31)
+
+### Features
+
+- Add tunnel speedtest command ([#114](https://github.com/yiminspace/quarry/pull/114),
+  [`87c0995`](https://github.com/yiminspace/quarry/commit/87c0995c7c37f33a9bcdd800eb17e5f4c99557bd))
+
+
+## v0.20.0 (2026-07-28)
+
+### Bug Fixes
+
+- Address keepalive review findings on PR #113
+  ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+### Features
+
+- Add workspace tunnel keeper and shared tunnel attach
+  ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+### Testing
+
+- Add keepalive unit coverage for CI gate ([#113](https://github.com/yiminspace/quarry/pull/113),
+  [`40350d0`](https://github.com/yiminspace/quarry/commit/40350d0d1d2ff4d97606c88f72db03424dffeb0b))
+
+
+## v0.19.0 (2026-07-23)
+
+### Features
+
+- Add qy ping subcommand for connection health checks
+  ([#111](https://github.com/yiminspace/quarry/pull/111),
+  [`88985c8`](https://github.com/yiminspace/quarry/commit/88985c89c411938b848f2c38679b0cdd1970892e))
+
+
+## v0.18.0 (2026-07-22)
+
+### Features
+
+- **gui**: Show download size and avg speed in result status bar
+  ([#109](https://github.com/yiminspace/quarry/pull/109),
+  [`ad42eee`](https://github.com/yiminspace/quarry/commit/ad42eeea70a14405619aeb29a6773b5ae9e079fa))
+
+
+## v0.17.0 (2026-07-22)
+
+### Features
+
+- Report elapsed time, download size, and avg speed on qy exec/run
+  ([#108](https://github.com/yiminspace/quarry/pull/108),
+  [`c04a515`](https://github.com/yiminspace/quarry/commit/c04a515b4e85b44fde33ff4cf38489538178db0e))
+
+
+## v0.16.0 (2026-07-22)
+
+### Features
+
+- Report download size and CLI query timing (#104)
+  ([#107](https://github.com/yiminspace/quarry/pull/107),
+  [`4643c53`](https://github.com/yiminspace/quarry/commit/4643c53bca5176a60b0a285202c6e1d3d1033ad3))
+
+
+## v0.15.0 (2026-07-21)
+
+### Bug Fixes
+
+- Don't let proxy-status enrichment crash the connections listing
+  ([#102](https://github.com/yiminspace/quarry/pull/102),
+  [`b8bf9fd`](https://github.com/yiminspace/quarry/commit/b8bf9fd983609afd3d989d647b48a8f846473ed6))
+
+- Make tunnel state and proxy badges reflect real facts, not per-process guesses
+  ([#102](https://github.com/yiminspace/quarry/pull/102),
+  [`b8bf9fd`](https://github.com/yiminspace/quarry/commit/b8bf9fd983609afd3d989d647b48a8f846473ed6))
+
+- Scope cross-process tunnel registry entries by pid
+  ([#102](https://github.com/yiminspace/quarry/pull/102),
+  [`b8bf9fd`](https://github.com/yiminspace/quarry/commit/b8bf9fd983609afd3d989d647b48a8f846473ed6))
+
+### Features
+
+- Proxy-effect observability across CLI, status, and GUI
+  ([#102](https://github.com/yiminspace/quarry/pull/102),
+  [`b8bf9fd`](https://github.com/yiminspace/quarry/commit/b8bf9fd983609afd3d989d647b48a8f846473ed6))
+
+
+## v0.14.1 (2026-07-21)
+
+### Bug Fixes
+
+- 修复浏览器 e2e 用例里过期的缓存属性引用 ([#100](https://github.com/yiminspace/quarry/pull/100),
+  [`a55b609`](https://github.com/yiminspace/quarry/commit/a55b60968f7bd1d651a14a9e9f6e5406a0cd51d8))
+
+### Refactoring
+
+- 查询元数据缓存下沉到 core，CLI/MCP 与 GUI 共用 ([#100](https://github.com/yiminspace/quarry/pull/100),
+  [`a55b609`](https://github.com/yiminspace/quarry/commit/a55b60968f7bd1d651a14a9e9f6e5406a0cd51d8))
+
+
+## v0.14.0 (2026-07-21)
+
+### Bug Fixes
+
+- Address PR #98 review findings on config.toml preservation and per-workspace proxy resolution
+  ([#98](https://github.com/yiminspace/quarry/pull/98),
+  [`6296af4`](https://github.com/yiminspace/quarry/commit/6296af4613bd29e9063dc92ec67bc23ffea066e2))
+
+- SSH tunnels can route through the system proxy, per workspace
+  ([#98](https://github.com/yiminspace/quarry/pull/98),
+  [`6296af4`](https://github.com/yiminspace/quarry/commit/6296af4613bd29e9063dc92ec67bc23ffea066e2))
+
+### Features
+
+- SSH tunnels can route through the system proxy, per workspace
+  ([#98](https://github.com/yiminspace/quarry/pull/98),
+  [`6296af4`](https://github.com/yiminspace/quarry/commit/6296af4613bd29e9063dc92ec67bc23ffea066e2))
+
+
+## v0.13.0 (2026-07-21)
+
+### Bug Fixes
+
+- Avoid TypeError flake in lang-switch reload wait
+  ([#95](https://github.com/yiminspace/quarry/pull/95),
+  [`1bb32ff`](https://github.com/yiminspace/quarry/commit/1bb32ff9331bc97bb1d1cefc672fc1759665e2d8))
+
+- Honor URL connect_timeout override, add MySQL server-side execution cap, validate timeout>0
+  ([#95](https://github.com/yiminspace/quarry/pull/95),
+  [`1bb32ff`](https://github.com/yiminspace/quarry/commit/1bb32ff9331bc97bb1d1cefc672fc1759665e2d8))
+
+### Features
+
+- Configurable query timeout, connect/execute split, PG backstop
+  ([#95](https://github.com/yiminspace/quarry/pull/95),
+  [`1bb32ff`](https://github.com/yiminspace/quarry/commit/1bb32ff9331bc97bb1d1cefc672fc1759665e2d8))
+
+- Configurable query timeout, connect/execute split, PG statement_timeout backstop
+  ([#95](https://github.com/yiminspace/quarry/pull/95),
+  [`1bb32ff`](https://github.com/yiminspace/quarry/commit/1bb32ff9331bc97bb1d1cefc672fc1759665e2d8))
+
+
+## v0.12.0 (2026-07-19)
+
+### Bug Fixes
+
+- **gui**: 隔离顶栏 VoyageToolbar 与查询工具条共用的 .vg-toolbar chrome
+  ([#93](https://github.com/yiminspace/quarry/pull/93),
+  [`fe14288`](https://github.com/yiminspace/quarry/commit/fe14288004acf804c04380455e8dd17a11837837))
+
+### Features
+
+- **gui**: 顶栏改用 VoyageToolbar 组合组件，升级 voyage 到 0.8.0
+  ([#93](https://github.com/yiminspace/quarry/pull/93),
+  [`fe14288`](https://github.com/yiminspace/quarry/commit/fe14288004acf804c04380455e8dd17a11837837))
+
+
+## v0.11.0 (2026-07-19)
+
+### Features
+
+- **gui**: 升级 @yiminlab/voyage 到 0.7.0，采用顶栏控件统一盒子规格
+  ([#91](https://github.com/yiminspace/quarry/pull/91),
+  [`e8df624`](https://github.com/yiminspace/quarry/commit/e8df624b05786e51140693bdb14580454ee264d3))
+
+
+## v0.10.0 (2026-07-19)
+
+### Features
+
+- **gui**: 语言切换按钮改用 voyage VoyageLangSwitcher 组件
+  ([#89](https://github.com/yiminspace/quarry/pull/89),
+  [`a44c0c3`](https://github.com/yiminspace/quarry/commit/a44c0c3be754eee7b8535385b4b1c47443944ec1))
+
+
+## v0.9.1 (2026-07-18)
+
+### Bug Fixes
+
+- **build**: Ship CHANGELOG.md in standard wheels only, not editable installs
+  ([`a69a4fe`](https://github.com/Wangggym/quarry/commit/a69a4fe76240a18c9c8788d27b9a90896f3b3a66))
+
+
+## v0.9.0 (2026-07-16)
+
+### Chores
+
+- **deps**: Lock @yiminlab/voyage 0.4.0 (npm 已发布)
+  ([`6fa67a8`](https://github.com/Wangggym/quarry/commit/6fa67a8f47fa25acb65dedfde5959758679795c8))
+
+- **gui**: Web_dist 随 voyage 主题色板换装重建 (8 套开源经典配色)
+  ([`c722b6c`](https://github.com/Wangggym/quarry/commit/c722b6c895f07104ba15ab6094c8a4b8f8ebfa19))
+
+- **gui**: Web_dist 随 voyage 间距/字体修正重建
+  ([`3d600c1`](https://github.com/Wangggym/quarry/commit/3d600c12b25796fae4d56334f1fdf0e76a9b6504))
+
+### Features
+
+- **gui**: 主题切换器接入 voyage 0.4.0 策展预设 + Tabler 图标插槽
+  ([`c43bfd6`](https://github.com/Wangggym/quarry/commit/c43bfd659f9c984dad805438e488dc1e10da51d9))
+
+- **gui**: 主题切换器接入 voyage locale — 面板文案随 中/EN 切换
+  ([`27782ec`](https://github.com/Wangggym/quarry/commit/27782ecead64b88e7e959cc5a65ff62cf8339e19))
+
+
+## v0.8.0 (2026-07-16)
+
+### Bug Fixes
+
+- **test**: Test_gui_visual.py 里漏改的 dataset.theme -> dataset.mode
+  ([`6dbe55c`](https://github.com/Wangggym/quarry/commit/6dbe55c652c22588ef9e513b24d8248c487e807e))
+
+### Features
+
+- **gui**: 接入 @yiminlab/voyage 样式系统，视觉基本不变 + 主题切换器
+  ([`067528d`](https://github.com/Wangggym/quarry/commit/067528d94702ca78c8ef992ea67615ff5f43fcc8))
+
+
+## v0.7.0 (2026-07-16)
+
+### Bug Fixes
+
+- **gui**: What's New 面板按版本区间过滤 changelog 条目 ([#84](https://github.com/Wangggym/quarry/pull/84),
+  [`517e7a7`](https://github.com/Wangggym/quarry/commit/517e7a70baa379d148c5d54a61d2429c33bf8218))
+
+### Features
+
+- **gui**: What's New 面板——随包发布 CHANGELOG 并在升级后展示版本间变更
+  ([#84](https://github.com/Wangggym/quarry/pull/84),
+  [`517e7a7`](https://github.com/Wangggym/quarry/commit/517e7a70baa379d148c5d54a61d2429c33bf8218))
+
+
+## v0.6.0 (2026-07-15)
+
+### Bug Fixes
+
+- **gui**: /api/update 基于当前版本重新计算是否有更新 ([#83](https://github.com/Wangggym/quarry/pull/83),
+  [`343d4be`](https://github.com/Wangggym/quarry/commit/343d4bed264cdd439e3262679a9c7642a2692594))
+
+### Features
+
+- **gui**: PyPI 新版本检测与 Header 升级提示 badge ([#83](https://github.com/Wangggym/quarry/pull/83),
+  [`343d4be`](https://github.com/Wangggym/quarry/commit/343d4bed264cdd439e3262679a9c7642a2692594))
+
+
+## v0.5.1 (2026-07-15)
+
+### Bug Fixes
+
+- **release**: __version__ 常量纳入 semantic-release 同步
+  ([`89d330b`](https://github.com/Wangggym/quarry/commit/89d330bb2aaf25640d678145e412217259f95ee6))
+
+
+## v0.5.0 (2026-07-15)
+
+### Features
+
+- **gui**: /api/events 事件通道——workspace 文件变更实时刷新与升级后刷新提示
+  ([`67561ed`](https://github.com/Wangggym/quarry/commit/67561edda258f9e4a39ca3a99e4966ba21bdac18))
+
+
+## v0.4.0 (2026-07-14)
+
+### Bug Fixes
+
+- 端口/回环校验覆盖 Neptune 裸端点 ([#77](https://github.com/Wangggym/quarry/pull/77),
+  [`668aadf`](https://github.com/Wangggym/quarry/commit/668aadf9551434247a17cbc687acc468e9cd9c59))
+
+### Features
+
+- Connections add/set 增加本地误配与端口冲突检测 ([#77](https://github.com/Wangggym/quarry/pull/77),
+  [`668aadf`](https://github.com/Wangggym/quarry/commit/668aadf9551434247a17cbc687acc468e9cd9c59))
+
+
+## v0.3.1 (2026-07-14)
+
+### Bug Fixes
+
+- Neptune 回环端点自动跳过 TLS 主机名校验
+  ([`3db7486`](https://github.com/Wangggym/quarry/commit/3db7486f81bd55c58d45c14d4f309bde0203cbc4))
+
+
+## v0.3.0 (2026-07-13)
+
+### Bug Fixes
+
+- 历史召回后再覆盖不再丢失原手写草稿 (#48 评审) ([#57](https://github.com/Wangggym/quarry/pull/57),
+  [`9192497`](https://github.com/Wangggym/quarry/commit/91924974049345d6b51eda2d48cf234a23d9db70))
+
+- 避免首次 semantic-release 生成重复 0.3.0 章节 ([#74](https://github.com/Wangggym/quarry/pull/74),
+  [`12f302b`](https://github.com/Wangggym/quarry/commit/12f302b753ce97d8a22bda56673a305762ed72ac))
+
+- **gui**: Schema browser table names + stale response guard
+  ([#38](https://github.com/Wangggym/quarry/pull/38),
+  [`710631f`](https://github.com/Wangggym/quarry/commit/710631f72ffd2f0aad626cd2e73cfa7eae27a768))
+
+- **gui**: Workspace manager keeps explicit --workspace pin, unbinds stale active connection
+  ([#40](https://github.com/Wangggym/quarry/pull/40),
+  [`f193d6e`](https://github.com/Wangggym/quarry/commit/f193d6ee5eab945196838f07cbb8553aab7558fb))
+
+- **gui**: 修复多个 GUI UX 缺陷，建立可穷举的功能测试矩阵
+  ([`98b959e`](https://github.com/Wangggym/quarry/commit/98b959e319493d6246629c9e3ae9bfb0e86597b2))
+
+- **local**: Survive the postgres image's init-phase server restart
+  ([`aafdb02`](https://github.com/Wangggym/quarry/commit/aafdb025341136d6f6005ec894ec0cad8f2a5322))
+
+- **local**: 修复本地容器生命周期与连接注册中的一批健壮性问题
+  ([`ebfaaa6`](https://github.com/Wangggym/quarry/commit/ebfaaa6624b7e3479f34e7cef2c8b8632300e8a4))
+
+- **local**: 注册本地连接时保留其他连接的非字符串字段并让精确 key 优先
+  ([`33edd28`](https://github.com/Wangggym/quarry/commit/33edd28c10b1ea15fb3ae7f27661f5590e2a9759))
+
+- **local sync**: Auto-discover a new-enough pg_dump; survive \restrict dumps
+  ([`c4a54a0`](https://github.com/Wangggym/quarry/commit/c4a54a0ca63f4237eb519adfcad98af1c3bbc3a4))
+
+- **local sync**: Reset database-level objects and derive pg_dump from QUARRY_PSQL
+  ([`46c2e22`](https://github.com/Wangggym/quarry/commit/46c2e22083f5b0b013e765deba9f61e75f505184))
+
+- **local sync**: Wipe all user schemas before applying pg_dump
+  ([`7040b0c`](https://github.com/Wangggym/quarry/commit/7040b0c008f62389c7105fd3ee01c99ce81e627d))
+
+- **packaging**: Sdist 排除 web/node_modules ([#35](https://github.com/Wangggym/quarry/pull/35),
+  [`a6e18f0`](https://github.com/Wangggym/quarry/commit/a6e18f0f99a8f9f8cf60249a202ae03bb3824bf6))
+
+- **react grid**: Restore limit-5 table preview, Escape closes modal, cover missed interactions
+  ([#56](https://github.com/Wangggym/quarry/pull/56),
+  [`65ccdb9`](https://github.com/Wangggym/quarry/commit/65ccdb95d2b8947ce82cfded37b8016673f8b1cb))
+
+### Continuous Integration
+
+- Remove duplicated 3.12 test job, cache pip/Playwright, skip preinstalled clients
+  ([`45025fa`](https://github.com/Wangggym/quarry/commit/45025fa807dd709bfedbca02a549dd60a8eef1fb))
+
+- 引入 Conventional Commits 校验与 semantic-release 自动发版
+  ([#74](https://github.com/Wangggym/quarry/pull/74),
+  [`12f302b`](https://github.com/Wangggym/quarry/commit/12f302b753ce97d8a22bda56673a305762ed72ac))
+
+- 引入 Conventional Commits 校验与自动发版流水线 ([#74](https://github.com/Wangggym/quarry/pull/74),
+  [`12f302b`](https://github.com/Wangggym/quarry/commit/12f302b753ce97d8a22bda56673a305762ed72ac))
+
+### Documentation
+
+- Add coverage/test badges + Testing section to READMEs
+  ([`0777d87`](https://github.com/Wangggym/quarry/commit/0777d874bb3ea78af5a5b4b090a694ab9e88ccdd))
+
+- Record repo-evolve parity E2E verification in CHANGELOG
+  ([#32](https://github.com/Wangggym/quarry/pull/32),
+  [`795a9ec`](https://github.com/Wangggym/quarry/commit/795a9ecac12b39e7a2dc52800d369d16c1ffb79c))
+
+- 诚实化功能矩阵范围, 连接隔离长尾转 #18 ([#19](https://github.com/Wangggym/quarry/pull/19),
+  [`f4a7eac`](https://github.com/Wangggym/quarry/commit/f4a7eac2450b944968c8b99b6184af087e37d508))
+
+### Features
+
+- React SQL 编辑器接管高亮 + 自动补全 + 历史 ([#57](https://github.com/Wangggym/quarry/pull/57),
+  [`9192497`](https://github.com/Wangggym/quarry/commit/91924974049345d6b51eda2d48cf234a23d9db70))
+
+- React 结果网格接管 SQL 执行与只读展示 ([#56](https://github.com/Wangggym/quarry/pull/56),
+  [`65ccdb9`](https://github.com/Wangggym/quarry/commit/65ccdb95d2b8947ce82cfded37b8016673f8b1cb))
+
+- **cli**: Qy local up/down/status 本地容器生命周期管理
+  ([`898ceda`](https://github.com/Wangggym/quarry/commit/898cedaa4a6f014fc1bf0bce59af6018e35401f9))
+
+- **gui**: Connection-info panel — resolved config + live reachability probe
+  ([`e13d19a`](https://github.com/Wangggym/quarry/commit/e13d19a0bba6a32670c2689a0a7e4729d0103bea))
+
+- **gui**: React+TS 脚手架，/app 占位页入 wheel ([#35](https://github.com/Wangggym/quarry/pull/35),
+  [`a6e18f0`](https://github.com/Wangggym/quarry/commit/a6e18f0f99a8f9f8cf60249a202ae03bb3824bf6))
+
+- **gui**: Table structure browser in the React shell
+  ([#38](https://github.com/Wangggym/quarry/pull/38),
+  [`710631f`](https://github.com/Wangggym/quarry/commit/710631f72ffd2f0aad626cd2e73cfa7eae27a768))
+
+- **gui**: Url copy/reveal + create-local-env and sync buttons in conn-info
+  ([`4f8234b`](https://github.com/Wangggym/quarry/commit/4f8234b574838c48a46c7fa10db6e664bf9da8fb))
+
+- **gui**: Workspace manager — add/remove config.toml workspaces from the header
+  ([#40](https://github.com/Wangggym/quarry/pull/40),
+  [`f193d6e`](https://github.com/Wangggym/quarry/commit/f193d6ee5eab945196838f07cbb8553aab7558fb))
+
+- **gui**: 每个标签页的查询结果刷新后可恢复 ([#19](https://github.com/Wangggym/quarry/pull/19),
+  [`f4a7eac`](https://github.com/Wangggym/quarry/commit/f4a7eac2450b944968c8b99b6184af087e37d508))
+
+### Refactoring
+
+- **local sync**: Staging db + rename swap instead of in-place wipe
+  ([`ae8ea7f`](https://github.com/Wangggym/quarry/commit/ae8ea7f237d619f863c7b18cea15830b9e817528))
+
+### Testing
+
+- Cover blur-commit rename and per-tab result following drag reorder
+  ([`8d3146b`](https://github.com/Wangggym/quarry/commit/8d3146b06d95f153921e7e0a2420400017b28703))
+
+- Fix flaky schema-browser table-switch browser test
+  ([`1b8ed63`](https://github.com/Wangggym/quarry/commit/1b8ed6375729564da726fb14d60a4bfbe84d424d))
+
+- Fix port race flakiness in local_sync_docker suite
+  ([#37](https://github.com/Wangggym/quarry/pull/37),
+  [`00bee18`](https://github.com/Wangggym/quarry/commit/00bee184ff1c1fecae0f1d7325cd4e8797a51ee9))
+
+- **gui**: Assert the URL password SLOT is masked, not substring absence
+  ([`dfbd793`](https://github.com/Wangggym/quarry/commit/dfbd793a5f747c956e06c56b143de58f6696b97e))
+
+- **gui**: GuiClient 禁用系统 HTTP 代理避免 Host 头误路由
+  ([`411e1f4`](https://github.com/Wangggym/quarry/commit/411e1f4925edeed9ce84248ddb2ca272a22d7535))
+
+
+### GUI — the React frontend takes over (visual parity with the classic GUI)
+
+- **`/app` (the React GUI) is now the only frontend and the default landing
+  page** (#65): `/` and `/index.html` redirect to `/app/`, `qy gui` opens the
+  browser there, and `gui.py` is backend-only from here on (`http.server` +
+  `/api/*` + serving the built `web/` app).
+- **Pixel-level visual parity with the classic GUI**: the React app renders
+  the same DOM (ids/classes), the same "Slate & Copper" palette (dark default
+  + explicit light toggle), the same 14px/mono density, the same Tabler
+  icons (self-hosted — no CDN, closes #14), and the same i18n strings. The
+  design tokens are pinned in both themes by `getComputedStyle` assertions in
+  CI (`tests/test_gui_visual.py`), not by eyeballing.
+- **Full feature parity, proven by the classic GUI's own test suite**: all 93
+  feature-matrix rows (sidebar tree/health/env pills, tabs with per-tab
+  result isolation, SQL editor with highlight/autocomplete/history, toolbar
+  incl. EXPLAIN/exports/max-rows, data grid with sort/keyboard nav/pagination,
+  conn-info and workspace-manager modals, saved queries, redis key tree, …)
+  pass unchanged against the React app — including every safety invariant
+  (prod never auto-runs, drafts never silently lost, stale responses never
+  repaint, latest-wins per tab).
+- **State carries over seamlessly**: the React app reads and writes the same
+  `localStorage` keys and value formats as the classic GUI (tabs, per-tab
+  results, history, theme, language, layout sizes, collapsed groups), so an
+  existing user keeps their session on first load — no migration step.
+- **Table-structure browser** (#11) reshaped to fit the classic layout:
+  double-click a sidebar table name to open a column-name + type modal
+  without running anything.
+
+### GUI — sidebar
+
+- **`local` always sorts first among a db's env tags** (#44): sidebar pills
+  and the header env switcher now always show `local` leftmost, regardless of
+  connection-registration order. The default-selected env stays `dev` when
+  present, and now falls back to `local` (instead of whichever env was
+  registered first, e.g. `prod`) when there's no `dev`.
+- **Table-click preview defaults to `limit 5`** (#44): clicking a table in the
+  sidebar now generates and runs `select * from <table> limit 5` instead of
+  `limit 100`.
+
+### GUI — query deep links
+
+- **Shareable query links** (#69): the toolbar now has **Copy query link**,
+  which captures the active tab's `db` / `env` / `sql` into a URL-safe link.
+  Opening that link reuses an identical tab if one already exists (otherwise
+  creates a new tab), restores the connection + SQL, and auto-runs once so the
+  result grid is immediately populated. Invalid or unavailable `db`/`env`
+  targets are handled explicitly with a toast and no silent auto-run.
+
+### Packaging
+
+- **Editable installs point at exact source paths** (#42): `pip install -e .`
+  now maps each package individually instead of appending a directory to
+  `sys.path`. If the installed-from checkout (e.g. a `git worktree`) is later
+  removed, `qy`/`quarry` now fail with a `FileNotFoundError` naming the
+  missing path instead of an opaque `ModuleNotFoundError: No module named
+  'quarry.cli'` — see CONTRIBUTING.md for the reinstall command.
+
+### GUI — tabs
+
+- **Auto tab titles now show the table you're querying, not just the
+  connection** (#70): tabs on the same connection used to all display the
+  same `db@env` label, making it easy to run a query in the wrong tab. The
+  title now derives from the current SQL's main table (`FROM`/`UPDATE`/
+  `INSERT INTO`/`DELETE FROM`, including quoted/backtick-quoted mixed-case
+  names) and updates live as you edit; it only falls back to `db@env` when
+  the tab has no SQL. Manual tab renames are unaffected.
+- **Rename, drag-reorder, middle-click close, keyboard shortcut** (#16):
+  double-click a tab to rename it (Enter/blur commits, Escape cancels, an
+  empty name reverts to the automatic title); drag a tab to reorder it;
+  middle-click a tab to close it; `Cmd/Ctrl+Shift+W` closes the active tab.
+  All four respect the existing "at least one tab stays open" rule.
+
+### GUI — workspace manager
+
+- **Manage workspaces from the header** (#15): a new gear button next to the
+  workspace label opens a modal listing every workspace registered in
+  `config.toml` (flagging a missing directory or a directory with no
+  `connections.toml`), lets you add another one, and remove one (confirm-gated,
+  only removes the registration — files are untouched). Changes take effect
+  immediately, same as `qy workspace add|remove`, without dropping an explicit
+  `--workspace` session. Removing the workspace behind the currently active
+  connection unbinds it right away instead of waiting for the next tab switch.
+  That list used to be display-only.
+
+### GUI — grid pagination
+
+- **Real pagination ("load more")**: when a query result hits the max-rows cap,
+  the grid now offers a "Load more" button that fetches the next page (same
+  SQL, growing offset) and appends it, instead of only ever showing the first
+  page. Available for postgres/mysql queries run from the editor. If the grid
+  is already sorted, loading more re-sorts the combined rows so the active
+  sort stays correct across pages.
 
 ### GUI — React scaffold (strangler-fig step 1)
 
@@ -13,6 +1427,10 @@ All notable changes to Quarry are documented here. The format follows
   zero-Node for end users.
 - Placeholder UI at `/app` shows **Quarry** and the package version (via
   `/api/version`). The existing embedded-JS GUI at `/` is unchanged.
+- **Table structure browser** (#11): `/app` now lets you pick a connection,
+  browse its tables, and see each column's name and type. `/api/columns`
+  gained a `types` field (column name → data type) alongside its existing
+  `columns` name list.
 
 ### Local dev containers (`qy local`)
 

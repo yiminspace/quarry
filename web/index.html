@@ -1,11 +1,40 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Quarry</title>
+    <link rel="icon" type="image/svg+xml" href="/quarry/favicon.svg" />
+    <script>
+      // Applied before first paint so the page never flashes the wrong theme
+      // (voyage's 4-axis prefs, under vg_prefs — falls back to migrating the
+      // legacy 2-state qy_theme key on a user's first load after the voyage
+      // switch, so nobody's dark/light choice resets).
+      (function () {
+        var DEFAULTS = { theme: "slate", mode: "dark", style: "classic", tone: "normal" };
+        var prefs = DEFAULTS;
+        try {
+          var raw = localStorage.getItem("vg_prefs");
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && parsed.theme && parsed.mode && parsed.style && parsed.tone) prefs = parsed;
+          } else {
+            var legacy = localStorage.getItem("qy_theme");
+            if (legacy === "light") prefs = Object.assign({}, DEFAULTS, { mode: "light" });
+          }
+        } catch (e) {}
+        var el = document.documentElement;
+        el.classList.add("vg");
+        el.setAttribute("data-theme", prefs.theme);
+        el.setAttribute("data-mode", prefs.mode);
+        el.setAttribute("data-style", prefs.style);
+        el.setAttribute("data-tone", prefs.tone);
+      })();
+      document.documentElement.lang =
+        localStorage.getItem("qy_lang") === "en" ? "en" : "zh";
+    </script>
   </head>
-  <body>
+  <body class="vg-app vg-fullscreen">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

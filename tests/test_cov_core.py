@@ -41,7 +41,7 @@ def _fake_tunnel(expect_url: str | None = None):
     """A contextlib.contextmanager stand-in for tunnel.open_tunnel that yields
     the connection URL unchanged (no real SSH)."""
     @contextlib.contextmanager
-    def _open(conn, engine):
+    def _open(conn, engine, connect_timeout=None, use_proxy=None):
         yield conn.url
     return _open
 
@@ -704,6 +704,31 @@ def test_rows_postgres_nonjson_body(monkeypatch):
 
 
 @pytest.mark.unit
+def test_rows_postgres_download_bytes_is_stdout_size(monkeypatch):
+    # issue #104: download_bytes is psql's stdout text, UTF-8 encoded (an
+    # approximation — psql exposes no raw wire-protocol byte count).
+    body = '[{"id": 1}, {"id": 2}]'
+    monkeypatch.setattr(core, "run_psql_capture", lambda *a, **k: (0, body, ""))
+    rows, download_bytes = core._rows_postgres("postgres://h/d", "SELECT 1", {}, 10)
+    assert rows == [{"id": 1}, {"id": 2}]
+    assert download_bytes == len(body.encode("utf-8")) > 0
+
+
+@pytest.mark.unit
+def test_run_query_postgres_branch_mocked(monkeypatch):
+    # exercises run_query's postgres branch (default engine) without a real DB
+    monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
+    body = '[{"id": 1}, {"id": 2}]'
+    monkeypatch.setattr(core, "run_psql_capture", lambda *a, **k: (0, body, ""))
+    conn = core.Connection(key="pk", url="postgres://h/d", engine="postgres")
+    res = core.run_query(conn, "SELECT id FROM t")
+    assert res.engine == "postgres"
+    assert res.rows == [{"id": 1}, {"id": 2}]
+    assert res.download_bytes == len(body.encode("utf-8")) > 0
+    assert res.size_is_estimated is True
+
+
+@pytest.mark.unit
 def test_pg_column_types_rc_nonzero_returns_empty(monkeypatch):
     # 938 branch
     monkeypatch.setattr(core, "run_psql_capture",
@@ -729,12 +754,14 @@ def test_run_query_redis_read(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
     monkeypatch.setattr(redis_engine, "run_redis",
-                        lambda url, cmd, timeout=30: [{"value": "a"}, {"value": "b"}])
+                        lambda url, cmd, timeout=30: ([{"value": "a"}, {"value": "b"}], 42))
     res = core.run_query(_redis_conn(), "GET foo")
     assert res.engine == "redis"
     assert res.rows == [{"value": "a"}, {"value": "b"}]
     assert res.row_count == 2
     assert res.truncated is False
+    assert res.download_bytes == 42
+    assert res.size_is_estimated is True
 
 
 @pytest.mark.unit
@@ -751,7 +778,7 @@ def test_run_query_redis_truncates(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
     monkeypatch.setattr(redis_engine, "run_redis",
-                        lambda url, cmd, timeout=30: [{"value": str(i)} for i in range(10)])
+                        lambda url, cmd, timeout=30: ([{"value": str(i)} for i in range(10)], 0))
     res = core.run_query(_redis_conn(), "KEYS *", max_rows=3)
     assert res.row_count == 3 and res.truncated is True
 
@@ -764,30 +791,36 @@ def test_run_query_redis_truncates(monkeypatch):
 def test_run_query_mysql_branch(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=60: [{"id": 1}, {"id": 2}])
+                        lambda url, sql, params=None, timeout=60, connect_timeout=None, read_only=False: ([{"id": 1}, {"id": 2}], 17))
     res = core.run_query(_mysql_conn(), "SELECT id FROM t", with_types=True)
     assert res.engine == "mysql"
     assert res.rows == [{"id": 1}, {"id": 2}]
     # with_types on a non-postgres engine leaves types null
     assert res.columns[0]["type"] is None
+    assert res.download_bytes == 17
+    assert res.size_is_estimated is True
 
 
 @pytest.mark.unit
 def test_run_query_neptune_branch(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_neptune_cypher",
-                        lambda url, cypher, params=None, timeout=60: [{"n": 1}])
+                        lambda url, cypher, params=None, timeout=60, use_proxy=None, workspace_home=None:
+                        ([{"n": 1}], 9))
     res = core.run_query(_neptune_conn(), "MATCH (n) RETURN n")
     assert res.engine == "neptune"
     assert res.rows == [{"n": 1}]
     assert res.columns[0]["type"] is None
+    assert res.download_bytes == 9
+    assert res.size_is_estimated is False
 
 
 @pytest.mark.unit
 def test_run_query_mysql_truncates(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=60: [{"id": i} for i in range(10)])
+                        lambda url, sql, params=None, timeout=60, connect_timeout=None, read_only=False:
+                        ([{"id": i} for i in range(10)], 0))
     res = core.run_query(_mysql_conn(), "SELECT id FROM t", max_rows=3)
     # applied_limit trims and marks truncated (812/995-997)
     assert res.row_count == 3 and res.truncated is True
@@ -802,11 +835,14 @@ def test_execute_sql_redis_json(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
     monkeypatch.setattr(redis_engine, "run_redis",
-                        lambda url, cmd: [{"value": "x"}])
+                        lambda url, cmd, timeout=None: ([{"value": "x"}], 5))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
-    rc = core.execute_sql(conn=_redis_conn(), sql="GET foo", psql_vars={}, fmt="json")
+    stats = {}
+    rc = core.execute_sql(conn=_redis_conn(), sql="GET foo", psql_vars={}, fmt="json", stats=stats)
     assert rc == core.EXIT_OK
     assert json.loads(capsys.readouterr().out) == [{"value": "x"}]
+    assert stats["download_bytes"] == 5
+    assert stats["elapsed_ms"] >= 0
 
 
 @pytest.mark.unit
@@ -815,7 +851,7 @@ def test_execute_sql_redis_ndjson(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
     monkeypatch.setattr(redis_engine, "run_redis",
-                        lambda url, cmd: [{"value": "a"}, {"value": "b"}])
+                        lambda url, cmd, timeout=None: ([{"value": "a"}, {"value": "b"}], 0))
     rc = core.execute_sql(conn=_redis_conn(), sql="KEYS *", psql_vars={}, fmt="ndjson")
     assert rc == core.EXIT_OK
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
@@ -828,7 +864,7 @@ def test_execute_sql_redis_table(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
     monkeypatch.setattr(redis_engine, "run_redis",
-                        lambda url, cmd: [{"value": "a"}])
+                        lambda url, cmd, timeout=None: ([{"value": "a"}], 0))
     rc = core.execute_sql(conn=_redis_conn(), sql="KEYS *", psql_vars={}, fmt="table")
     assert rc == core.EXIT_OK
     out = capsys.readouterr().out
@@ -849,7 +885,7 @@ def test_execute_sql_redis_unknown_format(monkeypatch):
     # exercise _emit_rows unknown-format branch (1159)
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(redis_engine, "is_redis_read_only", lambda cmd: True)
-    monkeypatch.setattr(redis_engine, "run_redis", lambda url, cmd: [{"value": "x"}])
+    monkeypatch.setattr(redis_engine, "run_redis", lambda url, cmd, timeout=None: ([{"value": "x"}], 0))
     with pytest.raises(core.QuarryError) as ei:
         core.execute_sql(conn=_redis_conn(), sql="GET foo", psql_vars={}, fmt="bogus")
     assert ei.value.exit_code == core.EXIT_USAGE
@@ -859,18 +895,22 @@ def test_execute_sql_redis_unknown_format(monkeypatch):
 def test_execute_sql_mysql_json(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None: [{"id": 1}, {"id": 2}])
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False:
+                        ([{"id": 1}, {"id": 2}], 11))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
-    rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t", psql_vars={}, fmt="json")
+    stats = {}
+    rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t", psql_vars={}, fmt="json", stats=stats)
     assert rc == core.EXIT_OK
     assert json.loads(capsys.readouterr().out) == [{"id": 1}, {"id": 2}]
+    assert stats["download_bytes"] == 11
 
 
 @pytest.mark.unit
 def test_execute_sql_mysql_json_truncates(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None: [{"id": i} for i in range(10)])
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False:
+                        ([{"id": i} for i in range(10)], 0))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t",
                           psql_vars={}, fmt="json", max_rows=3)
@@ -882,7 +922,8 @@ def test_execute_sql_mysql_json_truncates(monkeypatch, capsys):
 def test_execute_sql_neptune_json(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_neptune_cypher",
-                        lambda url, sql, params=None: [{"n": 1}])
+                        lambda url, sql, params=None, timeout=None, use_proxy=None, workspace_home=None:
+                        ([{"n": 1}], 0))
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     rc = core.execute_sql(conn=_neptune_conn(), sql="MATCH (n) RETURN n",
                           psql_vars={}, fmt="json")
@@ -932,7 +973,8 @@ def test_validate_query_neptune(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     called = {}
     monkeypatch.setattr(core, "run_neptune_cypher",
-                        lambda url, cypher, params=None, timeout=20: called.setdefault("ran", True) or [])
+                        lambda url, cypher, params=None, timeout=20, use_proxy=None, workspace_home=None:
+                        called.setdefault("ran", True) or [])
     q = core.Query(name="q", db="d", sql="MATCH (n) RETURN n")
     rc = core.validate_query(q, _neptune_conn())
     assert rc == core.EXIT_OK
@@ -944,11 +986,13 @@ def test_validate_query_mysql(monkeypatch):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     captured = {}
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None, timeout=20: captured.setdefault("sql", sql) or [])
+                        lambda url, sql, params=None, timeout=20, read_only=False:
+                        captured.update(sql=sql, read_only=read_only) or [])
     q = core.Query(name="q", db="d", sql="SELECT 1")
     rc = core.validate_query(q, _mysql_conn())
     assert rc == core.EXIT_OK
     assert captured["sql"].startswith("EXPLAIN ")
+    assert captured["read_only"] is True
 
 
 @pytest.mark.unit
@@ -1068,11 +1112,15 @@ def test_execute_sql_postgres_json_no_limit(ws, capsys, monkeypatch):
     # applied_limit is None branch (1203-1204): a query that already has LIMIT
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     conn = core.get_connection("testpg")
+    stats = {}
     rc = core.execute_sql(conn=conn, sql="SELECT generate_series(1,3) AS n LIMIT 3",
-                          psql_vars={}, fmt="json", max_rows=None)
+                          psql_vars={}, fmt="json", max_rows=None, stats=stats)
     assert rc == core.EXIT_OK
     data = json.loads(capsys.readouterr().out)
     assert [r["n"] for r in data] == [1, 2, 3]
+    # issue #104: the CLI execute path also has timing/size available internally
+    assert stats["elapsed_ms"] >= 0
+    assert stats["download_bytes"] > 0
 
 
 @requires_db
@@ -1134,7 +1182,7 @@ def test_run_query_postgres_truncation_applied_limit(ws):
 def test_execute_sql_mysql_csv(monkeypatch, capsys):
     monkeypatch.setattr(tunnel, "open_tunnel", _fake_tunnel())
     monkeypatch.setattr(core, "run_mysql_query",
-                        lambda url, sql, params=None: [{"id": 1}])
+                        lambda url, sql, params=None, timeout=None, connect_timeout=None, read_only=False: ([{"id": 1}], 0))
     rc = core.execute_sql(conn=_mysql_conn(), sql="SELECT id FROM t",
                           psql_vars={}, fmt="csv")
     assert rc == core.EXIT_OK

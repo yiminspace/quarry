@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -27,7 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from quarry import workspace  # noqa: E402
+from quarry import cache, tunnel, workspace  # noqa: E402
 
 TEST_DB_URL = os.environ.get(
     "QUARRY_TEST_DB_URL", "postgresql://localhost:5432/quarry_test"
@@ -66,7 +67,9 @@ def _redis_reachable() -> bool:
     if not cli:
         return False
     try:
-        proc = subprocess.run([cli, "ping"], capture_output=True, text=True, timeout=5)
+        target = os.environ.get("QUARRY_TEST_REDIS_URL")
+        args = [cli, "-u", target, "ping"] if target else [cli, "ping"]
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=5)
         return proc.returncode == 0 and "PONG" in proc.stdout.upper()
     except Exception:
         return False
@@ -120,7 +123,7 @@ _BROWSER_FIXTURES = {"page", "gui_url", "_pw_browser"}
 # true e2e = a real external process (qy / mcp subprocess) or browser.
 _E2E_FIXTURES = {"qy", "mcp", "mcp_ws", "client"}
 # integration = in-process against a real DB, incl. the in-thread GUI HTTP server.
-_INTEGRATION_FIXTURES = {"ws", "pg_exec", "gui_server"}
+_INTEGRATION_FIXTURES = {"ws", "pg_exec", "gui_server", "sqlite_gui_server"}
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -153,6 +156,77 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         f"  browser (playwright):     {dot(BROWSER_OK)}",
         f"  docker:                   {dot(DOCKER_OK)}",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Shared metadata cache isolation (issue #97) — cache.py's storage is now
+# used by core.py (and therefore by gui.py/cli.py/mcp.py alike), so every
+# test — not just GUI ones — needs its own cache file instead of touching
+# the developer's real ~/.cache/quarry/gui-cache.json. QUARRY_CACHE_FILE
+# covers CLI/MCP subprocess fixtures (qy, mcp); the direct monkeypatch
+# covers in-process calls (gui.py, core.cached_* unit tests).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _isolated_cache(tmp_path: Path, monkeypatch):
+    cache_file = tmp_path / "gui-cache.json"
+    monkeypatch.setattr(cache, "CACHE_FILE", cache_file)
+    monkeypatch.setenv("QUARRY_CACHE_FILE", str(cache_file))
+    cache._CACHE.clear()
+    yield
+    cache._CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_assistant_history(tmp_path: Path, monkeypatch):
+    # Opening History may read assistant conversations even in an existing
+    # query-history test. Tests must never inspect the developer's sessions.
+    monkeypatch.setenv("QUARRY_AI_HOME", str(tmp_path / "assistant"))
+
+
+# The cross-process tunnel registry (issue #101 r1-1) is on-disk by design —
+# so it needs the same per-test isolation as the metadata cache above, or
+# tests would read/write the developer's real ~/.cache/quarry/tunnels.json.
+@pytest.fixture(autouse=True)
+def _isolated_tunnel_registry(tmp_path: Path, monkeypatch):
+    registry_file = tmp_path / "tunnels.json"
+    monkeypatch.setattr(tunnel, "REGISTRY_FILE", registry_file)
+    monkeypatch.setenv("QUARRY_TUNNEL_REGISTRY_FILE", str(registry_file))
+    tunnel._OWNED_REGISTRY_KEYS.clear()
+    yield
+    tunnel._OWNED_REGISTRY_KEYS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gui_watcher(request, monkeypatch):
+    """A live-SSE browser test must not leave a watcher using the next test's WS.
+
+    Production owns one process-lifetime watcher; browser tests reuse that
+    process with different workspaces. Keep the real watcher tick, but bound
+    its thread lifetime to the test that starts it.
+    """
+    if not request.node.get_closest_marker("browser"):
+        yield
+        return
+
+    from quarry import gui
+
+    stopped = threading.Event()
+    workers = []
+
+    def watch_loop():
+        workers.append(threading.current_thread())
+        fingerprint = gui._ws_fingerprint()
+        while not stopped.wait(gui.WATCH_INTERVAL_SEC):
+            fingerprint = gui._watch_tick(fingerprint)
+
+    monkeypatch.setattr(gui, "_watch_loop", watch_loop)
+    monkeypatch.setattr(gui, "_WATCHER_STARTED", False)
+    yield
+    stopped.set()
+    for worker in workers:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "GUI workspace watcher outlived its browser test"
 
 
 # ---------------------------------------------------------------------------
@@ -264,22 +338,28 @@ class GuiClient:
         return self._req("POST", path, body, headers)
 
 
-from contextlib import contextmanager  # noqa: E402
+from contextlib import closing, contextmanager  # noqa: E402
 
 
 @contextmanager
-def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None):
+def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None,
+                 connections_toml: str | None = None):
     """Start the real GUI HTTP server on an ephemeral port against a temp workspace.
-    Yields the base URL. Isolates the on-disk cache so tests don't touch ~/.cache.
+    Yields the base URL. The shared cache (cache.py) is already isolated per-test
+    by the autouse _isolated_cache fixture.
 
     seed_queries: optional {name: sql_text} written into queries/ before serving.
     extra_conn:   optional TOML appended to connections.toml (extra connections,
                   e.g. an env-set or a redis target for browser tests).
+    connections_toml: replace the default Postgres workspace for standalone
+                      engine fixtures that must run without Postgres.
     """
     from http.server import ThreadingHTTPServer
 
     from quarry import gui
     _write_ws(tmp_path)
+    if connections_toml is not None:
+        (tmp_path / "connections.toml").write_text(connections_toml, encoding="utf-8")
     if extra_conn:
         with (tmp_path / "connections.toml").open("a", encoding="utf-8") as f:
             f.write(extra_conn)
@@ -288,9 +368,6 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
     if _psql() and _psql() != "psql":
         os.environ["QUARRY_PSQL"] = _psql()
     workspace.configure_workspace(str(tmp_path))
-    orig_cache_file = gui._CACHE_FILE
-    gui._CACHE.clear()
-    gui._CACHE_FILE = tmp_path / "gui-cache.json"
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -303,8 +380,6 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
     finally:
         httpd.shutdown()
         httpd.server_close()
-        gui._CACHE.clear()
-        gui._CACHE_FILE = orig_cache_file
         workspace.configure_workspace(None)
 
 
@@ -320,6 +395,40 @@ def gui_url(tmp_path: Path):
     """Real GUI HTTP server; yields the base URL (for the browser suite)."""
     with _running_gui(tmp_path) as base:
         yield base
+
+
+@pytest.fixture()
+def sqlite_gui_url(tmp_path: Path):
+    """Real SQLite files and GUI; no Postgres, Docker, or external database."""
+    configs = []
+    for env in ("dev", "local", "prod"):
+        path = tmp_path / f"notes-{env}.db"
+        with closing(sqlite3.connect(path)) as db, db:
+            db.executescript('''
+                CREATE TABLE entries (id INTEGER PRIMARY KEY, note TEXT NOT NULL);
+                CREATE VIEW recent_entries AS SELECT * FROM entries WHERE id > 248;
+                CREATE TABLE "order" (id INTEGER PRIMARY KEY, note TEXT);
+                CREATE TABLE "daily.events" (id INTEGER PRIMARY KEY, note TEXT);
+            ''')
+            db.executemany("INSERT INTO entries VALUES (?, ?)",
+                           [(i, f"{env} note {i}") for i in range(1, 251)])
+            db.execute('INSERT INTO "order" VALUES (1, ?)', (f"{env} reserved",))
+            db.execute('INSERT INTO "daily.events" VALUES (1, ?)', (f"{env} dotted",))
+            db.execute('CREATE TABLE wide_columns (' + ', '.join(
+                f'field_{i} INTEGER' for i in range(125)) + ')')
+        configs.append(
+            f'[notes_{env}]\nurl = "sqlite:///notes-{env}.db"\nengine = "sqlite"\n'
+            f'env = "{env}"\ndb = "notes"\ngroup = "files"\n'
+            f'production = {str(env == "prod").lower()}\n')
+    configs.append('[archive]\nurl = "sqlite:///notes-dev.db"\nengine = "sqlite"\n'
+                   'env = "dev"\ngroup = "files"\n')
+    with _running_gui(tmp_path, connections_toml="\n".join(configs)) as base:
+        yield base
+
+
+@pytest.fixture()
+def sqlite_gui_server(sqlite_gui_url):
+    yield GuiClient(sqlite_gui_url)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +448,7 @@ def _playwright_ready() -> bool:
 
 
 BROWSER_OK = _playwright_ready()
+requires_chromium = pytest.mark.skipif(not BROWSER_OK, reason="playwright+chromium unavailable")
 requires_browser = pytest.mark.skipif(
     not (BROWSER_OK and DB_OK), reason="playwright+chromium or test DB unavailable")
 
@@ -360,12 +470,34 @@ def stub_cdn(ctx) -> None:
               lambda route: route.fulfill(status=200, content_type="text/css", body=""))
 
 
+def stub_events(ctx) -> None:
+    """Answer `/api/events` with a valid SSE body that ends immediately and
+    postpones the EventSource reconnect beyond any test's lifetime. The real
+    endpoint holds its request open forever, so `goto(..., "networkidle")`
+    would never resolve. Tests that exercise the live event channel build
+    their own context without this stub and wait on explicit selectors."""
+    ctx.route("**/api/events",
+              lambda route: route.fulfill(status=200, content_type="text/event-stream",
+                                          body="retry: 86400000\n\n"))
+
+
+def english_browser_context(browser, **options):
+    """Pin the legacy suite to English without replacing a persisted choice.
+
+    Fresh-default language coverage deliberately uses a plain browser context.
+    """
+    ctx = browser.new_context(**options)
+    ctx.add_init_script("if (localStorage.getItem('qy_lang') === null) localStorage.setItem('qy_lang', 'en');")
+    return ctx
+
+
 @pytest.fixture()
 def page(_pw_browser, gui_url):
     """A Playwright page already navigated to a live GUI. Console errors are
     captured on the page object as `page._console_errors` for assertions."""
-    ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+    ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
     stub_cdn(ctx)
+    stub_events(ctx)
     pg = ctx.new_page()
     pg._console_errors = []
     pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
@@ -375,6 +507,72 @@ def page(_pw_browser, gui_url):
         yield pg
     finally:
         ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite(_pw_browser, sqlite_gui_url):
+    """Browser against only SQLite connections; independent of DB_OK."""
+    ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
+    stub_cdn(ctx)
+    stub_events(ctx)
+    pg = ctx.new_page()
+    pg._console_errors = []
+    pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+    pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+    pg.goto(sqlite_gui_url, wait_until="networkidle")
+    try:
+        yield pg
+    finally:
+        ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite_default_language(_pw_browser, sqlite_gui_url):
+    """A fresh user context: no test language preference or model request."""
+    ctx = _pw_browser.new_context(viewport={"width": 1280, "height": 900})
+    stub_cdn(ctx)
+    stub_events(ctx)
+    pg = ctx.new_page()
+    pg._console_errors = []
+    pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+    pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+    pg.goto(sqlite_gui_url, wait_until="networkidle")
+    try:
+        yield pg
+    finally:
+        ctx.close()
+
+
+@pytest.fixture()
+def page_sqlite_workspaces(_pw_browser, tmp_path: Path, monkeypatch):
+    """Two real workspaces use the same relative SQLite URL independently."""
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "isolated-config.toml"))
+    homes = []
+    for name in ("brain", "yiminlab"):
+        home = tmp_path / name
+        (home / "data").mkdir(parents=True)
+        (home / "queries").mkdir()
+        with closing(sqlite3.connect(home / "data" / "local.db")) as db, db:
+            db.execute('CREATE TABLE records (id INTEGER PRIMARY KEY, owner TEXT, note TEXT)')
+            db.execute('INSERT INTO records VALUES (1, ?, ?)', (name, f'{name} own data'))
+        (home / "connections.toml").write_text(
+            f'[{name}_local]\nurl = "sqlite:///data/local.db"\nengine = "sqlite"\n'
+            f'db = "{name}_notes"\nenv = "local"\ngroup = "{name}"\n', encoding="utf-8")
+        homes.append(str(home))
+    with _running_gui(tmp_path, connections_toml="") as url:
+        workspace.configure_workspace(os.pathsep.join(homes))
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
+        stub_cdn(ctx)
+        stub_events(ctx)
+        pg = ctx.new_page()
+        pg._console_errors = []
+        pg.on("console", lambda m: m.type == "error" and pg._console_errors.append(m.text))
+        pg.on("pageerror", lambda e: pg._console_errors.append(str(e)))
+        pg.goto(url, wait_until="networkidle")
+        try:
+            yield pg
+        finally:
+            ctx.close()
 
 
 # ---------------------------------------------------------------------------

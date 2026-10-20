@@ -12,6 +12,44 @@ import pytest
 from conftest import requires_db
 
 
+def test_sqlite_connection_info_has_resolved_file_and_no_server(sqlite_gui_server, tmp_path):
+    client = sqlite_gui_server
+    code, info = client.get('/api/conninfo?db=notes&env=dev')
+    assert code == 200 and info['engine'] == 'sqlite'
+    assert info['databasePath'] == str((tmp_path / 'notes-dev.db').resolve())
+    assert info['database'] == 'notes-dev.db'
+    assert info['host'] is None and info['port'] is None and info['tunnel'] is None
+    code, health = client.get('/api/health?db=notes&env=dev&fresh=1')
+    assert code == 200 and health['ok']
+    code, response = client.post('/api/local/up', {'db': 'notes'})
+    assert code == 400 and 'no local-container support' in response['error']
+
+
+def test_sqlite_api_metadata_and_pagination(sqlite_gui_server):
+    client = sqlite_gui_server
+    code, tables = client.get('/api/tables?db=notes&env=dev')
+    assert code == 200 and tables['engine'] == 'sqlite'
+    assert {'entries', 'recent_entries', 'daily.events', 'order'} <= set(tables['tables'])
+    code, columns = client.get('/api/columns?db=notes&env=dev&table=daily.events')
+    assert code == 200 and columns['columns'] == ['id', 'note']
+    assert columns['types'] == {'id': 'INTEGER', 'note': 'TEXT'}
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'select * from entries order by id',
+                                          'maxRows': 100, 'offset': 200})
+    assert code == 200 and data['rowCount'] == 50 and not data['truncated']
+    assert data['rows'][0] == {'id': 201, 'note': 'local note 201'}
+
+
+def test_sqlite_gui_api_cannot_enable_writes(sqlite_gui_server):
+    client = sqlite_gui_server
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'delete from entries', 'write': True})
+    assert code == 400 and 'read-only' in data['error'].lower()
+    code, data = client.post('/api/query', {'db': 'notes', 'env': 'local',
+                                          'sql': 'select count(*) as n from entries'})
+    assert code == 200 and data['rows'] == [{'n': 250}]
+
+
 # ---------------------------------------------------------------------------
 # unit — backend helpers
 # ---------------------------------------------------------------------------
@@ -53,12 +91,40 @@ def test_is_quarry_gui_rejects_foreign_gui(monkeypatch):
 @pytest.mark.unit
 def test_health_freshness_ttl(monkeypatch):
     from quarry import gui
-    monkeypatch.setattr(gui, "HEALTH_TTL_SEC", 120)
+    monkeypatch.setattr(gui.core, "HEALTH_TTL_SEC", 120)
     now = 1_000_000.0
     monkeypatch.setattr(gui.time, "time", lambda: now)
-    assert gui._health_fresh_enough({"ok": True, "_ts": now - 10}) is True
-    assert gui._health_fresh_enough({"ok": True, "_ts": now - 200}) is False
-    assert gui._health_fresh_enough({"ok": True}) is False  # legacy entry, no _ts
+    assert gui.core._health_fresh_enough({"ok": True, "_ts": now - 10}) is True
+    assert gui.core._health_fresh_enough({"ok": True, "_ts": now - 200}) is False
+    assert gui.core._health_fresh_enough({"ok": True}) is False  # legacy entry, no _ts
+
+
+@pytest.mark.unit
+def test_api_keepalive_status_and_controls(monkeypatch):
+    from quarry import gui
+
+    state = {"running": False}
+
+    def fake_status(_ws):
+        return {
+            "workspace": "/tmp/ws",
+            "enabled": True,
+            "reconnect": True,
+            "keeper": {"running": state["running"], "pid": 4242 if state["running"] else None},
+            "tunnels": [],
+            "updatedAt": 0.0,
+        }
+
+    monkeypatch.setattr(gui.keepalive, "status", fake_status)
+    monkeypatch.setattr(gui.keepalive, "start", lambda _ws: state.__setitem__("running", True) or (True, 4242))
+    monkeypatch.setattr(gui.keepalive, "stop", lambda _ws: state.__setitem__("running", False) or True)
+
+    down = gui.api_keepalive()
+    assert down["keeper"]["running"] is False
+    up = gui.api_keepalive_up()
+    assert up["keeper"]["running"] is True
+    back = gui.api_keepalive_down()
+    assert back["keeper"]["running"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +138,32 @@ def test_connections_endpoint(gui_server):
     assert code == 200
     dbs = [it["db"] for g in body["groups"] for it in g["items"]]
     assert "testpg" in dbs
+
+
+@requires_db
+@pytest.mark.integration
+def test_update_endpoint_reads_cache_without_hitting_pypi(gui_server):
+    """GET /api/update never triggers a PyPI call itself (the background
+    checker owns that); against a fresh cache it reports the current version
+    with no known update."""
+    from quarry import __version__
+
+    code, body = gui_server.get("/api/update")
+    assert code == 200
+    assert body == {"current": __version__, "latest": None, "available": False}
+
+
+@requires_db
+@pytest.mark.integration
+def test_changelog_endpoint_returns_parsed_versions(gui_server):
+    """GET /api/changelog serves the real CHANGELOG.md, parsed into
+    structured version sections (used by the header's What's New panel)."""
+    code, body = gui_server.get("/api/changelog")
+    assert code == 200
+    assert isinstance(body, list) and body
+    first = body[0]
+    assert {"version", "date", "entries"} <= first.keys()
+    assert isinstance(first["entries"], list)
 
 
 @requires_db
@@ -131,12 +223,14 @@ def test_health_probe(gui_server):
 
 @requires_db
 @pytest.mark.integration
-def test_columns_endpoint_and_injection_sanitized(gui_server):
+def test_columns_endpoint_and_injection_safe(gui_server):
     code, body = gui_server.get("/api/columns?db=testpg&env=test&table=customers")
     assert code == 200 and "email" in body["columns"]
-    # a malicious table name is sanitized to nothing dangerous -> empty, never an error
+    assert body["types"]["email"] == "text"
+    # a malicious table name is bound as a query parameter (not spliced into SQL text)
+    # -> matches no real table -> empty result, never an error or an injected statement.
     code, evil = gui_server.get("/api/columns?db=testpg&env=test&table=x%27%3B%20DROP--")
-    assert code == 200 and isinstance(evil["columns"], list)
+    assert code == 200 and evil == {"columns": [], "types": {}}
 
 
 @requires_db
@@ -159,6 +253,28 @@ def test_query_bad_maxrows_is_clean_400(gui_server):
     code, body = gui_server.post("/api/query",
                                  {"db": "testpg", "env": "test", "sql": "SELECT 1", "maxRows": "abc"})
     assert code == 400 and "maxRows" in body["error"]
+
+
+@requires_db
+@pytest.mark.integration
+def test_query_bad_offset_is_clean_400(gui_server):
+    code, body = gui_server.post("/api/query",
+                                 {"db": "testpg", "env": "test", "sql": "SELECT 1", "offset": "abc"})
+    assert code == 400 and "offset" in body["error"]
+
+
+@requires_db
+@pytest.mark.integration
+def test_query_offset_pages_through_results(gui_server):
+    # grid "load more": page 1 is truncated, page 2 (offset=maxRows) finishes the set
+    code, page1 = gui_server.post("/api/query", {
+        "db": "testpg", "env": "test", "sql": "SELECT id FROM customers ORDER BY id", "maxRows": 2})
+    assert code == 200 and page1["rowCount"] == 2 and page1["truncated"] is True
+    code, page2 = gui_server.post("/api/query", {
+        "db": "testpg", "env": "test", "sql": "SELECT id FROM customers ORDER BY id",
+        "maxRows": 2, "offset": 2})
+    assert code == 200 and [r["id"] for r in page2["rows"]] == [3]
+    assert page2["truncated"] is False
 
 
 @requires_db
@@ -197,11 +313,30 @@ def test_foreign_origin_rejected(gui_server):
 
 @requires_db
 @pytest.mark.integration
-def test_index_html_served(gui_server):
+def test_root_redirects_to_react_app(gui_server):
+    """`/` (and `/index.html`) is the only landing page shipped now, so it
+    redirects to the React app at `/quarry/` rather than serving HTML itself."""
     import urllib.request
     with urllib.request.urlopen(gui_server.base + "/", timeout=10) as r:
         html = r.read().decode()
-    assert r.status == 200 and "<title>Quarry</title>" in html
+    assert r.status == 200 and r.geturl() == gui_server.base + "/quarry/"
+    assert "<title>Quarry</title>" in html
+
+
+@requires_db
+@pytest.mark.integration
+def test_gui_html_and_favicon_asset(gui_server):
+    import urllib.request
+    with urllib.request.urlopen(gui_server.base + "/quarry/", timeout=10) as r:
+        html = r.read().decode()
+    assert '<link rel="icon" type="image/svg+xml" href="/quarry/favicon.svg"' in html
+
+    with urllib.request.urlopen(gui_server.base + "/quarry/favicon.svg", timeout=10) as r:
+        favicon = r.read().decode()
+        content_type = r.headers.get_content_type()
+    assert content_type == "image/svg+xml"
+    assert "<text" not in favicon
+    assert 'viewBox="0 0 64 64"' in favicon
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +383,130 @@ def test_api_conninfo_resolves_and_masks(tmp_path, monkeypatch):
                               "port": 2222, "key": None}
     assert info["file"].endswith("connections.toml")
     assert "hunter2" not in str(info)  # nothing anywhere in the payload leaks it
+
+
+# ---------------------------------------------------------------------------
+# proxy status (issue #101) — GUI reports observed proxy state, not a guess
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_api_connections_marks_env_as_proxied_when_a_live_tunnel_is_actually_proxied(tmp_path, monkeypatch):
+    """issue #101 r1-2: the badge must reflect an *actually established*
+    proxied tunnel for this connection, not merely that a fresh connection
+    attempt would choose a proxy. Pool identity checks have their own tests."""
+    from pathlib import Path
+
+    from quarry import gui, tunnel, workspace
+
+    (tmp_path / "connections.toml").write_text(
+        '[shop_dev]\nurl = "postgresql://app@db.internal:5432/shopdb"\n'
+        'engine = "postgres"\nenv = "dev"\ndb = "shop"\n'
+        'ssh_host = "bastion.example.com"\nssh_user = "ec2-user"\n'
+        '\n[shop_prod]\nurl = "postgresql://app@db.internal:5432/shopdb"\n'
+        'engine = "postgres"\nenv = "prod"\ndb = "shop"\n'
+        'ssh_host = "bastion.example.com"\nssh_user = "ec2-user"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "queries").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    live_tunnel = {
+        "ssh_target": "ec2-user@bastion.example.com:22",
+        "db_target": "db.internal:5432",
+        "local_port": 15000,
+        "proxied": True,
+        "proxy": "127.0.0.1:6152",
+        "alive": True,
+    }
+    monkeypatch.setattr(tunnel, "tunnel_fact_for", lambda conn, engine: live_tunnel)
+    workspace.configure_workspace(str(tmp_path))
+    try:
+        out = gui.api_connections()
+    finally:
+        workspace.configure_workspace(None)
+    envs = [e for g in out["groups"] for it in g["items"] for e in it["envs"]]
+    assert {e["env"]: e["proxied"] for e in envs} == {"dev": True, "prod": True}
+
+
+@pytest.mark.unit
+def test_api_connections_marks_env_as_not_proxied_when_no_tunnel_established_yet(tmp_path, monkeypatch):
+    """issue #101 r1-2: before any query has run against an env (no tunnel in
+    the pool at all), the badge must stay off — even if the workspace toggle
+    is on and a proxy is discoverable — since nothing is actually tunneled."""
+    from pathlib import Path
+
+    from quarry import gui, proxy, tunnel, workspace
+
+    (tmp_path / "connections.toml").write_text(
+        '[shop_dev]\nurl = "postgresql://app@db.internal:5432/shopdb"\n'
+        'engine = "postgres"\nenv = "dev"\ndb = "shop"\n'
+        'ssh_host = "bastion.example.com"\nssh_user = "ec2-user"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "queries").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(workspace, "is_proxy_enabled", lambda home: True)
+    monkeypatch.setattr(proxy, "discover_proxy", lambda: proxy.ProxyInfo(host="127.0.0.1", port=6152, source="system"))
+    monkeypatch.setattr(proxy, "_port_listening", lambda host, port, timeout=0.3: True)
+    monkeypatch.setattr(tunnel, "list_tunnels", lambda: [])
+    workspace.configure_workspace(str(tmp_path))
+    try:
+        out = gui.api_connections()
+    finally:
+        workspace.configure_workspace(None)
+    envs = [e for g in out["groups"] for it in g["items"] for e in it["envs"]]
+    assert envs[0]["proxied"] is False
+
+
+@pytest.mark.unit
+def test_api_connections_marks_env_as_not_proxied_when_proxy_unreachable(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from quarry import gui, proxy, workspace
+
+    (tmp_path / "connections.toml").write_text(
+        '[shop_dev]\nurl = "postgresql://app@db.internal:5432/shopdb"\n'
+        'engine = "postgres"\nenv = "dev"\ndb = "shop"\n'
+        'ssh_host = "bastion.example.com"\nssh_user = "ec2-user"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "queries").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(workspace, "is_proxy_enabled", lambda home: True)
+    monkeypatch.setattr(proxy, "discover_proxy", lambda: None)
+    workspace.configure_workspace(str(tmp_path))
+    try:
+        out = gui.api_connections()
+    finally:
+        workspace.configure_workspace(None)
+    envs = [e for g in out["groups"] for it in g["items"] for e in it["envs"]]
+    assert envs[0]["proxied"] is False
+
+
+@pytest.mark.unit
+def test_api_workspaces_reports_proxy_toggle_and_discovered_proxy(tmp_path, monkeypatch):
+    from quarry import gui, proxy, workspace
+
+    good = tmp_path / "good_ws"
+    good.mkdir()
+    (good / "connections.toml").write_text("", encoding="utf-8")
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'workspaces = ["{good}"]\n', encoding="utf-8")
+    monkeypatch.setenv("QUARRY_CONFIG", str(cfg))
+    monkeypatch.setattr(workspace, "is_proxy_enabled", lambda home: str(home) == str(good))
+    monkeypatch.setattr(proxy, "discover_proxy", lambda: proxy.ProxyInfo(host="127.0.0.1", port=6152, source="system"))
+
+    out = gui.api_workspaces()
+    assert out["items"][0]["proxyEnabled"] is True
+    assert out["proxyDiscovered"] == {"host": "127.0.0.1", "port": 6152, "source": "system"}
+
+
+@pytest.mark.unit
+def test_api_workspaces_proxy_discovered_none_when_nothing_found(tmp_path, monkeypatch):
+    from quarry import gui, proxy
+
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "no-such-config.toml"))
+    monkeypatch.setattr(proxy, "discover_proxy", lambda: None)
+    assert gui.api_workspaces()["proxyDiscovered"] is None
 
 
 @requires_db
@@ -312,7 +571,8 @@ def core_exit_sync_denied():
 
 
 @pytest.mark.unit
-def test_api_local_up_orchestration(tmp_path, monkeypatch):
+@pytest.mark.parametrize("port", [5433, 55434])
+def test_api_local_up_orchestration(tmp_path, monkeypatch, port):
     """The GUI endpoint mirrors `qy local up <db>`: container started, local
     connection registered with the source's group. Container/docker behavior
     itself is covered by test_local_docker.py — here the seams are mocked."""
@@ -320,6 +580,8 @@ def test_api_local_up_orchestration(tmp_path, monkeypatch):
 
     from quarry import gui, local, workspace
 
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    workspace._write_table_scalar("local", "postgres_port", str(port))
     (tmp_path / "connections.toml").write_text(
         '[shop_dev]\nurl = "postgresql://dev-host/shop"\nengine = "postgres"\n'
         'env = "dev"\ndb = "shop"\ngroup = "acme"\n',
@@ -342,10 +604,53 @@ def test_api_local_up_orchestration(tmp_path, monkeypatch):
     finally:
         workspace.configure_workspace(None)
     assert out == {"key": "shop_local", "created": True, "engine": "postgres",
-                   "state": "created", "port": local.PG_SPEC.port,
+                   "state": "created", "port": port,
                    "synced_from": "dev"}      # fresh env auto-fills from the sibling
-    assert calls == ["start", "ensure:shop", "sync:shop<-dev"]
+    assert calls == ["start", "ensure:acme_shop", "sync:shop<-dev"]
     assert data["shop_local"]["env"] == "local" and data["shop_local"]["group"] == "acme"
+
+
+@pytest.mark.unit
+def test_api_local_up_routes_registration_to_source_workspace(tmp_path, monkeypatch):
+    import tomllib
+
+    from quarry import gui, local, workspace
+
+    primary = tmp_path / "primary"
+    source = tmp_path / "source"
+    for root in (primary, source):
+        root.mkdir()
+        (root / "queries").mkdir()
+        (root / "connections.toml").write_text("", encoding="utf-8")
+    (source / "connections.toml").write_text(
+        '[shop_dev]\nurl = "postgresql://dev-host/shop"\nengine = "postgres"\n'
+        'env = "dev"\ndb = "shop"\ngroup = "acme"\n',
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'workspaces = ["{primary}", "{source}"]\n', encoding="utf-8")
+    monkeypatch.setenv("QUARRY_CONFIG", str(config))
+    workspace.configure_workspace(None)
+    monkeypatch.setattr(local, "start_container", lambda spec, image=None: "created")
+    monkeypatch.setattr(local, "wait_pg_ready", lambda spec, **kw: True)
+    monkeypatch.setattr(local, "ensure_pg_database", lambda spec, db: None)
+    monkeypatch.setattr(
+        gui, "api_local_sync",
+        lambda body: {"db": body["db"], "prev": None, "from": body["from"]})
+    try:
+        out = gui.api_local_up({"db": "shop"})
+        with (source / "connections.toml").open("rb") as f:
+            source_data = tomllib.load(f)
+        with (primary / "connections.toml").open("rb") as f:
+            primary_data = tomllib.load(f)
+    finally:
+        workspace.configure_workspace(None)
+
+    assert out["key"] == "shop_local" and out["created"] is True
+    assert source_data["shop_local"]["env"] == "local"
+    assert source_data["shop_local"]["url"].endswith("/acme_shop")
+    assert "shop_local" not in primary_data
 
 
 @pytest.mark.unit
@@ -399,12 +704,250 @@ def test_api_local_sync_clears_table_cache_for_the_env_set(monkeypatch):
 
     monkeypatch.setattr(local_sync, "sync_schema",
                         lambda db, from_env: {"db": db, "prev": f"{db}__prev"})
-    monkeypatch.setattr(gui, "_save_cache", lambda: None)
-    gui._CACHE.update({"tables:shop@local": {"tables": ["stale"]},
-                       "tables:shop@dev": {"tables": ["stale"]},
-                       "tables:other@dev": {"tables": ["keep"]}})
+    gui.cache._CACHE.update({"tables:shop@local": {"tables": ["stale"]},
+                             "tables:shop@dev": {"tables": ["stale"]},
+                             "tables:other@dev": {"tables": ["keep"]}})
     out = gui.api_local_sync({"db": "shop", "from": "dev"})
     assert out == {"db": "shop", "prev": "shop__prev", "from": "dev"}
-    assert "tables:shop@local" not in gui._CACHE
-    assert "tables:shop@dev" not in gui._CACHE
-    assert "tables:other@dev" in gui._CACHE
+    assert "tables:shop@local" not in gui.cache._CACHE
+    assert "tables:shop@dev" not in gui.cache._CACHE
+    assert "tables:other@dev" in gui.cache._CACHE
+
+
+# ---------------------------------------------------------------------------
+# workspace manager (issue #15) — config.toml-registered workspaces used to
+# be display-only; these add/list/remove them.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_api_workspaces_flags_missing_dir_and_missing_connections_file(tmp_path, monkeypatch):
+    from quarry import gui
+
+    good = tmp_path / "good_ws"
+    good.mkdir()
+    (good / "connections.toml").write_text("", encoding="utf-8")
+    bare = tmp_path / "bare_ws"        # exists, but no connections.toml
+    bare.mkdir()
+    missing = tmp_path / "missing_ws"  # never created
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        f'workspaces = ["{good}", "{bare}", "{missing}"]\n', encoding="utf-8")
+    monkeypatch.setenv("QUARRY_CONFIG", str(cfg))
+
+    out = gui.api_workspaces()
+    assert [it["dir"] for it in out["items"]] == [str(good), str(bare), str(missing)]
+    assert out["items"][0] == {"dir": str(good), "display": gui._display_path(good),
+                                "exists": True, "hasConnections": True, "proxyEnabled": False}
+    assert out["items"][1]["exists"] is True and out["items"][1]["hasConnections"] is False
+    assert out["items"][2]["exists"] is False and out["items"][2]["hasConnections"] is False
+
+
+@pytest.mark.unit
+def test_api_workspaces_empty_config_lists_nothing(tmp_path, monkeypatch):
+    from quarry import gui
+
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "no-such-config.toml"))
+    assert gui.api_workspaces()["items"] == []
+
+
+@pytest.mark.unit
+def test_api_workspace_add_and_remove_round_trip(tmp_path, monkeypatch):
+    """Add takes effect immediately (WS_LIST is rebuilt), remove drops it again,
+    and removing something already gone is a clean 400-worthy error, not a crash."""
+    from quarry import gui, workspace
+
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    new_ws = tmp_path / "new_ws"
+    try:
+        out = gui.api_workspace_add({"dir": str(new_ws)})
+        assert [it["dir"] for it in out["items"]] == [str(new_ws)]
+        assert str(new_ws.resolve()) in [str(w.home) for w in workspace.WS_LIST]
+
+        # adding the same dir again is a no-op, not a duplicate entry
+        out = gui.api_workspace_add({"dir": str(new_ws)})
+        assert len(out["items"]) == 1
+
+        out = gui.api_workspace_remove({"dir": str(new_ws)})
+        assert out["items"] == []
+
+        with pytest.raises(gui.QuarryError):
+            gui.api_workspace_remove({"dir": str(new_ws)})
+    finally:
+        workspace.configure_workspace(None)
+
+
+@pytest.mark.unit
+def test_api_workspace_add_and_remove_keep_explicit_workspace_session(tmp_path, monkeypatch):
+    """A GUI process launched with an explicit --workspace flag must keep serving
+    that workspace's connections after an add/remove through the manager UI —
+    reload_workspace() must not fall back to config.toml like a fresh, unpinned
+    process would (PR #40 review r1-1)."""
+    from quarry import gui, workspace
+
+    explicit_ws = tmp_path / "explicit_ws"
+    explicit_ws.mkdir()
+    (explicit_ws / "connections.toml").write_text("[pinned]\nurl = \"postgresql://x/db\"\n")
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    other_ws = tmp_path / "other_ws"
+    try:
+        workspace.configure_workspace(str(explicit_ws))
+        assert workspace.WS.home == explicit_ws.resolve()
+
+        gui.api_workspace_add({"dir": str(other_ws)})
+        assert workspace.WS.home == explicit_ws.resolve()
+        assert "pinned" in workspace.WS.connections_file.read_text()
+
+        gui.api_workspace_remove({"dir": str(other_ws)})
+        assert workspace.WS.home == explicit_ws.resolve()
+    finally:
+        workspace.configure_workspace(None)
+
+
+@pytest.mark.unit
+def test_api_workspace_add_requires_dir_field():
+    from quarry import gui
+
+    with pytest.raises(gui.QuarryError):
+        gui.api_workspace_add({})
+
+
+@requires_db
+@pytest.mark.integration
+def test_workspaces_endpoints_through_http(gui_server, tmp_path, monkeypatch):
+    """Same round trip, but through the real HTTP server — proves the routes
+    are wired and errors come back as clean 400s, not 500s."""
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    extra_ws = tmp_path / "extra_ws"
+
+    code, body = gui_server.post("/api/workspaces/add", {"dir": str(extra_ws)})
+    assert code == 200
+    assert [it["dir"] for it in body["items"]] == [str(extra_ws)]
+
+    code, body = gui_server.get("/api/workspaces")
+    assert code == 200 and len(body["items"]) == 1
+
+    code, body = gui_server.post("/api/workspaces/remove", {"dir": str(extra_ws)})
+    assert code == 200 and body["items"] == []
+
+    code, body = gui_server.post("/api/workspaces/remove", {"dir": str(extra_ws)})
+    assert code == 400 and "not found" in body["error"]
+
+    code, body = gui_server.post("/api/workspaces/add", {})
+    assert code == 400 and "dir" in body["error"]
+
+
+# ---------------------------------------------------------------------------
+# /api/events — the SSE stream, driven over a raw socket (a JSON client would
+# block forever on the never-ending response)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+def test_events_stream_hello_publish_heartbeat_and_close(gui_server, monkeypatch):
+    import socket
+
+    from quarry import gui
+
+    monkeypatch.setattr(gui, "HEARTBEAT_SEC", 0.2)
+    monkeypatch.setattr(gui, "_ensure_watcher", lambda: None)  # no global thread leak
+    host, _, port = gui_server.base.removeprefix("http://").partition(":")
+    with socket.create_connection((host, int(port)), timeout=5) as s:
+        s.settimeout(5)
+        s.sendall(b"GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        buf = b""
+
+        def read_until(marker: bytes) -> None:
+            nonlocal buf
+            while marker not in buf:
+                chunk = s.recv(4096)
+                assert chunk, f"stream ended before {marker!r} (got: {buf!r})"
+                buf += chunk
+
+        read_until(b'"hello"')                    # headers + greeting event
+        assert b"text/event-stream" in buf
+        read_until(b": hb\n\n")                   # keep-alive after 0.2s idle
+        gui.publish_event("workspace_changed")    # subscribed (hello proves it)
+        read_until(b'data: {"type": "workspace_changed"')
+        gui._close_event_streams()                # graceful stop ends the stream
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break                             # server closed the connection
+            assert b'"_close"' not in chunk       # the close marker is never sent
+
+
+@pytest.mark.unit
+def test_saved_query_file_identity_and_workspace(monkeypatch, tmp_path):
+    from quarry import gui, workspace
+    from quarry.core import QuarryError
+    homes = [tmp_path / 'one', tmp_path / 'two']
+    workspaces = []
+    for n, home in enumerate(homes, 1):
+        queries = home / 'queries'
+        queries.mkdir(parents=True)
+        (queries / 'same.sql').write_text(f'-- @name: same\n-- @db: testpg\nSELECT {n}')
+        workspaces.append(workspace.Workspace(home, home / 'connections.toml', queries, 'psql'))
+    monkeypatch.setattr(workspace, 'WS_LIST', workspaces)
+    listed = gui.api_queries()
+    assert [q['ws'] for q in listed] == [str(h) for h in homes]
+    assert [q['name'] for q in listed] == ['same', 'same']
+    assert listed[0]['queryId'] != listed[1]['queryId']
+    # Capture the selected SQL without connecting to a database.
+    seen = []
+    def params(q, provided):
+        seen.append(q.sql)
+        return {}
+    from types import SimpleNamespace
+    monkeypatch.setattr(gui, '_resolve', lambda *args: SimpleNamespace(logical_db='testpg', env=None))
+    monkeypatch.setattr(gui.core, 'resolve_params', params)
+    monkeypatch.setattr(gui.core, 'run_query', lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: {}))
+    gui.api_run({'name': 'same', 'queryId': listed[1]['queryId']})
+    assert seen == ['SELECT 2']
+    for invalid in ['../../outside.sql', 'missing']:
+        with pytest.raises(QuarryError, match='no longer exists'):
+            gui.api_run({'name': 'same', 'queryId': invalid})
+    monkeypatch.setattr(workspace, 'WS_LIST', workspaces[:1])
+    with pytest.raises(QuarryError, match='no longer exists'):
+        gui.api_run({'name': 'same', 'queryId': listed[1]['queryId']})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("broken", [
+    b"SELECT 1",  # a draft without metadata
+    b"-- @name: wrong-name\n-- @db: testpg\nSELECT 1",
+    b"\xff",  # incomplete/invalid encoding must not hide other workspaces
+])
+def test_query_listing_skips_malformed_files(monkeypatch, tmp_path, caplog, broken):
+    from quarry import gui, workspace
+    workspaces = []
+    for name in ("one", "two"):
+        home = tmp_path / name
+        queries = home / "queries"
+        queries.mkdir(parents=True)
+        (queries / "same.sql").write_text("-- @name: same\n-- @db: testpg\nSELECT 1")
+        workspaces.append(workspace.Workspace(home, home / "connections.toml", queries, "psql"))
+    bad = workspaces[0].queries_dir / "broken.sql"
+    bad.write_bytes(broken)
+    monkeypatch.setattr(workspace, "WS_LIST", workspaces)
+    listed = gui.api_queries()
+    assert len(listed) == 2
+    assert [q["ws"] for q in listed] == [str(w.home) for w in workspaces]
+    assert len({q["queryId"] for q in listed}) == 2
+    assert "Skipping saved query" in caplog.text
+    assert str(bad) in caplog.text
+
+
+@pytest.mark.integration
+def test_quarry_route_has_no_workspace_segment(sqlite_gui_server):
+    import urllib.request
+    from quarry import workspace
+    base = sqlite_gui_server.base
+    name = workspace.WS.home.name
+    query = "?db=notes&env=prod&table=entries"
+    with urllib.request.urlopen(base + "/quarry" + query) as response:
+        assert response.geturl() == base + "/quarry/" + query
+        assert 'id="root"' in response.read().decode()
+    for path in ("/app/", "/app", "/quarry/brain/", "/quarry/yiminlab/",
+                 "/quarry/" + name + "/", "/quarry/../connections.toml"):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(base + path)
+        assert error.value.code == 404

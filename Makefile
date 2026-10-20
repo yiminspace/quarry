@@ -30,5 +30,8 @@ seed:
 	createdb quarry_test 2>/dev/null || true
 	psql "$${QUARRY_TEST_DB_URL:-postgresql://localhost:5432/quarry_test}" -f tests/seed.sql
 
+# Re-run this after removing the git worktree/checkout you last installed
+# from — an editable install points at that exact path (see CONTRIBUTING.md
+# "Reinstalling after a worktree is removed").
 install:
 	pip install -e ".[dev]"

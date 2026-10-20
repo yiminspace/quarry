@@ -323,6 +323,10 @@ def sanitize_schema_dump(dump: str, *, source_db: str, target_db: str) -> str:
         # face (the source is the user's own database) — strip them.
         if stripped.startswith("\\restrict") or stripped.startswith("\\unrestrict"):
             continue
+        # New clients emit this harmless session setting even when dumping
+        # older servers. PG <17 cannot parse it; it is not schema content.
+        if re.fullmatch(r"SET\s+transaction_timeout\s*=\s*0;", stripped, re.IGNORECASE):
+            continue
         if re.match(r"CREATE\s+DATABASE\b", stripped, re.IGNORECASE):
             continue
         kept.append(line)

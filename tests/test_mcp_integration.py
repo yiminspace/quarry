@@ -269,24 +269,34 @@ def test_list_tables_neptune_returns_empty_table_list(monkeypatch):
 
 
 @pytest.mark.unit
-def test_list_tables_redis_scans_keys(monkeypatch):
+def test_list_tables_redis_projects_key_names_from_the_shared_cache(monkeypatch):
+    # issue #97 review: redis now goes through the same core.cached_tables
+    # entry the GUI populates (key/type/ttl dicts), rather than its own
+    # separate, uncached scan — tool_list_tables just projects out the names.
     import contextlib
 
-    from quarry import redis_engine  # the module mcp imports at call time
+    from quarry import redis_engine  # the module core.py imports at call time
 
     conn = core.Connection(key="r", url="redis://x", engine="redis")
     monkeypatch.setattr(mcp.core, "resolve_connection", lambda db, env: conn)
     monkeypatch.setattr(mcp.core, "connection_engine", lambda c: "redis")
 
     @contextlib.contextmanager
-    def fake_tunnel(c, engine):
+    def fake_tunnel(c, engine, **kw):
         assert engine == "redis"
         yield "redis://tunneled"
-    monkeypatch.setattr(mcp.tunnel, "open_tunnel", fake_tunnel)
-    # patch scan_keys on the real module object (mcp does `from . import
-    # redis_engine`, so it binds this same module and picks up the patch)
-    monkeypatch.setattr(redis_engine, "scan_keys", lambda url, count: ["k1", "k2"])
+    monkeypatch.setattr(mcp.core.tunnel, "open_tunnel", fake_tunnel)
+    monkeypatch.setattr(
+        redis_engine, "keys_with_meta",
+        lambda url, cap=400: [{"key": "k1", "type": "string", "ttl": -1},
+                              {"key": "k2", "type": "string", "ttl": -1}])
 
+    assert mcp.tool_list_tables("r") == {"engine": "redis", "keys": ["k1", "k2"]}
+
+    # a second call is served from the shared cache — no re-scan
+    monkeypatch.setattr(
+        redis_engine, "keys_with_meta",
+        lambda *a, **k: pytest.fail("must not re-scan redis on a cache hit"))
     assert mcp.tool_list_tables("r") == {"engine": "redis", "keys": ["k1", "k2"]}
 
 
@@ -309,6 +319,66 @@ def test_describe_table_invalid_name_raises(monkeypatch):
     with pytest.raises(core.QuarryError) as ei:
         mcp.tool_describe_table("pg", "!!!")
     assert "invalid table name" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# shared metadata cache (issue #97) — tool_list_tables / tool_describe_table
+# go through core.cached_tables / core.cached_columns, so a repeat call for
+# the same db@env(:table) is served from cache without a DB round trip.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_list_tables_cache_hit_skips_the_db_query(monkeypatch):
+    conn = core.Connection(key="pg", url="postgresql://x/y", engine="postgres")
+    monkeypatch.setattr(mcp.core, "resolve_connection", lambda db, env: conn)
+    monkeypatch.setattr(mcp.core, "connection_engine", lambda c: "postgres")
+    calls = []
+
+    def counting_run_query(conn, sql, **kwargs):
+        calls.append(sql)
+        return core.QueryResult(columns=[{"name": "table_name", "type": None}],
+                                 rows=[{"table_name": "widgets"}], row_count=1,
+                                 truncated=False, elapsed_ms=1, engine="postgres", sql=sql)
+
+    monkeypatch.setattr(mcp.core, "run_query", counting_run_query)
+    first = mcp.tool_list_tables("pg")
+    assert first == {"engine": "postgres", "tables": ["widgets"]}
+    assert len(calls) == 1
+
+    monkeypatch.setattr(
+        mcp.core, "run_query",
+        lambda *a, **k: pytest.fail("must not query the DB on a cache hit"))
+    second = mcp.tool_list_tables("pg")
+    assert second == first
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_describe_table_cache_hit_skips_the_db_query(monkeypatch):
+    conn = core.Connection(key="pg", url="postgresql://x/y", engine="postgres")
+    monkeypatch.setattr(mcp.core, "resolve_connection", lambda db, env: conn)
+    monkeypatch.setattr(mcp.core, "connection_engine", lambda c: "postgres")
+    calls = []
+    col = {"column_name": "id", "data_type": "int", "is_nullable": "NO",
+           "column_default": None, "character_maximum_length": None}
+
+    def counting_run_query(conn, sql, **kwargs):
+        calls.append(sql)
+        return core.QueryResult(columns=[{"name": k, "type": None} for k in col],
+                                 rows=[col], row_count=1, truncated=False,
+                                 elapsed_ms=1, engine="postgres", sql=sql)
+
+    monkeypatch.setattr(mcp.core, "run_query", counting_run_query)
+    first = mcp.tool_describe_table("pg", "widgets")
+    assert first == {"table": "widgets", "engine": "postgres", "columns": [col]}
+    assert len(calls) == 1
+
+    monkeypatch.setattr(
+        mcp.core, "run_query",
+        lambda *a, **k: pytest.fail("must not query the DB on a cache hit"))
+    second = mcp.tool_describe_table("pg", "widgets")
+    assert second == first
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +412,7 @@ def test_check_write_policy_write_without_server_flag_blocks(restore_write_flag)
 @pytest.mark.unit
 def test_check_write_policy_prod_needs_confirm(restore_write_flag):
     mcp._ALLOW_WRITE_FLAG = True
-    conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+    conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
     with pytest.raises(core.QuarryError) as ei:
         mcp._check_write_policy(conn, write=True, confirm_prod=False)
     assert ei.value.exit_code == core.EXIT_SAFETY_BLOCKED
@@ -352,7 +422,7 @@ def test_check_write_policy_prod_needs_confirm(restore_write_flag):
 @pytest.mark.unit
 def test_check_write_policy_prod_with_confirm_allows(restore_write_flag):
     mcp._ALLOW_WRITE_FLAG = True
-    conn = core.Connection(key="k", url="postgresql://x/y", env="prod")
+    conn = core.Connection(key="k", url="postgresql://x/y", env="prod", production=True)
     assert mcp._check_write_policy(conn, write=True, confirm_prod=True) is True
 
 
@@ -384,7 +454,7 @@ def test_exec_sql_prod_env_blocked_without_confirm(wsdir, restore_write_flag):
     process-wide here and torn down after, so it doesn't disturb other tests.
     """
     (wsdir / "connections.toml").write_text(
-        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
         encoding="utf-8",
     )
     workspace.configure_workspace(str(wsdir))
@@ -406,7 +476,7 @@ def test_exec_sql_prod_env_with_confirm_allowed(wsdir, restore_write_flag):
     """Prod env + write + confirm_prod passes the policy; we run a SELECT so
     nothing is actually written."""
     (wsdir / "connections.toml").write_text(
-        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\n',
+        f'[prodpg]\nurl = "{TEST_DB_URL}"\nengine = "postgres"\nenv = "prod"\nproduction = true\n',
         encoding="utf-8",
     )
     workspace.configure_workspace(str(wsdir))

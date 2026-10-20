@@ -10,6 +10,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -29,6 +30,32 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _wait_port_free(port: int, *, timeout: float = 30.0) -> None:
+    """After docker rm the host port can linger briefly before the next test."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not local.port_in_use(port):
+            return
+        time.sleep(0.05)
+    raise RuntimeError(f"port {port} still in use after {timeout}s")
+
+
+def _start_container(spec: local.EngineSpec, *, image: str, attempts: int = 5) -> None:
+    """`start_container`'s own pre-check/bind race can still lose to a port
+    that gets grabbed transiently right between the check and `docker run`
+    (see `_is_port_conflict` in local.py). Retry a couple of times before
+    giving up — the conflict is momentary, not a real occupant of the port.
+    """
+    for attempt in range(attempts):
+        try:
+            local.start_container(spec, image=image)
+            return
+        except core.QuarryError as e:
+            if attempt == attempts - 1 or "already in use" not in str(e):
+                raise
+            time.sleep(1)
+
+
 def _pg_dump() -> str | None:
     import shutil
     for cand in ("pg_dump", "/opt/homebrew/opt/postgresql@13/bin/pg_dump"):
@@ -43,11 +70,13 @@ requires_pg_dump = pytest.mark.skipif(not _pg_dump(), reason="pg_dump not in PAT
 @pytest.fixture()
 def pg_spec():
     uniq = uuid.uuid4().hex[:8]
+    port = _free_port()
+    _wait_port_free(port)
     spec = local.EngineSpec(
         engine="postgres",
         container=f"quarry-test-sync-pg-{uniq}",
         volume=f"quarry-test-sync-pgvol-{uniq}",
-        port=_free_port(),
+        port=port,
         internal_port=5432,
         default_image=PG_IMAGE,
     )
@@ -72,7 +101,7 @@ def sync_ws(tmp_path: Path, pg_spec):
     )
     (tmp_path / "queries").mkdir()
     workspace.configure_workspace(str(tmp_path))
-    local.start_container(pg_spec, image=PG_IMAGE)
+    _start_container(pg_spec, image=PG_IMAGE)
     assert local.wait_pg_ready(pg_spec, timeout=60)
     local.ensure_pg_database(pg_spec, logical)
     yield tmp_path, logical, local_url

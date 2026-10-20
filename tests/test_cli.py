@@ -78,3 +78,39 @@ def test_save_run_roundtrip(wsdir):
 
     lst = run_qy(wsdir, "list", "--format", "json")
     assert any(q["name"] == "active_customers" for q in json.loads(lst.stdout))
+
+
+def test_production_is_explicit_and_editable(wsdir):
+    for env, flag, expected in [('jp', '--production', True), ('prod', '--no-production', False)]:
+        result = run_qy(wsdir, 'connections', 'set', 'testpg', '--env', env, flag, '--no-test')
+        assert result.returncode == 0, result.stderr
+        tree = json.loads(run_qy(wsdir, 'connections', '--format', 'json').stdout)
+        entry = tree[0]['items'][0]['envs'][0]
+        assert entry['env'] == env and entry['production'] is expected
+    result = run_qy(wsdir, 'connections', 'set', 'testpg', '--notes', 'keep classification', '--no-test')
+    assert result.returncode == 0, result.stderr
+    assert 'production = false' in (wsdir / 'connections.toml').read_text()
+
+
+def test_production_config_rejects_string(wsdir):
+    with (wsdir / 'connections.toml').open('a') as stream:
+        stream.write('production = "false"\n')
+    result = run_qy(wsdir, 'connections', '--format', 'json')
+    assert result.returncode != 0
+    assert 'production must be a boolean' in result.stderr
+
+
+@pytest.mark.parametrize('env,production', [('jp', True), ('prod', False)])
+def test_write_confirmation_uses_explicit_flag(env, production, monkeypatch):
+    import argparse
+    import io
+    from quarry import cli, core, mcp
+    conn = core.Connection(key='example', url='postgresql://localhost/test', env=env, production=production)
+    monkeypatch.setattr(cli.sys, 'stdin', io.StringIO('n\n'))
+    assert cli._confirm_prod_write(conn, 'SELECT 1', argparse.Namespace(write=True, yes=False)) is (not production)
+    monkeypatch.setattr(mcp, '_ALLOW_WRITE_FLAG', True)
+    if production:
+        with pytest.raises(core.QuarryError, match='production'):
+            mcp._check_write_policy(conn, True, False)
+    else:
+        assert mcp._check_write_policy(conn, True, False)

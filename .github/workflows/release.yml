@@ -1,17 +1,83 @@
 name: Release to PyPI
 
+run-name: Publish ${{ inputs.tag || github.event.release.tag_name }} to PyPI
+
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Exact release tag to build and publish"
+        required: true
+        type: string
   release:
     types: [published]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-pypi
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ inputs.tag || github.event.release.tag_name }}
+
   publish:
+    needs: validate
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write   # PyPI Trusted Publishing (no API token needed)
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout exact release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag and package versions
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
+          if match is None:
+              raise SystemExit(f"expected a stable SemVer tag, got {tag!r}")
+
+          version = tag.removeprefix("v")
+          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          init_text = Path("src/quarry/__init__.py").read_text()
+          package_match = re.search(r'^__version__ = "([^"]+)"$', init_text, re.MULTILINE)
+          package_version = package_match.group(1) if package_match else None
+          exact_tags = subprocess.check_output(
+              ["git", "tag", "--points-at", "HEAD"], text=True
+          ).splitlines()
+
+          mismatches = []
+          if project_version != version:
+              mismatches.append(f"pyproject.toml={project_version!r}")
+          if package_version != version:
+              mismatches.append(f"src/quarry/__init__.py={package_version!r}")
+          if tag not in exact_tags:
+              mismatches.append(f"HEAD tags={exact_tags!r}")
+          if mismatches:
+              raise SystemExit(f"release {tag!r} does not match: " + ", ".join(mismatches))
+          PY
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -20,10 +86,47 @@ jobs:
       - name: Build React shell
         run: npm ci && npm run build
         working-directory: web
+
+      - name: Build distributions
+        run: pipx run build
+
+      - name: Check distribution metadata
+        run: pipx run twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-mcp:
+    name: Publish to MCP Registry
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build
-        run: pipx run build
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Verify published package and prepare MCP manifest
+        run: python scripts/prepare_mcp_release.py --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/quarry-mcp-server.json"
+
+      - name: Install verified MCP publisher
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/mcp-publisher.tar.gz" \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
+
+      - name: Authenticate with GitHub OIDC
+        run: '"$RUNNER_TEMP/mcp-publisher" login github-oidc'
+
+      - name: Publish organization entry
+        run: '"$RUNNER_TEMP/mcp-publisher" publish "$RUNNER_TEMP/quarry-mcp-server.json"'
