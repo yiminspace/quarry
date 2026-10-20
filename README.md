@@ -138,7 +138,18 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for lossless number/string representati
 
 ## MCP (the agent-native face)
 
-`qy mcp` speaks the Model Context Protocol over stdio — pure stdlib, no SDK dependency. Agents get six tools (`list_connections`, `list_tables`, `describe_table`, `exec_sql`, `list_saved_queries`, `run_saved_query`) with the exact same kernel rails: read-only unless the server was started with `--write` *and* the call passes `write: true`; a prod env additionally requires `confirm_prod: true`.
+`qy mcp` speaks the Model Context Protocol over stdio — pure stdlib, no SDK dependency. Agents get nine tools (`list_connections`, `list_tables`, `describe_table`, `exec_sql`, `list_saved_queries`, `run_saved_query`, `describe_saved_query`, `save_query`, `ping_connection`) with the exact same kernel rails: read-only unless the server was started with `--write` *and* the call passes `write: true`; a prod env additionally requires `confirm_prod: true`.
+
+`describe_saved_query` returns SQL and metadata without running it. `save_query`
+writes a query file without validation or execution; it accepts `name`, `db`,
+`sql`, optional `desc`, `tags`, parameter definitions (`name`, `type`, `required`,
+`default`), and `overwrite` (default false). With multiple workspaces, specify
+`workspace` using a path from `list_connections.workspaces`; the database must
+belong to that workspace and query names must be unique. File saving is available
+without `--write`, which controls database writes only. `ping_connection` probes
+one `db`/optional `env`, returning `ok`, `elapsed_ms` and a sanitized failure
+category. Its `timeout` defaults to 10 seconds (1–30); connection setup and probe
+execution have separate bounds, so it is not a total wall-clock deadline.
 
 ```bash
 # Claude Code

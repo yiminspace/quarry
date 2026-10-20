@@ -1056,3 +1056,18 @@ guard described here.
   join the toolbar border without a gap. This CSS-only adjustment adds no state writers.
   Python compilation and `git diff --check`
   passed.
+
+
+### MCP query management and diagnostics
+
+`tests/test_mcp_management.py` covers detail lookup, save-without-execution,
+explicit overwrite, parameter round-tripping, metadata/path injection rejection,
+symlink containment, multi-workspace targeting, duplicate-name ambiguity,
+SQLite probe success/failure, bounded timeout arguments and diagnostic redaction.
+`tests/test_mcp.py::test_saved_query_lifecycle_and_ping_over_stdio` drives a real
+MCP subprocess through save → describe → run → ping → overwrite against an
+isolated SQLite database. CLI save/probe regression coverage remains in
+`test_cli_integration.py` and `test_cov_cli.py`; probes and file persistence share
+core helpers across the two interfaces. Engine-specific probe behavior is covered
+for PostgreSQL, MySQL, Redis and Neptune using deterministic engine stubs; this
+does not establish remote SSH/auth recovery or live Neptune availability.

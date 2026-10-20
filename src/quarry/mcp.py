@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from . import cache, core, workspace
@@ -126,6 +127,113 @@ def tool_run_saved_query(name: str, params: dict | None = None,
     return res.to_dict()
 
 
+def tool_describe_saved_query(name: str) -> dict:
+    q = core.load_query(name)
+    return {"name": q.name, "db": q.db, "desc": q.desc, "tags": q.tags,
+            "params": [{"name": p.name, "type": p.type, "required": p.required,
+                        "default": p.default} for p in q.params],
+            "schema_sources": q.schema_sources, "source_fingerprint": q.source_fingerprint,
+            "saved_at": q.saved_at, "last_validated": q.last_validated,
+            "path": str(q.path), "sql": q.sql}
+
+
+def _single_line(value: str, label: str) -> str:
+    if (not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            or value != "".join(value.splitlines())):
+        raise QuarryError(f"{label} must be a single-line string")
+    return value
+
+
+def tool_save_query(name: str, db: str, sql: str, desc: str = "",
+                    tags: list[str] | None = None, params: list[dict] | None = None,
+                    overwrite: bool = False, workspace_path: str | None = None) -> dict:
+    """Save only; never connect, validate, or execute the supplied SQL."""
+    if type(overwrite) is not bool:
+        raise QuarryError("overwrite must be a boolean")
+    targets = workspace.WS_LIST
+    if workspace_path is not None:
+        home = Path(workspace_path).expanduser().resolve()
+        targets = [w for w in targets if w.home == home]
+        if not targets:
+            raise QuarryError("workspace must be one of list_connections.workspaces")
+    elif len(targets) != 1:
+        raise QuarryError("multiple workspaces configured; specify workspace from list_connections.workspaces")
+    ws = targets[0]
+    _single_line(name, "name")
+    if any(c in name for c in "*?[]"):
+        raise QuarryError("query name must not contain glob characters")
+    _single_line(db, "db")
+    _single_line(desc, "desc")
+    if not isinstance(sql, str) or not sql.strip():
+        raise QuarryError("SQL is empty")
+    if any(core.META_LINE_RE.match(line) for line in sql.splitlines()):
+        raise QuarryError("SQL must not contain saved-query @metadata directives")
+    if not any(c.key == db or c.logical_db == db for c in core.load_connections().values()
+               if c.source == str(ws.home)):
+        raise QuarryError("database must belong to the selected workspace")
+    if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
+        raise QuarryError("tags must be an array of strings")
+    clean_tags = [_single_line(t, "tag").strip() for t in (tags or [])]
+    if any("," in t or not t for t in clean_tags):
+        raise QuarryError("tags must be non-empty and must not contain commas")
+    if params is not None and not isinstance(params, list):
+        raise QuarryError("params must be an array of parameter objects")
+    parsed = []
+    for p in params or []:
+        if not isinstance(p, dict) or set(p) - {"name", "type", "required", "default"}:
+            raise QuarryError("invalid parameter object")
+        pn = _single_line(p.get("name", ""), "parameter name")
+        pt = _single_line(p.get("type", "text"), "parameter type")
+        required, default = p.get("required", False), p.get("default")
+        if type(required) is not bool or (required and default is not None):
+            raise QuarryError("parameter required must be boolean and cannot be combined with a default")
+        if default is not None:
+            _single_line(default, "parameter default")
+            if ")" in default or default != default.strip():
+                raise QuarryError("parameter default cannot contain ')' or surrounding whitespace")
+        param = core.Param(pn, pt, required, default)
+        if core._parse_param_spec(param.to_meta_value()) != param or any(x.name == pn for x in parsed):
+            raise QuarryError("invalid or duplicate parameter name/type")
+        parsed.append(param)
+    target = ws.queries_dir / db / f"{name}.sql"
+    # A save must not create another file with a name that cannot be recalled uniquely.
+    if any(path != target for w in workspace.WS_LIST
+           for path in w.queries_dir.rglob("*.sql") if path.stem == name):
+        raise QuarryError("query name already exists elsewhere; choose a unique name")
+    q = core.Query(name=name, db=db, desc=desc, tags=clean_tags, params=parsed,
+                   saved_at=core.now_iso(), sql=sql.strip())
+    path = core.save_query(q, overwrite=overwrite, target_workspace=ws)
+    return {"name": name, "db": db, "path": str(path), "saved_at": q.saved_at,
+            "last_validated": None}
+
+
+def tool_ping_connection(db: str, env: str | None = None, timeout: int = 10) -> dict:
+    if type(timeout) is not int or not 1 <= timeout <= 30:
+        raise QuarryError("timeout must be an integer between 1 and 30 seconds")
+    conn = core.resolve_connection(db, env)
+    result = core.ping_connection(conn, timeout)
+    # Driver/SSH exceptions may contain URLs, passwords, tokens or private-key paths.
+    # Return a useful category and fixed text, never the raw exception.
+    if not result["ok"]:
+        error = (result["error"] or "").lower()
+        kind = "connection"
+        if "timeout" in error or "timed out" in error:
+            kind = "timeout"
+        elif any(s in error for s in ("authentication", "access denied", "password", "permission denied")):
+            kind = "authentication"
+        elif "ssh" in error or "tunnel" in error:
+            kind = "ssh"
+        elif "not found" in error or "not installed" in error:
+            kind = "dependency_or_file"
+        result["error_kind"] = kind
+        result["error"] = {"timeout": "Connection probe timed out.",
+                           "authentication": "Connection authentication failed.",
+                           "ssh": "SSH tunnel setup failed.",
+                           "dependency_or_file": "A required executable or file is unavailable.",
+                           "connection": "Connection probe failed."}[kind]
+    return {**result, "db": conn.logical_db, "env": conn.env, "production": conn.production}
+
+
 def _s(**props) -> dict:
     required = [k for k, v in props.items() if v.pop("_req", False)]
     return {"type": "object", "properties": props, "required": required}
@@ -196,6 +304,48 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "fn": lambda a: tool_run_saved_query(a["name"], a.get("params"),
                                              a.get("env"), a.get("max_rows", 500)),
+    },
+    {
+        "name": "describe_saved_query",
+        "description": "Read a saved query's SQL, parameters, tags, source metadata and file path without executing it.",
+        "inputSchema": _s(name={"type": "string", "_req": True}),
+        "fn": lambda a: tool_describe_saved_query(a["name"]),
+    },
+    {
+        "name": "save_query",
+        "description": ("Save SQL to a workspace query file WITHOUT executing or validating SQL. "
+                        "Available without server --write (that flag controls database writes only). "
+                        "Existing files require overwrite=true. With multiple workspaces, pass an exact "
+                        "workspace path from list_connections.workspaces; db must belong to it. "
+                        "Query names must be unique across configured workspaces."),
+        "inputSchema": _s(
+            name={"type": "string", "_req": True},
+            db={"type": "string", "_req": True},
+            sql={"type": "string", "_req": True},
+            desc={"type": "string"},
+            tags={"type": "array", "items": {"type": "string"}},
+            params={"type": "array", "items": {
+                "type": "object", "properties": {
+                    "name": {"type": "string"}, "type": {"type": "string", "default": "text"},
+                    "required": {"type": "boolean", "default": False},
+                    "default": {"type": ["string", "null"]}},
+                "required": ["name"], "additionalProperties": False}},
+            overwrite={"type": "boolean", "default": False},
+            workspace={"type": "string", "description": "Configured workspace path; required when multiple are active"},
+        ),
+        "fn": lambda a: tool_save_query(a["name"], a["db"], a["sql"], a.get("desc", ""),
+                                         a.get("tags"), a.get("params"), a.get("overwrite", False),
+                                         a.get("workspace")),
+    },
+    {
+        "name": "ping_connection",
+        "description": ("Probe one configured connection using SELECT 1 / Redis PING / openCypher RETURN 1. "
+                        "Returns ok, elapsed_ms and a sanitized failure category. "
+                        "Does not run saved SQL or change configuration. Timeout bounds connection setup "
+                        "and probe execution separately, not total wall time."),
+        "inputSchema": _s(db={"type": "string", "_req": True}, env={"type": "string"},
+                          timeout={"type": "integer", "minimum": 1, "maximum": 30, "default": 10}),
+        "fn": lambda a: tool_ping_connection(a["db"], a.get("env"), a.get("timeout", 10)),
     },
 ]
 

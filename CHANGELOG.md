@@ -9,6 +9,12 @@ pre-1.0 history followed the earlier development policy.
 
 ### Added
 
+- MCP tools `describe_saved_query`, `save_query` and `ping_connection` expose
+  saved SQL/metadata, parameterized query-file creation with explicit overwrite
+  and workspace selection, and lightweight connection diagnostics with sanitized
+  errors. Saving never executes or validates SQL and is independent of database
+  write authorization. CLI and MCP share query-file persistence and engine probes.
+
 - A SQL assistant alongside the editor explains existing queries and generates or
   changes SQL using the current connection's table metadata. Replies stream into
   a collapsible panel; changes offer Restore previous SQL and never execute a

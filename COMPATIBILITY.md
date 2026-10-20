@@ -10,6 +10,8 @@ This document defines the stable interface contract starting with Quarry 1.0.0. 
 | GUI query / saved-query API | Default | Not offered | QueryResult object; grid, copy and exports use the active tab's snapshot. Local lifecycle/sync controls are separate operations. |
 | MCP `exec_sql` | Default | Server `--write` + per-call `write:true`; prod also requires `confirm_prod:true` | QueryResult object within the MCP tool result. |
 | MCP `run_saved_query` | Default | Not offered | QueryResult object. |
+| MCP `describe_saved_query` / `save_query` | No SQL execution | `save_query` writes local query files; explicit `overwrite:true` required to replace | SQL/metadata or saved file path; independent of database `--write`. Multiple workspaces require an explicit configured target. |
+| MCP `ping_connection` | Fixed engine probe only | Not offered | `ok`, `elapsed_ms`, target identity and sanitized failure category; timeout 1–30 seconds per setup/probe phase. |
 | Public Python `run_query` | Default | Explicit `allow_write=True`; this is a trusted library authorization, with no interactive prod prompt | QueryResult object. Applications must obtain authorization before passing this flag. |
 
 QueryResult fields: `columns`, `rows`, `rowCount`, `truncated`, `elapsedMs`, `engine`, `sql`, `downloadBytes`, `sizeIsEstimated`. `rowCount` counts returned rows, **not affected rows**. Non-returning writes yield empty rows after successful execution/commit; PostgreSQL INSERT/UPDATE/DELETE with RETURNING yields returned rows. SQL batches, psql backslash commands and PostgreSQL data-modifying CTEs are rejected; issue a standalone statement instead. New optional result fields may be added; consumers should ignore unknown fields.
@@ -69,7 +71,7 @@ Candidate rehearsals do not replace checks on the artifact actually published to
 ## 中文摘要
 
 - CLI 保持 JSON 行数组，诊断、统计和截断提示走 stderr；GUI/MCP/Python 返回 QueryResult。`rowCount` 是返回行数，不是写入影响行数。
-- GUI 和 MCP 的 saved-query 工具只读。CLI prod 的每次 `--write` 都需确认；MCP 写入需服务端、调用和 prod 确认三层授权。Python 的 `allow_write=True` 是调用方已经取得授权的声明，不另外弹出 prod 确认。
+- GUI 和 MCP 的已存查询执行只读；MCP `save_query` 只保存本地文件，不执行或验证 SQL，覆盖需显式 `overwrite:true`，多工作区需指定目标。CLI prod 的每次 `--write` 都需确认；MCP 写入需服务端、调用和 prod 确认三层授权。Python 的 `allow_write=True` 是调用方已经取得授权的声明，不另外弹出 prod 确认。
 - 默认查询上限为 500；显式外层 LIMIT 保留；CLI `--max-rows 0` 取消限制。Redis 在取回结果后截断，工具语句/PG 锁定查询不改写。SQL 批处理、psql 反斜杠命令、PG 修改型 CTE 不支持，请逐条执行；普通 INSERT/UPDATE/DELETE 可显式授权，RETURNING 保留返回结果。
 - 大整数、高精度小数按上述规则返回字符串，重复列名自动加后缀，空查询保留可用列信息；Redis 保留 null、空字符串、多行文本和嵌套数组，执行错误不再伪装成数据。
 - GUI 无 Flask/Node 运行时依赖，`[gui]` 保留为空兼容别名；MySQL 的可选依赖含 RSA 认证支持。`qy up` 是可选后台 keeper。

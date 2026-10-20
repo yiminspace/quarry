@@ -2473,3 +2473,95 @@ def validate_query(q: Query, conn: Connection, *, use_proxy: bool | None = None)
         err(f"validation failed: {exc}")
         return EXIT_SQL_ERROR
     return EXIT_OK
+
+
+def ping_connection(conn: Connection, timeout: int = DEFAULT_PING_TIMEOUT_SEC) -> dict[str, Any]:
+    """Probe a single connection's reachability. Never raises — any failure
+    (tunnel, auth, timeout, protocol) is captured in the returned dict so
+    `--all` can keep probing the remaining connections."""
+    engine = connection_engine(conn)
+    started = time.monotonic()
+    error: str | None = None
+    try:
+        if engine == "sqlite":
+            run_query(conn, "SELECT 1", timeout=timeout)
+        else:
+            _ping_remote(conn, engine, timeout)
+    except Exception as exc:  # noqa: BLE001 — any engine/tunnel failure means "unreachable"
+        error = str(exc)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return {"key": conn.key, "engine": engine, "ok": error is None, "elapsed_ms": elapsed_ms, "error": error}
+
+
+def _ping_remote(conn: Connection, engine: str, timeout: int) -> None:
+    with tunnel.open_tunnel(conn, engine, connect_timeout=timeout) as url:
+        if engine == "redis":
+            rows, _ = redis_engine.run_redis(url, "PING", timeout=timeout)
+            if not (rows and rows[0]["value"].upper() == "PONG"):
+                raise QuarryError("no PONG")
+        elif engine == "neptune":
+            run_neptune_cypher(url, "RETURN 1 AS ok", timeout=timeout,
+                               workspace_home=getattr(conn, "source", None) or workspace.WS.home)
+        elif engine == "mysql":
+            run_mysql_query(url, "SELECT 1", timeout=timeout)
+        else:
+            rc, _, errout = run_psql_capture(url, "SELECT 1", timeout=timeout)
+            if rc != 0:
+                msg, _ = _psql_error_message(rc, errout)
+                raise QuarryError(msg)
+
+
+def format_query_file(q: Query) -> str:
+    lines: list[str] = [f"-- @name: {q.name}", f"-- @db: {q.db}"]
+    if q.desc:
+        lines.append(f"-- @desc: {q.desc}")
+    if q.tags:
+        lines.append(f"-- @tags: {', '.join(q.tags)}")
+    for p in q.params:
+        lines.append(f"-- @param: {p.to_meta_value()}")
+    for s in q.schema_sources:
+        lines.append(f"-- @schema-source: {s}")
+    if q.source_fingerprint:
+        lines.append(f"-- @source-fingerprint: {q.source_fingerprint}")
+    if q.saved_at:
+        lines.append(f"-- @saved-at: {q.saved_at}")
+    if q.last_validated:
+        lines.append(f"-- @last-validated: {q.last_validated}")
+    lines.append("")
+    lines.append(q.sql.rstrip() + ("" if q.sql.rstrip().endswith(";") else ";"))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def save_query(q: Query, *, overwrite: bool = False,
+               target_workspace: workspace.Workspace | None = None) -> Path:
+    """Persist a query without executing it. The CLI defaults to the primary workspace."""
+    for label, value in (("query name", q.name), ("database key", q.db)):
+        if (not value or value != value.strip() or value in (".", "..") or "/" in value or "\\" in value
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise QuarryError(f"{label} must be a single non-empty filename component")
+    ws = target_workspace or workspace.WS
+    root = ws.queries_dir.resolve()
+    target = ws.queries_dir / q.db / f"{q.name}.sql"
+    if target.is_symlink() or not target.resolve().is_relative_to(root):
+        raise QuarryError("query path must stay inside the workspace queries directory")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = format_query_file(q)
+    if not overwrite:
+        try:
+            with target.open("x", encoding="utf-8") as f:
+                f.write(text)
+        except FileExistsError:
+            raise QuarryError(f"query '{q.name}' already exists at {target}; use --overwrite") from None
+    else:
+        # Publish a complete file so readers never observe a partially overwritten query.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                         delete=False) as f:
+            tmp = Path(f.name)
+            try:
+                f.write(text)
+                f.close()
+                tmp.replace(target)
+            finally:
+                tmp.unlink(missing_ok=True)
+    return target

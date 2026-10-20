@@ -95,7 +95,8 @@ def test_tools_list(client):
     tools = client.rpc("tools/list")["result"]["tools"]
     names = {t["name"] for t in tools}
     assert names == {"list_connections", "list_tables", "describe_table",
-                     "exec_sql", "list_saved_queries", "run_saved_query"}
+                     "exec_sql", "list_saved_queries", "run_saved_query",
+                     "describe_saved_query", "save_query", "ping_connection"}
     for t in tools:
         assert t["inputSchema"]["type"] == "object"
         assert t["description"]
@@ -166,5 +167,40 @@ def test_exec_sql_live(tmp_path):
         assert not is_err
         cols = {r["column_name"] for r in payload["columns"]}
         assert {"id", "name", "email"} <= cols
+    finally:
+        c.close()
+
+
+def test_saved_query_lifecycle_and_ping_over_stdio(tmp_path):
+    import sqlite3
+    with sqlite3.connect(tmp_path / "db.sqlite") as db:
+        db.execute("CREATE TABLE items(id INTEGER)")
+        db.execute("INSERT INTO items VALUES(7)")
+    (tmp_path / "connections.toml").write_text('[local]\nurl="sqlite:///db.sqlite"\n')
+    c = MCPClient(tmp_path)
+    try:
+        c.rpc("initialize", {"protocolVersion": "2025-06-18"})
+        c.notify("notifications/initialized")
+        saved, failed = c.call_tool("save_query", {
+            "name": "items", "db": "local", "sql": "SELECT id FROM items WHERE id = :'id'",
+            "desc": "Lookup item", "tags": ["smoke"],
+            "params": [{"name": "id", "type": "int", "default": "7"}]})
+        assert not failed and saved["last_validated"] is None
+        details, failed = c.call_tool("describe_saved_query", {"name": "items"})
+        assert not failed and details["desc"] == "Lookup item"
+        assert details["tags"] == ["smoke"] and details["params"][0]["default"] == "7"
+        assert "SELECT id" in details["sql"]
+        rows, failed = c.call_tool("run_saved_query", {"name": "items"})
+        assert not failed and rows["rows"] == [{"id": 7}]
+        ping, failed = c.call_tool("ping_connection", {"db": "local", "timeout": 2})
+        assert not failed and ping["ok"] and ping["error"] is None
+        assert ping["engine"] == "sqlite" and ping["production"] is False
+        args = {"name": "items", "db": "local", "sql": "SELECT 2"}
+        _, failed = c.call_tool("save_query", args)
+        assert failed
+        _, failed = c.call_tool("save_query", {**args, "overwrite": True})
+        assert not failed
+        details, failed = c.call_tool("describe_saved_query", {"name": "items"})
+        assert not failed and details["sql"] == "SELECT 2;"
     finally:
         c.close()
