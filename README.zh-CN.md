@@ -8,7 +8,7 @@ Rust 原生数据库工作台，共用内核提供 CLI、GUI、MCP 与类库接�
 当前为 2.0 候选版：
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc2
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc3
 qy --version
 qy gui
 ```

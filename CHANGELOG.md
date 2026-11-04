@@ -5,7 +5,7 @@ All notable changes to Quarry are documented here. The format follows
 [SemVer](https://semver.org/). Public breaking changes require a major release;
 pre-1.0 history followed the earlier development policy.
 
-## [2.0.0-rc.2] - 2026-11-04
+## [2.0.0-rc.3] - 2026-11-04
 
 ### Distribution
 

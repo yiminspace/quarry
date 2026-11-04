@@ -381,8 +381,14 @@ async fn cancellation_interrupts_pending_network_read_and_releases_conversation(
     assert_eq!(end.unwrap()["type"], "error");
     let next = f.service.start_chat(body, true).await.unwrap();
     drop(next);
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert_eq!(f.service.cancel(id, "cancel-me")["cancelled"], false);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while f.service.cancel(id, "cancel-me")["cancelled"] != false {
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("dropping the stream must release its active request");
 }
 #[tokio::test]
 async fn changed_connection_keeps_history_readable_but_blocks_new_generation() {
