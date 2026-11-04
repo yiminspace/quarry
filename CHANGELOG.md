@@ -7,6 +7,9 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Show the complete website installation command with wrapping and a separate
+  copy button at desktop and mobile widths; remove the hidden horizontal scroll.
+
 - Serve the canonical native installer at the website's `/install.sh` and make
   one-command latest-stable installation the default in both website languages
   and READMEs. Keep pip/pipx/uv alternatives and version-pinned instructions.

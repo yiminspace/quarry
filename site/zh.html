@@ -83,17 +83,19 @@
   .sub { margin: 20px 0 30px; font-size: 18px; color: var(--dim); max-width: 46ch; }
   .cta-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
   .install {
-    display: flex; align-items: center; gap: 12px; background: var(--bg2);
-    border: 1px solid var(--line); border-radius: 10px; padding: 11px 16px;
-    font-family: var(--mono); font-size: 15px; max-width: 100%; min-width: 0;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) 32px;
+    align-items: start; gap: 12px; width: 100%; max-width: 640px; min-width: 0;
+    background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; font-family: var(--mono); font-size: 14px; line-height: 1.65;
   }
-  .install span:not(.dollar) { min-width: 0; overflow-x: auto; white-space: nowrap; }
-  .install .dollar, .install button { flex-shrink: 0; }
+  .install span { padding-top: 4px; }
+  .install span:not(.dollar) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
   .install .dollar { color: var(--faint); user-select: none; }
   .install button {
-    background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 15px; padding: 2px 4px;
+    width: 32px; height: 32px; border-radius: 6px; background: none; border: 0;
+    color: var(--faint); cursor: pointer; font-size: 16px; padding: 0;
   }
-  .install button:hover { color: var(--copper-hi); }
+  .install button:hover { color: var(--copper-hi); background: var(--line); }
   .btn {
     display: inline-block; border-radius: 10px; padding: 11px 20px; font-weight: 600; font-size: 15px;
   }
