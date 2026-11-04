@@ -11,6 +11,7 @@ test that produced it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import socket
@@ -390,7 +391,9 @@ def _redis_running():
     """Yield a usable redis URL: the shared local redis (db 15) when reachable,
     else an ephemeral redis-server on a free port; skips when neither exists."""
     if REDIS_OK:
-        yield "redis://127.0.0.1:6379/15"
+        from urllib.parse import urlsplit, urlunsplit
+        target = urlsplit(os.environ.get("QUARRY_TEST_REDIS_URL", "redis://127.0.0.1:6379"))
+        yield urlunsplit(target._replace(path="/15"))
         return
     if not (_REDIS_SERVER and (shutil.which("redis-cli") or shutil.which("/opt/homebrew/bin/redis-cli"))):
         pytest.skip("no redis reachable and no redis-server binary")
@@ -769,33 +772,44 @@ group = "acme"
 
 @contextmanager
 def _proxied_envset_page(browser, tmp_path, monkeypatch, *, enabled: bool, discovered: bool, reachable: bool = True):
-    """Like page_envset, but shop_dev carries ssh_host and `tunnel.tunnel_fact_for()`
-    is monkeypatched to simulate an already-established tunnel (issue #101
-    r1-2: the badge reflects a *live* tunnel fact, not a prediction of what a
-    fresh connection would do — merely toggling workspace config doesn't
-    establish one, so the fake pool entry is what actually drives the
-    badge here, gated by the same enabled/discovered/reachable combination
-    a real tunnel's proxy decision would have been gated by)."""
-    from quarry import tunnel
+    """Exercise the UI's server-reported proxy DTO with either real backend.
 
-    db_host, db_port = tunnel._db_host_port(TEST_DB_URL, "postgres")
-    live_tunnel = {
-        "ssh_target": "ec2-user@bastion.example.com:22",
-        "db_target": f"{db_host}:{db_port}",
-        "local_port": 55555,
-        "proxied": True,
-        "proxy": "127.0.0.1:6152",
-        "alive": True,
-    }
+    Transport/proxy decisions have native runtime tests; this fixture controls
+    the observed backend state at the HTTP boundary rather than monkeypatching
+    Python objects that a Rust subprocess cannot see.
+    """
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
     state = {"proxied": enabled and discovered and reachable}
-    monkeypatch.setattr(tunnel, "tunnel_fact_for", lambda conn, engine:
-                        live_tunnel if state["proxied"] and conn.ssh_host else None)
     with _running_gui(tmp_path, extra_conn=PROXY_ENVSET_TOML) as url:
-        ctx, pg = _mk_page(browser, url)
+        ctx = english_browser_context(browser, viewport={"width": 1280, "height": 900})
+        stub_cdn(ctx)
+        stub_events(ctx)
+
+        def connections(route):
+            response = route.fetch()
+            payload = response.json()
+            for group in payload["groups"]:
+                for item in group["items"]:
+                    for env in item["envs"]:
+                        env["proxied"] = bool(state["proxied"] and item["db"] == "shop" and env["env"] == "dev" and env["ssh"])
+            route.fulfill(response=response, json=payload)
+
+        ctx.route("**/api/connections", connections)
+        # Selecting an SSH sibling must not dial a fixture bastion; these tests
+        # validate indicator presentation, not an actual tunnel lifecycle.
+        ctx.route("**/api/tables?*", lambda route: route.fulfill(json={"engine": "postgres", "tables": [], "capped": False}))
+        ctx.route("**/api/health?*", lambda route: route.fulfill(json={"ok": True}))
+        page = ctx.new_page()
+        page._console_errors = []
+        page.on("pageerror", lambda error: page._console_errors.append(str(error)))
+        page.goto(url, wait_until="networkidle")
         try:
-            yield pg, state
+            yield page, state
+            assert not page._console_errors
         finally:
             ctx.close()
+
 
 
 def test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active(_pw_browser, tmp_path, monkeypatch):
@@ -1459,6 +1473,62 @@ def test_health_button_paints_ok_and_down_dots(page_dead):
     row = page.locator('.dbrow[data-db="deadpg"]')
     assert "down" in row.get_attribute("class").split()          # dimmed row
     assert (row.get_attribute("title") or "").strip()            # error tooltip
+
+
+def test_health_timeout_releases_button_and_allows_a_new_batch(page_sqlite):
+    """A stalled network response cannot leave health checking stuck or duplicated.
+
+    All health traffic is intercepted; the native fixture uses only temporary
+    SQLite files. Shorten the real AbortSignal timer, preserving abort semantics.
+    """
+    page = page_sqlite
+    page.add_init_script("""const original = AbortSignal.timeout.bind(AbortSignal);
+      window.__healthTimeouts = [];
+      AbortSignal.timeout = ms => {
+        if (ms === 10000) window.__healthTimeouts.push(ms);
+        return original(ms === 10000 ? 1500 : ms);
+      };""")
+    fresh_requests = []
+    pending = []
+    healthy = [False]
+
+    def health(route):
+        if parse_qs(urlparse(route.request.url).query).get('fresh') == ['1']:
+            fresh_requests.append(route.request.url)
+            if not healthy[0]:
+                pending.append(route)
+                return
+            route.fulfill(json={'ok': True})
+        else:
+            route.fulfill(json={'ok': None})
+
+    page.route('**/api/health?*', health)
+    page.reload(wait_until='networkidle')
+    page.wait_for_selector('.dbrow[data-db="notes"]')
+    page.evaluate('window.__healthTimeouts = []')
+    button = page.locator('#healthBtn')
+    # Two immediate clicks must start only one batch, even before another render.
+    button.evaluate('el => { el.click(); el.click(); }')
+    page.wait_for_function("document.querySelector('#healthBtn').disabled")
+    assert button.get_attribute('aria-busy') == 'true'
+    assert 'spin' in button.get_attribute('class').split()
+    page.wait_for_function("window.__healthTimeouts.length === 2")
+    assert len(pending) == len(fresh_requests) == 2
+    page.wait_for_function("!document.querySelector('#healthBtn').disabled", timeout=5000)
+    assert button.get_attribute('aria-busy') == 'false'
+    assert 'spin' not in button.get_attribute('class').split()
+    assert len(fresh_requests) == 2
+    row = page.locator('.dbrow[data-db="notes"]')
+    assert 'down' in row.get_attribute('class').split()
+    assert 'time' in (row.get_attribute('title') or '').lower()
+    # A new batch can succeed and replace the stale failure tooltip.
+    healthy[0] = True
+    button.click()
+    page.wait_for_selector('.dbrow[data-db="notes"] .dot.ok')
+    page.wait_for_function("!document.querySelector('#healthBtn').disabled")
+    assert len(fresh_requests) == 4
+    assert button.get_attribute('aria-busy') == 'false'
+    assert row.get_attribute('title') == ''
 
 
 def test_health_dots_repaint_from_cache_after_reload(page):
@@ -2247,166 +2317,116 @@ def test_workspace_manager_add_and_remove(page, tmp_path, monkeypatch):
     assert page.locator(".modal").count() == 0
 
 
-def test_workspace_manager_shows_proxy_status_per_workspace(page, tmp_path, monkeypatch):
-    """issue #101: the workspace manager reports each registered workspace's
-    proxy toggle and the currently discovered system/env proxy — sourced from
-    the server, not guessed client-side."""
-    from quarry import proxy, workspace
+def test_workspace_manager_shows_proxy_status_per_workspace(_pw_browser, tmp_path, monkeypatch):
+    with _isolated_indicator_page(_pw_browser, tmp_path, monkeypatch) as page:
+        """The manager presents the proxy state returned by its backend DTO."""
+        _route_workspace_proxy_state(page, enabled=True, discovered=True)
+        other_ws = tmp_path / "other_ws"
+        other_ws.mkdir()
+        (other_ws / "connections.toml").write_text('[k]\nurl = "postgresql://x/y"\n', encoding="utf-8")
+        page.locator("#wsBtn").click()
+        page.wait_for_selector(".modal .wsadd")
+        page.fill("#wsInput", str(other_ws))
+        page.locator("#wsAddBtn").click()
+        page.wait_for_selector(f'.wsrow:has-text("{other_ws.name}")')
+        status = page.locator('[data-testid="ws-proxy-status"]').first
+        assert "127.0.0.1:6152" in status.inner_text()
 
+
+
+def test_workspace_manager_shows_proxy_off_when_toggle_disabled(_pw_browser, tmp_path, monkeypatch):
+    with _isolated_indicator_page(_pw_browser, tmp_path, monkeypatch) as page:
+        _route_workspace_proxy_state(page, enabled=False, discovered=True)
+        other_ws = tmp_path / "other_ws"
+        other_ws.mkdir()
+        (other_ws / "connections.toml").write_text('[k]\nurl = "postgresql://x/y"\n', encoding="utf-8")
+        page.locator("#wsBtn").click()
+        page.wait_for_selector(".modal .wsadd")
+        page.fill("#wsInput", str(other_ws))
+        page.locator("#wsAddBtn").click()
+        page.wait_for_selector(f'.wsrow:has-text("{other_ws.name}")')
+        assert "off" in page.locator('[data-testid="ws-proxy-status"]').first.inner_text().lower()
+
+
+
+def test_workspace_manager_remove_unbinds_active_connection_immediately(_pw_browser, tmp_path, monkeypatch):
+    """Mutate real backend configuration without an explicit workspace pin."""
+    import sqlite3
     monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
-    monkeypatch.setattr(workspace, "is_proxy_enabled", lambda home: True)
-    monkeypatch.setattr(
-        proxy, "discover_proxy",
-        lambda: proxy.ProxyInfo(host="127.0.0.1", port=6152, source="system"),
-    )
-
-    other_ws = tmp_path / "other_ws"
-    other_ws.mkdir()
-    (other_ws / "connections.toml").write_text('[k]\nurl = "postgresql://x/y"\n', encoding="utf-8")
-
-    page.locator("#wsBtn").click()
-    page.wait_for_selector(".modal .wsadd")
-    page.fill("#wsInput", str(other_ws))
-    page.locator("#wsAddBtn").click()
-    page.wait_for_selector(".wsrow")
-    status = page.locator('[data-testid="ws-proxy-status"]').first
-    assert "127.0.0.1:6152" in status.inner_text()
-
-
-def test_workspace_manager_shows_proxy_off_when_toggle_disabled(page, tmp_path, monkeypatch):
-    from quarry import workspace
-
-    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
-    monkeypatch.setattr(workspace, "is_proxy_enabled", lambda home: False)
-
-    other_ws = tmp_path / "other_ws"
-    other_ws.mkdir()
-    (other_ws / "connections.toml").write_text('[k]\nurl = "postgresql://x/y"\n', encoding="utf-8")
-
-    page.locator("#wsBtn").click()
-    page.wait_for_selector(".modal .wsadd")
-    page.fill("#wsInput", str(other_ws))
-    page.locator("#wsAddBtn").click()
-    page.wait_for_selector(".wsrow")
-    status = page.locator('[data-testid="ws-proxy-status"]').first
-    assert "off" in status.inner_text().lower()
-
-
-def test_workspace_manager_remove_unbinds_active_connection_immediately(page, tmp_path, monkeypatch):
-    """PR #40 review r1-2: removing the workspace backing the currently ACTIVE
-    connection must unbind right away — same "vanished connection never silently
-    keeps showing" invariant as test_stale_tab_connection_unbinds_not_rebinds,
-    but the vanishing is triggered by a workspace removal instead of a reload.
-
-    Only reachable from a GUI session with no explicit --workspace pin (config.toml
-    is what's actually being managed), so this drops the `page` fixture's explicit
-    pin in favor of a config.toml-driven one that still keeps `testpg` visible."""
-    from quarry import workspace
-
-    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
-    workspace._write_config_workspaces([str(tmp_path)])
-    workspace.configure_workspace(None)
-
     extra_ws = tmp_path / "extra_ws"
     extra_ws.mkdir()
-    (extra_ws / "connections.toml").write_text(
-        '[extra_db]\nurl = "postgresql://x/db"\nengine = "postgres"\n', encoding="utf-8")
-
-    page.locator("#wsBtn").click()
-    page.wait_for_selector(".modal .wsadd")
-    page.fill("#wsInput", str(extra_ws))
-    page.locator("#wsAddBtn").click()
-    page.wait_for_selector(f'.wsrow:has-text("{extra_ws.name}")')
-    page.mouse.click(5, 5)  # close the modal
-    page.wait_for_selector(".modal", state="detached")
-
-    page.wait_for_selector('.dbrow[data-db="extra_db"]')
-    page.locator('.dbrow[data-db="extra_db"]').click()
-    page.wait_for_function("document.querySelector('#qtitle').innerText === 'extra_db'")
-
-    page.locator("#wsBtn").click()
-    page.wait_for_selector(".wsrow")
-    page.once("dialog", lambda d: d.accept())
-    page.locator(f'.wsdel[data-dir="{extra_ws}"]').click()
-    page.wait_for_selector(f'.wsrow:has-text("{extra_ws.name}")', state="detached")
-
-    # The modal list and connection tree refresh independently after removal.
-    # Wait for the actual unbinding; no reload or tab switch may be required.
-    page.wait_for_function("/No connection|未选连接/.test(document.querySelector('#qtitle').innerText)")
-
-
-def test_header_keepalive_badge_and_toggle(page, monkeypatch):
-    """issue #112: header exposes compact keep-alive status + up/down control."""
-    from quarry import keepalive
-
-    state = {"running": False}
-
-    def fake_status(_ws):
-        return {
-            "workspace": "/tmp/ws",
-            "enabled": True,
-            "reconnect": True,
-            "keeper": {"running": state["running"], "pid": 4242 if state["running"] else None},
-            "tunnels": [],
-            "updatedAt": time.time(),
-        }
-
-    monkeypatch.setattr(keepalive, "status", fake_status)
-    monkeypatch.setattr(keepalive, "start", lambda _ws: state.__setitem__("running", True) or (True, 4242))
-    monkeypatch.setattr(keepalive, "stop", lambda _ws: state.__setitem__("running", False) or True)
-
-    page.reload(wait_until="networkidle")
-    page.wait_for_selector("#kaBadge")
-    assert "down" in page.locator("#kaBadge").inner_text().lower() or "离线" in page.locator("#kaBadge").inner_text()
-
-    from playwright.sync_api import expect
-    badge = page.locator("#kaBadge")
-    assert page.locator("#kaBtn").count() == 0
-    assert badge.evaluate("el => el.tagName") == "BUTTON"
-    expect(badge).to_have_attribute("aria-pressed", "false")
-    badge.click()
-    expect(badge).to_have_attribute("aria-pressed", "true")
-    assert "up" in badge.inner_text().lower() or "在线" in badge.inner_text()
-    assert badge.get_attribute("title") == badge.get_attribute("aria-label")
-    badge.focus()
-    badge.press("Enter")
-    expect(badge).to_have_attribute("aria-pressed", "false")
-    badge.press("Space")
-    expect(badge).to_have_attribute("aria-pressed", "true")
+    with sqlite3.connect(extra_ws / "extra.db") as database:
+        database.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY)")
+    (extra_ws / "connections.toml").write_text('[extra_db]\nurl = "sqlite:///extra.db"\nengine = "sqlite"\n', encoding="utf-8")
+    with _running_gui(tmp_path, registered_workspaces=[str(tmp_path)]) as base:
+        ctx, page = _mk_page(_pw_browser, base)
+        try:
+            page.locator("#wsBtn").click()
+            page.wait_for_selector(".modal .wsadd")
+            page.fill("#wsInput", str(extra_ws))
+            page.locator("#wsAddBtn").click()
+            page.wait_for_selector(f'.wsrow:has-text("{extra_ws.name}")')
+            page.mouse.click(5, 5)
+            page.wait_for_selector(".modal", state="detached")
+            page.wait_for_selector('.dbrow[data-db="extra_db"]')
+            page.locator('.dbrow[data-db="extra_db"]').click()
+            page.wait_for_function("document.querySelector('#qtitle').innerText === 'extra_db'")
+            page.locator("#wsBtn").click()
+            page.wait_for_selector(".wsrow")
+            page.once("dialog", lambda dialog: dialog.accept())
+            page.locator(f'.wsdel[data-dir="{extra_ws}"]').click()
+            page.wait_for_selector(f'.wsrow:has-text("{extra_ws.name}")', state="detached")
+            page.wait_for_function("/No connection|未选连接/.test(document.querySelector('#qtitle').innerText)")
+            # The removal must reach the real server, not only the modal state.
+            groups = page.request.get(base + "/api/connections").json()["groups"]
+            assert not any(item["db"] == "extra_db" for group in groups for item in group["items"])
+            assert not page._console_errors
+        finally:
+            ctx.close()
 
 
-def test_header_keepalive_badge_tracks_background_state(page, monkeypatch):
-    """issue #112: badge state should refresh without manual button clicks."""
-    from quarry import keepalive
 
-    state = {"mode": "up"}
+def test_header_keepalive_badge_and_toggle(_pw_browser, tmp_path, monkeypatch):
+    with _isolated_indicator_page(_pw_browser, tmp_path, monkeypatch) as page:
+        """Exercise the UI against controlled HTTP keep-alive state for both backends."""
+        state = {"running": False}
+        calls = []
+        _route_keepalive_state(page, state, calls)
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector("#kaBadge")
+        assert "down" in page.locator("#kaBadge").inner_text().lower() or "离线" in page.locator("#kaBadge").inner_text()
+        from playwright.sync_api import expect
+        badge = page.locator("#kaBadge")
+        assert page.locator("#kaBtn").count() == 0
+        assert badge.evaluate("element => element.tagName") == "BUTTON"
+        expect(badge).to_have_attribute("aria-pressed", "false")
+        badge.click()
+        expect(badge).to_have_attribute("aria-pressed", "true")
+        assert "up" in badge.inner_text().lower() or "在线" in badge.inner_text()
+        assert badge.get_attribute("title") == badge.get_attribute("aria-label")
+        badge.focus()
+        badge.press("Enter")
+        expect(badge).to_have_attribute("aria-pressed", "false")
+        badge.press("Space")
+        expect(badge).to_have_attribute("aria-pressed", "true")
+        assert [path for method, path in calls if method == "POST"] == ["/api/keepalive/up", "/api/keepalive/down", "/api/keepalive/up"]
 
-    def fake_status(_ws):
-        tunnels = [] if state["mode"] == "up" else [{"connection": "shop", "env": "dev", "state": "reconnecting"}]
-        return {
-            "workspace": "/tmp/ws",
-            "enabled": True,
-            "reconnect": True,
-            "keeper": {"running": True, "pid": 4242},
-            "tunnels": tunnels,
-            "updatedAt": time.time(),
-        }
 
-    monkeypatch.setattr(keepalive, "status", fake_status)
-    monkeypatch.setattr(keepalive, "start", lambda _ws: (False, 4242))
-    monkeypatch.setattr(keepalive, "stop", lambda _ws: True)
 
-    page.reload(wait_until="networkidle")
-    page.wait_for_selector("#kaBadge")
-    assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
-    state["mode"] = "reconnecting"
-    page.wait_for_function(
-        """() => {
-          const t = (document.querySelector('#kaBadge')?.textContent || '').toLowerCase();
-          return t.includes('reconnecting') || t.includes('重连');
-        }""",
-        timeout=7000,
-    )
+def test_header_keepalive_badge_tracks_background_state(_pw_browser, tmp_path, monkeypatch):
+    with _isolated_indicator_page(_pw_browser, tmp_path, monkeypatch) as page:
+        state = {"running": True, "mode": "up"}
+        _route_keepalive_state(page, state)
+        page.reload(wait_until="networkidle")
+        page.wait_for_selector("#kaBadge")
+        assert "up" in page.locator("#kaBadge").inner_text().lower() or "在线" in page.locator("#kaBadge").inner_text()
+        state["mode"] = "reconnecting"
+        page.wait_for_function(
+            """() => {
+              const text = (document.querySelector('#kaBadge')?.textContent || '').toLowerCase();
+              return text.includes('reconnecting') || text.includes('重连');
+            }""", timeout=7000)
+
 
 
 # ---------------------------------------------------------------------------
@@ -3062,52 +3082,46 @@ def test_workspace_file_change_refreshes_sidebar_live(_pw_browser, tmp_path, mon
 
 
 def test_server_upgrade_prompts_reload_banner(_pw_browser, tmp_path, monkeypatch):
-    """After the backend restarts with a new version (the user upgraded), the
-    EventSource reconnect re-checks /api/version and raises the reload banner."""
-    import socket as socket_mod
-    import threading as threading_mod
-    from http.server import ThreadingHTTPServer
+    """A real backend restart closes SSE; its reconnect checks the new version.
 
-    from quarry import gui, workspace
-    from conftest import _write_ws
-
-    _write_ws(tmp_path)
-    workspace.configure_workspace(str(tmp_path))
-    monkeypatch.setattr(gui.cache, "CACHE_FILE", tmp_path / "gui-cache.json")
-    gui.cache._CACHE.clear()
-    with socket_mod.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), gui.Handler)
-    threading_mod.Thread(target=lambda: httpd.serve_forever(poll_interval=0.02),
-                         daemon=True).start()
-    ctx = None
-    httpd2 = None
-    try:
-        ctx, page = _mk_live_page(_pw_browser, f"http://127.0.0.1:{port}")
-        page.wait_for_selector('.dbrow[data-db="testpg"]')
-        page.wait_for_timeout(500)          # let the baseline /api/version land
-        httpd.shutdown()
-        httpd.server_close()
-        monkeypatch.setattr(gui, "__version__", "99.0.0")
-        httpd2 = ThreadingHTTPServer(("127.0.0.1", port), gui.Handler)
-        threading_mod.Thread(target=lambda: httpd2.serve_forever(poll_interval=0.02),
-                             daemon=True).start()
-        # shutdown() stops the listener but the SSE handler thread still owns
-        # its client socket — end the stream the way a real process exit would,
-        # so the browser's EventSource actually reconnects (now against httpd2)
-        gui._close_event_streams()
-        page.wait_for_selector("#upgradeBanner", timeout=20000)
-        assert "99.0.0" in page.locator("#upgradeBanner").inner_text()
-    finally:
-        if ctx is not None:
+    Only the version response is controlled, so one compiled Rust binary and
+    the historical Python executable exercise the same upgrade contract.
+    """
+    state = {"version": "98.0.0"}
+    versions = []
+    with _restartable_gui_process(tmp_path) as server:
+        ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
+        stub_cdn(ctx)
+        ctx.add_init_script("""(() => {
+            const NativeEventSource = window.EventSource;
+            window.__eventDisconnects = 0;
+            window.EventSource = class extends NativeEventSource {
+                constructor(...args) { super(...args); this.addEventListener('error', () => window.__eventDisconnects++); }
+            };
+        })();""")
+        def version(route):
+            versions.append(state["version"])
+            route.fulfill(json={"name": "Quarry", "version": state["version"]})
+        ctx.route("**/api/version", version)
+        page = ctx.new_page()
+        try:
+            page.goto(server.base, wait_until="load")
+            page.wait_for_selector('.dbrow[data-db="testpg"]')
+            for _ in range(20):
+                if versions:
+                    break
+                page.wait_for_timeout(50)
+            assert versions and versions[0] == "98.0.0"
+            server.stop()
+            page.wait_for_function("window.__eventDisconnects > 0", timeout=5000)
+            state["version"] = "99.0.0"
+            server.start()
+            page.wait_for_selector("#upgradeBanner", timeout=20000)
+            assert "99.0.0" in page.locator("#upgradeBanner").inner_text()
+            assert "99.0.0" in versions
+        finally:
             ctx.close()
-        for srv in (httpd2,):
-            if srv is not None:
-                srv.shutdown()
-                srv.server_close()
-        gui.cache._CACHE.clear()
-        workspace.configure_workspace(None)
+
 
 
 # ---------------------------------------------------------------------------
@@ -3167,7 +3181,8 @@ def test_update_panel_shows_versions_and_upgrade_command(_pw_browser, gui_url):
         text = page.locator("#updbox").inner_text()
         assert "0.5.1" in text and "9.9.9" in text
         assert page.locator("#updCmd").inner_text() == "pipx upgrade quarry-db"
-        release_link = page.locator("#updbox a")
+        assert page.locator("#upgradeGuide").get_attribute("href").endswith("/docs/install.md")
+        release_link = page.locator("#updbox a[href*='/releases/tag/']")
         assert release_link.get_attribute("href") == (
             "https://github.com/yiminspace/quarry/releases/tag/v9.9.9")
         assert release_link.get_attribute("target") == "_blank"
@@ -4278,7 +4293,7 @@ def test_sqlite_record_link_uses_producing_sql_and_selects_one_row(page_sqlite):
     page.locator('#grid tbody tr').nth(1).locator('td').first.click()
     expect(page.locator('#recordLinkBtn')).to_be_enabled()
     assert record_requests[-1]['row'] == {'id': 2, 'note': 'dev note 2'}
-    assert 'from "entries"' in record_requests[-1]['sql'].lower()
+    assert re.search(r'from\s+(?:"entries"|entries)(?:\s|$)', record_requests[-1]['sql'].lower())
     assert 'limit ' in record_requests[-1]['sql'].lower()
     assert draft not in record_requests[-1]['sql']
     page.locator('#recordLinkBtn').click()
@@ -5025,29 +5040,49 @@ def test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state(pag
 
 
 def test_assistant_reply_language_rereads_cli_and_system_changes(page_sqlite, tmp_path, monkeypatch):
-    from quarry import assistant_config
+    """Focus, visibility and reopening fetch fresh server-owned preferences.
+
+    Control that HTTP response rather than changing Python globals invisible
+    to a standalone Rust server. Native ConfigManager tests cover the live
+    config-file and injectable system-language resolver underneath this DTO.
+    """
     page = page_sqlite
     stub = _assistant_ready(page, tmp_path, monkeypatch)
     queries = _assistant_query_requests(page)
-    assistant_config.set_reply_language('zh')
-    page.get_by_test_id('assistant-open').click()
+    state = {"replyLanguage": "zh", "systemLanguage": "en"}
+    reads = []
+
+    def preferences(route):
+        stub.preferences_requests.append((route.request.method, {}))
+        language = state["replyLanguage"]
+        resolved = state["systemLanguage"] if language == "system" else language
+        payload = {"replyLanguage": language, "configured": True, "resolvedReplyLanguage": resolved}
+        reads.append(payload)
+        route.fulfill(json=payload)
+
+    page.route('**/api/assistant/preferences', preferences)
+    with page.expect_response('**/api/assistant/preferences'):
+        page.get_by_test_id('assistant-open').click()
     ghost = page.get_by_test_id('assistant-ghost')
     page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === '解读当前 SQL'")
     for language, prompt in [('en', 'Explain this SQL'), ('zh', '解读当前 SQL'), ('system', 'Explain this SQL')]:
-        assistant_config.set_reply_language(language)
+        state["replyLanguage"] = language
+        before = len(reads)
         with page.expect_response('**/api/assistant/preferences'):
             if language == 'zh':
                 page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
             else:
                 page.evaluate("window.dispatchEvent(new Event('focus'))")
         page.wait_for_function("prompt => document.querySelector('[data-testid=assistant-ghost]')?.textContent === prompt", arg=prompt)
-    # System resolution is owned by the backend, not the interface language.
-    monkeypatch.setattr(assistant_config, 'system_reply_language', lambda: 'zh')
+        assert len(reads) > before and reads[-1]["replyLanguage"] == language
+    # The backend's OS language changes independently of the interface locale.
+    state["systemLanguage"] = "zh"
     page.get_by_test_id('assistant-close').click()
     with page.expect_response('**/api/assistant/preferences'):
         page.get_by_test_id('assistant-open').click()
     page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === '解读当前 SQL'")
-    assistant_config.set_reply_language('en')
+    assert reads[-1]["replyLanguage"] == "system" and reads[-1]["resolvedReplyLanguage"] == "zh"
+    state["replyLanguage"] = "en"
     page.locator('.vg-lang-switch').click()
     page.wait_for_function("document.querySelector('#runLbl')?.textContent === '运行'")
     with page.expect_response('**/api/assistant/preferences'):
@@ -5056,9 +5091,11 @@ def test_assistant_reply_language_rereads_cli_and_system_changes(page_sqlite, tm
     page.reload(wait_until='networkidle')
     with page.expect_response('**/api/assistant/preferences'):
         page.get_by_test_id('assistant-open').click()
+    page.wait_for_function("document.querySelector('[data-testid=assistant-ghost]')?.textContent === 'Explain this SQL'")
     assert ghost.inner_text() == 'Explain this SQL'
     assert page.locator('[data-testid^="assistant-language"]').count() == 0
     assert stub.requests == [] and queries == []
+    assert len(reads) >= 7
     assert all(method == 'GET' for method, _ in stub.preferences_requests)
 
 
@@ -5837,13 +5874,17 @@ def test_assistant_localizes_explanation_checkpoint_configuration_and_history(pa
     page = page_sqlite_default_language
     page.evaluate('(language) => localStorage.setItem("qy_lang", language)', language)
     stub = _assistant_ready(page, tmp_path, monkeypatch)
-    from quarry.assistant_config import set_reply_language
-    set_reply_language(language)
+    # Reply language is a backend DTO, independent of the Python test process
+    # and of the standalone server's config path chosen at startup.
+    page.route('**/api/assistant/preferences', lambda route: route.fulfill(json={
+        'replyLanguage': language, 'configured': True, 'resolvedReplyLanguage': language}))
     if language == 'zh':
         stub.response = '这条查询从 entries 表读取 id 和 note，最多返回 10 行。'
-    page.get_by_test_id('assistant-open').click()
+    with page.expect_response('**/api/assistant/preferences'):
+        page.get_by_test_id('assistant-open').click()
     field = page.get_by_test_id('assistant-input')
     suggestion = '解读当前 SQL' if language == 'zh' else 'Explain this SQL'
+    page.wait_for_function("expected => document.querySelector('[data-testid=assistant-ghost]')?.textContent === expected", arg=suggestion)
     assert field.get_attribute('placeholder') == ''
     assert page.get_by_test_id('assistant-ghost').inner_text() == suggestion
     assert page.get_by_test_id('assistant-suggestion-hint').count() == 0
@@ -5952,7 +5993,13 @@ def test_assistant_history_reopen_preserves_live_session(page_sqlite, tmp_path, 
 def test_assistant_apply_lost_response_retry_preserves_drafts_and_checkpoints(page_sqlite, tmp_path, monkeypatch, manual_edit):
     page = page_sqlite
     original = 'SELECT id FROM entries LIMIT 10'
+    # A standalone host freezes this explicit path at process startup. Point
+    # the deterministic model/store boundary at that same isolated history so
+    # it sees conversations created by the real native HTTP handler.
+    startup_history = os.environ['QUARRY_AI_HOME']
+    assert os.path.commonpath([startup_history, str(tmp_path)]) == str(tmp_path)
     stub = _assistant_ready(page, tmp_path, monkeypatch, sql=original)
+    monkeypatch.setenv('QUARRY_AI_HOME', startup_history)
     # Use the real server connection fingerprint so Apply crosses the real
     # HTTP handler and store; only the model reply remains deterministic.
     page.route('**/api/assistant/conversations', lambda route: route.continue_()
@@ -6005,3 +6052,109 @@ def test_assistant_apply_lost_response_retry_preserves_drafts_and_checkpoints(pa
         assert final['checkpoints'][0]['beforeSql'] == original
     assert page.get_by_role('alert').count() == 0
     assert queries == []
+
+
+
+def _route_workspace_proxy_state(page, *, enabled, discovered):
+    def respond(route):
+        response = route.fetch()
+        payload = response.json()
+        for item in payload["items"]:
+            item["proxyEnabled"] = enabled
+        payload["proxyDiscovered"] = {"host": "127.0.0.1", "port": 6152, "source": "system"} if discovered else None
+        route.fulfill(response=response, json=payload)
+    page.route("**/api/workspaces**", respond)
+
+
+def _route_keepalive_state(page, state, calls=None):
+    def respond(route):
+        path = urlparse(route.request.url).path
+        method = route.request.method
+        if calls is not None:
+            calls.append((method, path))
+        if method == "POST" and path.endswith("/up"):
+            state["running"] = True
+        elif method == "POST" and path.endswith("/down"):
+            state["running"] = False
+        tunnels = ([{"connection": "shop", "env": "dev", "state": "reconnecting"}]
+                   if state.get("mode") == "reconnecting" else [])
+        route.fulfill(json={"workspace": "/tmp/ws", "enabled": True, "reconnect": True,
+                            "keeper": {"running": state["running"], "pid": 4242 if state["running"] else None},
+                            "tunnels": tunnels, "updatedAt": time.time()})
+    page.route("**/api/keepalive**", respond)
+
+
+@contextmanager
+def _restartable_gui_process(tmp_path):
+    import signal
+    import sys
+    import urllib.request
+    from conftest import _write_ws, SRC
+
+    _write_ws(tmp_path)
+    config = tmp_path / "upgrade-config.toml"
+    config.write_text("", encoding="utf-8")
+    with socket.socket() as address:
+        address.bind(("127.0.0.1", 0))
+        port = address.getsockname()[1]
+    binary = os.environ.get("QUARRY_RUST_BINARY")
+    command = ([binary, "--config", str(config)] if binary else [sys.executable, "-m", "quarry.cli"])
+    command += ["--workspace", str(tmp_path), "gui", "--port", str(port), "--no-browser" if binary else "--no-open"]
+    env = dict(os.environ, QUARRY_CONFIG=str(config), QUARRY_UPDATE_CHECK="0", PYTHONPATH=str(SRC))
+    log_path = tmp_path / "upgrade-server.log"
+    log = log_path.open("ab")
+
+    class Server:
+        base = f"http://127.0.0.1:{port}"
+        process = None
+
+        def start(self):
+            assert self.process is None
+            self.process = subprocess.Popen(command, env=env, stdout=log, stderr=log)
+            for _ in range(100):
+                if self.process.poll() is not None:
+                    raise AssertionError("GUI exited: " + log_path.read_text())
+                try:
+                    with urllib.request.urlopen(self.base + "/api/version", timeout=1) as response:
+                        if response.status == 200:
+                            return
+                except OSError:
+                    time.sleep(0.05)
+            raise AssertionError("GUI startup timed out")
+
+        def stop(self):
+            process, self.process = self.process, None
+            if process is None:
+                return
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    raise AssertionError("GUI did not stop with its live SSE connection")
+
+    server = Server()
+    try:
+        server.start()
+        yield server
+    finally:
+        server.stop()
+        log.close()
+
+
+@contextmanager
+def _isolated_indicator_page(browser, tmp_path, monkeypatch):
+    monkeypatch.setenv("QUARRY_CONFIG", str(tmp_path / "config.toml"))
+    (tmp_path / "config.toml").write_text("", encoding="utf-8")
+    with _running_gui(tmp_path) as base:
+        ctx, page = _mk_page(browser, base)
+        try:
+            yield page
+            errors = [error for error in page._console_errors
+                      if "Failed to load resource" not in error and "net::ERR_" not in error]
+            assert not errors
+        finally:
+            page.unroute_all(behavior="wait")
+            ctx.close()

@@ -2,16 +2,12 @@
 
 Guidance for AI coding agents (and humans) working on Quarry.
 
-## GUI changes (`web/` frontend + `src/quarry/gui.py` backend)
+## GUI changes (`web/` frontend + `apps/qy/src/http.rs` backend)
 
-The GUI is a React + TypeScript SPA in `web/` (Vite build, `zustand` stores),
-served by the stdlib-only Python backend in `src/quarry/gui.py`
-(`http.server` + `/api/*` handlers). `gui.py` holds no frontend markup or JS —
-it only serves `web/`'s build output (`src/quarry/web_dist/`, built via
-`npm run build` from `web/`) under `/quarry/`, which is the default landing page
-(`/` redirects there). Because the feature surface lives in a handful of
-components (`web/src/*.tsx`) plus the stores (`web/src/store/*.ts`), it is
-still *exhaustively enumerable* — and we keep it enumerated:
+The production runtime is Rust: `apps/qy` adapts the shared crates to CLI,
+HTTP and MCP. The React/TypeScript SPA in `web/` is embedded from
+`src/quarry/web_dist` at compile time. Build `web/` before Cargo when UI changes.
+Python source is a development/test baseline only and is not shipped as runtime.
 
 1. **The GUI feature matrix in [TESTING.md](TESTING.md) is the source of truth
    for frontend coverage.** Any change that adds, alters, or removes a
@@ -80,3 +76,14 @@ will be testing the previous build.
 - User-visible changes get a `CHANGELOG.md` entry under `[Unreleased]`.
 - External output (PR titles/bodies, commit messages) carries business-relevant
   content only — no internal debugging-tool narration.
+
+
+## Releases
+
+`main` owns Rust 2.x. `archive/python-1.x` is locked at the last Python release.
+Versions must agree: Cargo SemVer `2.0.0-rc.N`, PyPI PEP 440 `2.0.0rcN`, MCP
+server SemVer plus its nested PyPI package version. Run scripts/validate_release.py.
+Tag releases explicitly; never publish a stable tag until the rc platform-wheel,
+native archive, fresh-install and Python-upgrade gates pass. Never bundle local
+configuration, tokens, workspaces or verification artifacts. CI uses disposable
+containers, never the user's Local data volumes.

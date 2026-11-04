@@ -1,0 +1,26 @@
+[package]
+name = "quarry-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+quarry-core = { path = "../quarry-core" }
+quarry-runtime = { path = "../quarry-runtime" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+url = "2"
+regex = "1"
+fs2 = "0.4"
+toml = "0.8"
+reqwest = { version="0.12", default-features=false, features=["rustls-tls","json"] }
+tokio-rustls = { version="0.26", default-features=false,features=["ring","tls12"] }
+rustls-pemfile = "2"
+tokio = { version = "1", features = ["process", "net", "io-util", "sync", "time", "rt", "fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

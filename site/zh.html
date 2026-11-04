@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — 为 AI 时代而生的数据库工作台</title>
-<meta name="description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。纯 stdlib。">
+<meta name="description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。Rust 原生内核。">
 <meta property="og:title" content="Quarry — 为 AI 时代而生的数据库工作台">
 <meta property="og:description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。">
 <meta property="og:type" content="website">
@@ -217,14 +217,15 @@
 <header class="hero">
   <div class="wrap">
     <div>
-      <span class="kicker">开源 · MIT · 纯 stdlib</span>
+      <span class="kicker">开源 · MIT · Rust 原生内核</span>
       <h1>为 <span class="c">AI 时代</span>而生的<br>数据库工作台</h1>
       <p class="sub">所有数据库工具都默认键盘前坐着一个人。Quarry 默认操作者是 agent —— 给它一个带安全栏的查询内核,长出多张脸:CLI、GUI、agent skill、MCP。</p>
       <div class="cta-row">
         <div class="install">
-          <span class="dollar">$</span><span id="pipcmd">pipx install quarry-db</span>
-          <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
+          <span class="dollar">$</span><span id="pipcmd">pipx install quarry-db==2.0.0rc1</span>
+          <button onclick="navigator.clipboard.writeText('pipx install quarry-db==2.0.0rc1');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
         </div>
+        <p>2.0 Release Candidate · <a href="https://github.com/yiminspace/quarry/releases">原生安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装 / 升级 / Python 归档</a></p>
         <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">去 GitHub 点个 Star</a>
       </div>
     </div>
@@ -250,15 +251,15 @@
     <div class="grid3">
       <div class="card">
         <h3><span class="ico">{}</span> 机器能解析的结果</h3>
-        <p>GUI/MCP/Python 返回 <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code>;CLI JSON 输出行数组 —— 稳定的结构化契约。不用爬屏幕,不用解析文字。</p>
+        <p>GUI/MCP/Rust 返回 <code>{columns, rows, rowCount, truncated, elapsedMs, engine, sql}</code>;CLI JSON 输出行数组 —— 稳定的结构化契约。不用爬屏幕,不用解析文字。</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 安全栏长在内核里</h3>
-        <p>查询入口共享默认只读和行数限制。写入需显式授权:CLI/MCP 对 prod 额外确认,Python 由调用方取得授权;GUI 查询保持只读。</p>
+        <p>查询入口共享默认只读和行数限制。写入需显式授权:CLI/MCP 对 prod 额外确认,Rust 由调用方取得授权;GUI 查询保持只读。</p>
       </div>
       <div class="card">
         <h3><span class="ico">±</span> 确定性的错误契约</h3>
-        <p>CLI 查询退出码区分成功、连接/执行失败和安全拦截;参数及其他命令的错误含义另有约定。GUI/MCP/Python 提供结构化错误,详见下方接口契约。</p>
+        <p>CLI 查询退出码区分成功、连接/执行失败和安全拦截;参数及其他命令的错误含义另有约定。GUI/MCP/Rust 提供结构化错误,详见下方接口契约。</p>
       </div>
     </div>
     <p class="manifesto">我们没有往数据库 GUI 上钉一个聊天机器人。<br><span class="dim">你的 agent 本来就是 —— Quarry 给它一个通往数据的安全插座。</span></p>
@@ -303,7 +304,7 @@
   <div class="wrap">
     <div class="eyebrow">安全栏</div>
     <h2>默认只读。放行是显式且分级的。</h2>
-    <p class="lede">CLI 写入需 <code>--write</code>,prod 还需确认或 <code>--yes</code>;MCP 需服务端和调用同时授权,prod 额外要求 <code>confirm_prod</code>。Python 由调用方通过 <code>allow_write=True</code> 授权;GUI 查询只读。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
+    <p class="lede">CLI 写入需 <code>--write</code>,prod 还需确认或 <code>--yes</code>;MCP 需服务端和调用同时授权,prod 额外要求 <code>confirm_prod</code>。Rust 由调用方通过 <code>allow_write=True</code> 授权;GUI 查询只读。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
     <div class="exits">
       <div class="exit e0"><div class="code">0</div><div class="name">成功 — 可无返回行</div></div>
       <div class="exit e2"><div class="code">2</div><div class="name">连接 / CLI 参数语法错误</div></div>
@@ -355,7 +356,7 @@
   <div class="wrap">
     <div class="eyebrow">引擎与体积</div>
     <h2>近乎零依赖</h2>
-    <p class="lede">基础包与 GUI 使用 Python 3.11+ 标准库。PostgreSQL、Redis、SSH 使用系统客户端;MySQL 使用可选 Python 驱动。可选 keeper 在后台运行,无需 Electron 或 Quarry 托管服务。</p>
+    <p class="lede">Rust 单二进制，GUI 与数据库驱动内置。提供 macOS/Linux 的 arm64 与 x86_64 安装包，也可通过 pip/pipx 安装相同的原生程序。SSH、Docker 和 schema sync 按需使用系统工具。</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · 系统 psql</span>
       <span class="engine"><b>MySQL</b> · 可选 pymysql</span>
@@ -388,12 +389,12 @@
       <div class="rm"><b>结果契约列类型</b> 覆盖全部引擎</div>
       <div class="rm"><b>跨环境 diff</b> 对比环境间的 schema 与数据</div>
       <div class="rm"><b>写操作审计日志</b> 谁在哪跑了什么、什么时候</div>
-      <div class="rm"><b>单二进制分发</b> pip/pipx 之外的安装方式</div>
+      <div class="rm"><b>2.0 RC 已提供</b> 原生二进制与平台 wheel</div>
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">
-        <span class="dollar">$</span><span>pipx install quarry-db</span>
-        <button onclick="navigator.clipboard.writeText('pipx install quarry-db');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
+        <span class="dollar">$</span><span>pipx install quarry-db==2.0.0rc1</span>
+        <button onclick="navigator.clipboard.writeText('pipx install quarry-db==2.0.0rc1');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
       </div>
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">在 GitHub 看源码</a>
     </div>

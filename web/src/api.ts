@@ -218,7 +218,7 @@ export function fetchHealth(
   const qs = new URLSearchParams({ db, env: env ?? "" });
   if (opts?.fresh) qs.set("fresh", "1");
   if (opts?.cachedOnly) qs.set("cached", "1");
-  return getJSON(`/api/health?${qs}`);
+  return getJSON(`/api/health?${qs}`, AbortSignal.timeout(10000));
 }
 
 export function fetchQueries(): Promise<SavedQuery[]> {

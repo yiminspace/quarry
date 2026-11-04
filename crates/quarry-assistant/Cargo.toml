@@ -1,0 +1,23 @@
+[package]
+name = "quarry-assistant"
+version = "2.0.0-alpha.1"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+async-trait = "0.1"
+fs2 = "0.4"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "process", "io-util"] }
+tokio-util = "0.7"
+toml_edit = "0.22"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"

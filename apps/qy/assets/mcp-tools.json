@@ -1,0 +1,229 @@
+[
+  {
+    "name": "list_connections",
+    "description": "List all configured database connections, grouped into project folders and env-sets (same logical db across dev/prod/...). Start here to learn which `db` keys exist.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "list_tables",
+    "description": "List tables of a database (or keys for a redis connection).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "db": {
+          "type": "string",
+          "description": "logical db or connection key"
+        },
+        "env": {
+          "type": "string",
+          "description": "env-set member (dev/prod/...); defaults to dev"
+        }
+      },
+      "required": [
+        "db"
+      ]
+    }
+  },
+  {
+    "name": "describe_table",
+    "description": "Column names, types and nullability for one table.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "db": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        },
+        "env": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "db",
+        "table"
+      ]
+    }
+  },
+  {
+    "name": "exec_sql",
+    "description": "Execute SQL (or a redis command) against a database and get a structured result {columns, rows, rowCount, truncated, elapsedMs}. READ-ONLY by default: writes/DDL fail with code 8 unless you pass write=true AND the server was started with --write; a configured production connection additionally requires confirm_prod=true. SELECTs without LIMIT get an automatic LIMIT (max_rows, default 500).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "db": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "env": {
+          "type": "string"
+        },
+        "max_rows": {
+          "type": "integer",
+          "default": 500
+        },
+        "write": {
+          "type": "boolean",
+          "default": false
+        },
+        "confirm_prod": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "db",
+        "sql"
+      ]
+    }
+  },
+  {
+    "name": "list_saved_queries",
+    "description": "List the workspace's saved named queries (name, target db, params).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "run_saved_query",
+    "description": "Run a saved named query by name, with `params` as {name: value}.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "env": {
+          "type": "string"
+        },
+        "max_rows": {
+          "type": "integer",
+          "default": 500
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "describe_saved_query",
+    "description": "Read a saved query's SQL, parameters, tags, source metadata and file path without executing it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  },
+  {
+    "name": "save_query",
+    "description": "Save SQL to a workspace query file WITHOUT executing or validating SQL. Available without server --write (that flag controls database writes only). Existing files require overwrite=true. With multiple workspaces, pass an exact workspace path from list_connections.workspaces; db must belong to it. Query names must be unique across configured workspaces.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "db": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "desc": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "default": "text"
+              },
+              "required": {
+                "type": "boolean",
+                "default": false
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "overwrite": {
+          "type": "boolean",
+          "default": false
+        },
+        "workspace": {
+          "type": "string",
+          "description": "Configured workspace path; required when multiple are active"
+        }
+      },
+      "required": [
+        "name",
+        "db",
+        "sql"
+      ]
+    }
+  },
+  {
+    "name": "ping_connection",
+    "description": "Probe one configured connection using SELECT 1 / Redis PING / openCypher RETURN 1. Returns ok, elapsed_ms and a sanitized failure category. Does not run saved SQL or change configuration. Timeout bounds connection setup and probe execution separately, not total wall time.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "db": {
+          "type": "string"
+        },
+        "env": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 10
+        }
+      },
+      "required": [
+        "db"
+      ]
+    }
+  }
+]

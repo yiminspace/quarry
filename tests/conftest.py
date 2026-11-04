@@ -343,7 +343,7 @@ from contextlib import closing, contextmanager  # noqa: E402
 
 @contextmanager
 def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None,
-                 connections_toml: str | None = None):
+                 connections_toml: str | None = None, registered_workspaces=None):
     """Start the real GUI HTTP server on an ephemeral port against a temp workspace.
     Yields the base URL. The shared cache (cache.py) is already isolated per-test
     by the autouse _isolated_cache fixture.
@@ -367,7 +367,54 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
         (tmp_path / "queries" / f"{name}.sql").write_text(text, encoding="utf-8")
     if _psql() and _psql() != "psql":
         os.environ["QUARRY_PSQL"] = _psql()
-    workspace.configure_workspace(str(tmp_path))
+    rust_binary = os.environ.get("QUARRY_RUST_BINARY")
+    if rust_binary:
+        import signal
+        import urllib.request
+        config = tmp_path / "config.toml"
+        if registered_workspaces is not None:
+            config.write_text("workspaces = " + json.dumps([str(p) for p in registered_workspaces]), encoding="utf-8")
+        elif not config.exists():
+            config.write_text("", encoding="utf-8")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            rust_port = sock.getsockname()[1]
+        env = dict(os.environ, QUARRY_CONFIG=str(config), QUARRY_UPDATE_CHECK="0")
+        log = (tmp_path / "rust-http.log").open("wb")
+        args = [rust_binary, "--config", str(config)]
+        if registered_workspaces is None:
+            args += ["--workspace", str(tmp_path)]
+        process = subprocess.Popen([*args, "gui", "--port", str(rust_port), "--no-browser"], env=env, stdout=log, stderr=log)
+        base = f"http://127.0.0.1:{rust_port}"
+        try:
+            for _ in range(100):
+                if process.poll() is not None:
+                    raise RuntimeError("Rust GUI exited: " + (tmp_path / "rust-http.log").read_text())
+                try:
+                    with urllib.request.urlopen(base + "/api/version", timeout=1) as response:
+                        if response.status == 200:
+                            break
+                except OSError:
+                    time.sleep(0.05)
+            else:
+                raise RuntimeError("Rust GUI startup timed out")
+            yield base
+        finally:
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            log.close()
+        return
+    previous_config = os.environ.get("QUARRY_CONFIG")
+    if registered_workspaces is not None:
+        (tmp_path / "config.toml").write_text("workspaces = " + json.dumps([str(p) for p in registered_workspaces]), encoding="utf-8")
+        os.environ["QUARRY_CONFIG"] = str(tmp_path / "config.toml")
+        workspace.configure_workspace(None)
+    else:
+        workspace.configure_workspace(str(tmp_path))
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -380,6 +427,11 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
     finally:
         httpd.shutdown()
         httpd.server_close()
+        if registered_workspaces is not None:
+            if previous_config is None:
+                os.environ.pop("QUARRY_CONFIG", None)
+            else:
+                os.environ["QUARRY_CONFIG"] = previous_config
         workspace.configure_workspace(None)
 
 
@@ -559,8 +611,7 @@ def page_sqlite_workspaces(_pw_browser, tmp_path: Path, monkeypatch):
             f'[{name}_local]\nurl = "sqlite:///data/local.db"\nengine = "sqlite"\n'
             f'db = "{name}_notes"\nenv = "local"\ngroup = "{name}"\n', encoding="utf-8")
         homes.append(str(home))
-    with _running_gui(tmp_path, connections_toml="") as url:
-        workspace.configure_workspace(os.pathsep.join(homes))
+    with _running_gui(tmp_path, connections_toml="", registered_workspaces=homes) as url:
         ctx = english_browser_context(_pw_browser, viewport={"width": 1280, "height": 900})
         stub_cdn(ctx)
         stub_events(ctx)

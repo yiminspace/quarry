@@ -29,3 +29,7 @@ web/tsconfig.tsbuildinfo
 .DS_Store
 .idea/
 .vscode/
+
+# Rust migration
+/target/
+/.rust-test-state/

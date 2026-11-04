@@ -36,6 +36,7 @@ export default function UpdatePanel({ info, onClose }: Props) {
               {UPGRADE_CMD}
             </span>
           </div>
+          <p><a id="upgradeGuide" href="https://github.com/yiminspace/quarry/blob/main/docs/install.md" target="_blank" rel="noreferrer">Native / pip upgrade instructions</a></p>
           {releaseUrl && (
             <div className="vg-cirow cirow">
               <span className="vg-cik cik">{t("release_notes")}</span>

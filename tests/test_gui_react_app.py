@@ -180,7 +180,11 @@ def test_stale_tables_response_does_not_overwrite(_pw_browser, tmp_path):
 def test_api_version(gui_server):
     code, body = gui_server.get("/api/version")
     assert code == 200
-    assert body == {"name": "Quarry", "version": __version__}
+    import os
+    import subprocess
+    native = os.environ.get("QUARRY_RUST_BINARY")
+    version = subprocess.check_output([native, "--version"], text=True).strip().split()[-1] if native else __version__
+    assert body == {"name": "Quarry", "version": version}
 
 
 @pytest.mark.integration

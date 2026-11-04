@@ -52,24 +52,28 @@ export default function Header() {
   /** Probe every connection (concurrency-capped at 3 — parallel SSH tunnels
    * skew each other's results) and paint the sidebar dots as results land. */
   const checkHealth = async (): Promise<void> => {
-    const { setChecking, setHealth } = useConnStore.getState();
+    const { checking: inProgress, setChecking, setHealth } = useConnStore.getState();
+    if (inProgress) return;
     setChecking(true);
-    const items = groups.flatMap((g) => g.items);
-    let i = 0;
-    const worker = async (): Promise<void> => {
-      while (i < items.length) {
-        const it = items[i++];
-        const env = it.envs.find((e) => e.env === "dev")?.env ?? it.envs[0]?.env ?? "";
-        try {
-          const d = await fetchHealth(it.db, env, { fresh: true });
-          setHealth(it.db, !!d.ok, d.error);
-        } catch {
-          setHealth(it.db, false);
+    try {
+      const items = groups.flatMap((g) => g.items);
+      let i = 0;
+      const worker = async (): Promise<void> => {
+        while (i < items.length) {
+          const it = items[i++];
+          const env = it.envs.find((e) => e.env === "dev")?.env ?? it.envs[0]?.env ?? "";
+          try {
+            const d = await fetchHealth(it.db, env, { fresh: true });
+            setHealth(it.db, !!d.ok, d.error);
+          } catch (error) {
+            setHealth(it.db, false, error instanceof Error ? error.message : String(error));
+          }
         }
-      }
-    };
-    await Promise.all(Array.from({ length: 3 }, worker));
-    setChecking(false);
+      };
+      await Promise.all(Array.from({ length: 3 }, worker));
+    } finally {
+      setChecking(false);
+    }
   };
 
   return (
@@ -121,6 +125,8 @@ export default function Header() {
         id="healthBtn"
         title={t("check_health")}
         aria-label={t("check_health")}
+        aria-busy={checking}
+        disabled={checking}
         onClick={() => void checkHealth()}
       >
         <i className={`ti ${checking ? "ti-loader" : "ti-activity"}`} />

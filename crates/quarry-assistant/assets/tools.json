@@ -1,0 +1,61 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "find_tables",
+      "description": "Find table names in the current database. Use a short name fragment; empty finds an initial bounded list.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "describe_tables",
+      "description": "Read columns, primary keys and declared foreign keys for up to 8 exact table names. This does not read table rows.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tables": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "tables"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "propose_sql",
+      "description": "Propose one complete replacement for the SQL editor only when the user explicitly requests writing or modifying SQL. Never executes SQL. Do not call for an explanation or example.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sql": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+]

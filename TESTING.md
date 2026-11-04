@@ -1,5 +1,15 @@
 # Testing
 
+## Rust candidate
+
+The Rust candidate has its own native library/process/real-engine suite; see
+[commands and evidence](docs/rust-verification.md). Set `QUARRY_RUST_BINARY` to
+run the existing browser matrix against an actual Rust HTTP process. The
+frontend feature rows below retain their meaning; transport-specific backend
+stubs do not count as native engine verification. The Python wheel/sdist tests
+remain checks of the rollback release, not the Rust binary. No Rust coverage
+percentage is inferred from the legacy Python coverage badge.
+
 Quarry has a layered test suite so failures are easy to localize and the whole
 thing stays green on a laptop with nothing installed (engine-dependent tests skip
 rather than fail; CI provides the engines and runs everything).
@@ -151,7 +161,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 1 | header | brand + workspace label; multi-workspace count + tooltip | B:test_load_shows_brand_without_readonly_badge (single-ws only) | 🟡 |
 | 2 | header | no permanent read-only / auto LIMIT badge; query safety is unchanged | B:test_load_shows_brand_without_readonly_badge, F:test_icon_hover_hints_cover_header_workbench_and_modals | ✅ |
 | 3 | app shell/workbench | explicit production configuration drives muted SQL-editor/connection/tab/Run chrome; selected tabs retain one short underline, editor has no extra accent line; localized Production label occupies a fixed slot at the end of the tab bar, outside the editor; stays visible during SQL scrolling/resizing and in the zero-tab state; header stays neutral without a production label and env switching keeps controls in place | F:test_production_context_follows_connection_without_toasts, F:test_single_production_connection_context_is_localized, F:test_production_context_has_stable_layout, F:test_production_tab_context_leaves_sql_unobstructed_when_scrolled_or_resized, F:test_env_pills_default_dev_and_prod_badge, F:test_env_preview_autorun_uses_explicit_production, V:test_production_context_tokens | ✅ |
-| 4 | header | health-check button: probe all, dots update, error tooltip | F:test_health_button_paints_ok_and_down_dots | ✅ |
+| 4 | header | health-check button: probe all, dots update, error tooltip; one batch at a time, disabled/busy during checks, ten-second request/body deadline and retry after a timeout | F:test_health_button_paints_ok_and_down_dots, F:test_health_timeout_releases_button_and_allows_a_new_batch; Rust runtime: `slow_ssh_setup_does_not_block_unrelated_tunnels_and_cannot_survive_close` covers per-target setup isolation, deduplication, cancellation recovery and shutdown | ✅ |
 | 5 | header/assistant | fresh profiles default to Chinese; language toggle 中/EN reloads full chrome and persists the choice, including assistant controls and conversation history | B:test_language_toggle_switches_run_label, F:test_language_toggle_full_chrome, F:test_fresh_default_language_is_chinese_and_switch_persists, F:test_assistant_localizes_explanation_checkpoint_configuration_and_history | ✅ |
 | 6 | header | mode toggle + persistence; palette selection includes Signal with persisted four-axis prefs | B:test_theme_toggle_flips_data_theme, F:test_theme_persists_after_reload, test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence | ✅ |
 | 7 | sidebar | connection groups; an ungrouped env sibling inherits the logical DB's sole group instead of creating a duplicate under OTHER; workspace origin label prefers the majority workspace when a group spans directories | B:test_load_shows_brand_without_readonly_badge (origin single-ws only), F:test_missing_group_env_sibling_stays_in_one_sidebar_env_set, A:test_ungrouped_env_member_inherits_its_only_sibling_group, A:test_group_workspace_origin_prefers_majority_source | 🟡 |
@@ -235,7 +245,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 84 | header | conn-info action: "Sync schema from {env}" (`POST /api/local/sync`) offered only ON the local env (postgres); confirm-gated; refuses non-local targets with the CLI's exit-code-9 invariant | F:test_conn_info_offers_sync_on_local_env (visibility), A:test_local_sync_endpoint_refuses_non_local; swap behavior covered by test_local_sync_docker.py | 🟡 |
 | 85 | grid | real pagination: a truncated result offers "load more" (same SQL, growing `OFFSET`), appending rows until the tail page isn't truncated; only offered for postgres/mysql/sqlite results produced by Run (not saved-query params, not redis/neptune, which can't page this way) | F:test_load_more_paginates_truncated_result, F:test_sqlite_load_more_sort_export_and_tab_restore, A:test_query_offset_pages_through_results, A:test_sqlite_api_metadata_and_pagination | ✅ |
 | 86 | grid | "load more" on an already-sorted grid re-sorts the combined rows (not just the new page) so the active sort + its arrow stay correct across pages | F:test_load_more_keeps_active_sort_applied | ✅ |
-| 87 | header | workspace manager (`#wsBtn`): list config.toml-registered workspaces (flags missing dir / no connections.toml), add a new one, remove one (confirm-gated); takes effect without dropping an explicit `--workspace` session; removing the workspace behind the currently active connection unbinds it after the connection tree refresh (no reload or tab switch needed) | F:test_workspace_manager_add_and_remove, F:test_workspace_manager_remove_unbinds_active_connection_immediately, A:test_api_workspace_add_and_remove_round_trip, A:test_api_workspace_add_and_remove_keep_explicit_workspace_session, A:test_workspaces_endpoints_through_http | ✅ |
+| 87 | header | workspace manager (`#wsBtn`): list config.toml-registered workspaces (flags missing dir / no connections.toml), add a new one, remove one (confirm-gated); takes effect without dropping an explicit `--workspace` session; removing the workspace behind the currently active connection unbinds it after the connection tree refresh (no reload or tab switch needed) | F:test_workspace_manager_add_and_remove, F:test_workspace_manager_remove_unbinds_active_connection_immediately, A:test_api_workspace_add_and_remove_round_trip, A:test_api_workspace_add_and_remove_keep_explicit_workspace_session, A:test_workspaces_endpoints_through_http; Rust service: `workspace_status_resolves_tilde_and_relative_paths_without_hiding_missing_entries` covers resolved paths, missing entries and proxy state without rewriting configuration | ✅ |
 | 88 | tabs | double-click a tab renames it (Enter/blur commits, Escape reverts); an empty name reverts to the automatic db@env / SQL title; the custom title persists across reloads | F:test_tab_rename_persists_and_empty_reverts | ✅ |
 | 89 | tabs | drag-and-drop reorders tabs; the active tab (and its per-tab result/SQL) follows its id, not its old index | F:test_tab_drag_reorder_moves_active_tab | ✅ |
 | 90 | tabs | middle-click closes a tab (same as the × glyph); the last tab closes to the empty workbench | F:test_tab_middle_click_closes | ✅ |
@@ -245,9 +255,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 94 | toolbar/tabs | query deep links: copy current `db/env/sql` as a shareable URL; opening it reuses an identical tab or creates one, restores SQL/connection, runs only when the destination Auto-run preference is enabled, and guards invalid link targets with an explicit toast (no silent auto-run failure) | F:test_copy_query_link_copies_db_env_sql, F:test_query_deeplink_opens_existing_tab_and_autoruns, F:test_query_deeplink_invalid_env_shows_notice_and_skips_autorun, F:test_query_deeplink_respects_auto_run_preference_and_production_default | ✅ |
 | 95 | app shell | live workspace refresh: `/api/events` SSE + backend file watcher — editing `connections.toml` / `queries/**/*.sql` on disk refreshes the sidebar without a manual reload (+ confirmation toast) | F:test_workspace_file_change_refreshes_sidebar_live (toast unasserted; watcher + SSE framing unit-covered in test_gui_backend.py) | ✅ |
 | 96 | app shell | upgrade-reload banner: after the backend restarts with a new version, the EventSource reconnect re-checks `/api/version` and shows a persistent "reload page" banner | F:test_server_upgrade_prompts_reload_banner | ✅ |
-| 97 | header | update-check badge: `GET /api/update` (backed by a throttled PyPI-polling thread — 24h interval, `QUARRY_UPDATE_CHECK=0` disables it, editable installs skip it, network failures stay silent) drives a header badge only when a newer release exists; its panel shows current/latest version, the `pipx upgrade quarry-db` command, and the canonical `yiminspace/quarry` release-notes link opening in a new tab | F:test_update_badge_hidden_when_no_new_version, F:test_update_badge_visible_and_dot_uses_accent_token_in_both_themes, F:test_update_panel_shows_versions_and_upgrade_command; backend throttle/semver/disable/editable/silent-failure unit-covered in test_gui_backend.py, `/api/update` HTTP-covered in test_gui_api.py | ✅ |
+| 97 | header | update-check badge: `GET /api/update` (native adapter uses the GitHub stable release API with a 30-minute cache, `QUARRY_UPDATE_CHECK=0` disables it, editable installs skip it, network failures stay silent) drives a header badge only when a newer release exists; its panel shows current/latest version, the `pipx upgrade quarry-db` command, installer-specific native/pip upgrade instructions and the canonical `yiminspace/quarry` release-notes link opening in a new tab | F:test_update_badge_hidden_when_no_new_version, F:test_update_badge_visible_and_dot_uses_accent_token_in_both_themes, F:test_update_panel_shows_versions_and_upgrade_command; backend throttle/semver/disable/editable/silent-failure unit-covered in test_gui_backend.py, `/api/update` HTTP-covered in test_gui_api.py | ✅ |
 | 98 | header | What's New panel: `GET /api/changelog` serves CHANGELOG.md (shipped in the wheel) parsed into version sections; a `__version__` change from the `qy_last_seen_version` recorded in localStorage auto-shows the panel with the entries for the new version(s), marks it seen immediately, and never reappears on a plain reload (a first-ever load with no recorded version just sets the baseline silently) | F:test_whats_new_hidden_on_first_ever_load, F:test_whats_new_shows_entries_after_upgrade_then_stays_hidden_on_reload, F:test_whats_new_background_uses_bg1_token_in_both_themes; CHANGELOG parsing unit-covered in test_gui_backend.py, `/api/changelog` HTTP-covered in test_gui_api.py, wheel packaging covered by test_wheel_includes_changelog | ✅ |
-| 99 | header | env switcher shows a proxy badge (`data-testid="proxy-badge"`) only for connections with a currently-live SSH tunnel that's actually routed through the proxy right now (an observed tunnel-pool fact, not a prediction) — server-computed, not guessed client-side; hidden when the workspace toggle is off, nothing was discovered, or no tunnel has been established for that connection yet | F:test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active, F:test_proxy_badge_hidden_when_workspace_toggle_off, F:test_proxy_badge_hidden_when_nothing_discovered, F:test_proxy_badge_follows_server_state_across_reload; `/api/connections`'s `proxied` field unit-covered in test_gui_api.py | ✅ |
+| 99 | header | env switcher shows a proxy badge (`data-testid="proxy-badge"`) only for connections with a currently-live SSH tunnel that's actually routed through the proxy right now (an observed tunnel-pool fact, not a prediction) — server-computed, not guessed client-side; hidden when the workspace toggle is off, nothing was discovered, or no tunnel has been established for that connection yet | F:test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active, F:test_proxy_badge_hidden_when_workspace_toggle_off, F:test_proxy_badge_hidden_when_nothing_discovered, F:test_proxy_badge_follows_server_state_across_reload; `/api/connections`'s `proxied` field unit-covered in test_gui_api.py; Rust runtime: `proxy_badge_requires_exact_live_tunnel_including_shared_owner` covers unopened/missing-key connections, shared live owners, changed target/proxy dimensions and stale PID rejection | ✅ |
 | 100 | header | workspace manager shows each registered workspace's proxy toggle state and the currently discovered proxy address (`data-testid="ws-proxy-status"`) | F:test_workspace_manager_shows_proxy_status_per_workspace, F:test_workspace_manager_shows_proxy_off_when_toggle_disabled; `/api/workspaces`'s `proxyEnabled`/`proxyDiscovered` fields unit-covered in test_gui_api.py | ✅ |
 | 101 | header | compact tunnel keep-alive control: single clickable status badge (`down`/`up`/`reconnecting`) toggles start/stop with mouse, Enter or Space; action tooltip and pressed state; no separate play/stop icon backed by `/api/keepalive*`, matching `qy status` semantics across GUI/keeper locale and timezone differences; unverifiable legacy PID and tunnel records fail closed | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state, V:test_keeper_control_tokens; U:test_process_identity_is_independent_of_caller_locale_and_timezone, test_legacy_keeper_identity_needs_pid_file_start_time_proof, test_legacy_reused_pid_never_signalled_even_if_ps_text_matches, test_pre_v2_registry_identity_is_not_reused_even_with_open_port; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
 | 102 | grid/tabs | multi-megabyte cells never enter grid/row-detail DOM attributes or text in full; grid preview is 512 chars, inspector text grows in 20k chunks, JSON children mount lazily, and >512 KiB results skip synchronous persistence while remaining fully copyable/exportable in the current session | F:test_large_cell_is_bounded_in_dom_and_kept_session_only, F:test_large_cell_copy_uses_full_value_not_preview, test_gui_visual:test_large_result_session_badge_inherits_status_token; cellValue.test.ts, tabsStore.test.ts | ✅ |
@@ -1071,3 +1081,46 @@ isolated SQLite database. CLI save/probe regression coverage remains in
 core helpers across the two interfaces. Engine-specific probe behavior is covered
 for PostgreSQL, MySQL, Redis and Neptune using deterministic engine stubs; this
 does not establish remote SSH/auth recovery or live Neptune availability.
+
+
+### Health-check recovery audits (2026-11-03)
+
+- Existence: matrix row 4 owns Header's health click, disabled/aria-busy state,
+  synchronous `checking` reentry guard and `finally` reset. `fetchHealth` retains
+  the same `/api/health` query parameters and adds a ten-second abort signal for
+  both receiving headers and consuming JSON. No endpoint or storage key is added.
+- Capability: a hung request finishes as a visible failed check, leaves a useful
+  error tooltip and allows another batch. The existing three-worker limit,
+  selected default environment and connection scope remain unchanged. The new
+  browser regression simulates a stalled health response against the isolated
+  SQLite fixture, checks duplicate-click suppression, timeout recovery and retry.
+- Shared state: Header is still the only writer of `checking`; Header and Sidebar
+  read it for the button and pending dots. Health writers remain Header,
+  ResultWorkbench (table loading and cached health) and ConnInfoModal; Sidebar
+  reads health for dots, dimming and tooltips. The test covers the Header-to-Sidebar
+  failure/retry interaction. Database-only health keys and all existing readers
+  and writers are preserved; no tab, editor, result or persistence state changes.
+
+
+### Native PostgreSQL/MySQL health transport
+
+Health checks authenticate using the same TLS identity, CA and explicit SSH
+forwarding construction as normal queries, then issue PostgreSQL Sync or MySQL
+COM_PING. They send no query SQL or transaction/session setup. MySQL's driver-only
+session normalization is disabled only for this protocol-only connection; normal
+queries retain their existing initialization, read-only transaction and cancellation
+behavior. HTTP's six-second and browser's ten-second deadlines remain unchanged.
+
+`postgres_ping_uses_sync_over_verified_forwarded_tls_and_rejects_wrong_hostname`
+and `mysql_ping_uses_com_ping_over_verified_forwarded_tls_and_rejects_wrong_hostname`
+inspect the TLS wire and reject wrong certificate names before ping. The fixtures
+fail on Query/Parse/COM_QUERY, catching a return to the former multi-round-trip path.
+`protocol_ping_deadline_includes_stalled_authentication` verifies the total probe
+budget covers a TCP peer that never finishes authentication and rejects zero budgets.
+
+
+Release migration audit: the update panel now links to installer-specific native
+and pip upgrade instructions. Its existing version/release-note/command state
+is unchanged; the new anchor has no state writes. Existence: upgradeGuide maps
+to the update-panel browser contract. Capability: native installations have an
+upgrade path in addition to pipx. Shared-state: no new store or writer.

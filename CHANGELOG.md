@@ -5,9 +5,30 @@ All notable changes to Quarry are documented here. The format follows
 [SemVer](https://semver.org/). Public breaking changes require a major release;
 pre-1.0 history followed the earlier development policy.
 
+## [2.0.0-rc.1] - 2026-11-04
+
+### Distribution
+
+- Rust now owns the main release line. Python 1.11.0 is archived separately.
+- macOS/Linux arm64/x86_64 native archives and platform wheels install the same
+  executable; release acceptance checks both fresh installs and Python upgrades.
+- Explicit version-tag publication replaces Python automatic semantic releases.
+  Native downloads, checksums and installer-specific upgrade instructions ship
+  with the bilingual site. No private host configuration is distributed.
+
 ## [Unreleased]
 
 ### Added
+
+- Trusted local command credentials can refresh IAM bearer tokens before each
+  assistant request without storing them in Quarry or accepting commands from
+  HTTP/model inputs. Status inspection remains local and secrets stay redacted.
+
+- Native Rust compatibility candidate with reusable execution, runtime, local
+  database, assistant and service crates for direct embedding in host CLIs.
+  The standalone CLI, MCP and HTTP workbench use those crates; the current UI
+  is retained. This is an unreleased candidate and does not replace the stable
+  installation. See `docs/rust-preview.md` for build and migration boundaries.
 
 - MCP tools `describe_saved_query`, `save_query` and `ping_connection` expose
   saved SQL/metadata, parameterized query-file creation with explicit overwrite
@@ -127,6 +148,27 @@ pre-1.0 history followed the earlier development policy.
   for that production connection.
 
 ### Fixed
+
+- PostgreSQL/MySQL health probes use a single native protocol ping after strict
+  TLS/authenticated connection setup, avoiding query-only transactions, metadata
+  and session initialization. Normal query safety and health deadlines stay intact.
+
+- Health checks prevent overlapping batches and stop waiting after ten seconds
+  per request, including response-body reads. The button becomes available again
+  after failures, with the failure reason retained in connection tooltips.
+
+- Workspace status expands home-relative and config-relative registered paths
+  before checking directories and connection files, so valid `~/...` workspaces
+  no longer appear missing.
+
+- Rust SSH tunnel startup no longer holds the entire connection pool lock.
+  A slow or unreachable target cannot stall unrelated health probes, queries or
+  connection status; concurrent requests for the same tunnel still share setup.
+
+- Rust connection proxy badges now require a matching live SSH tunnel instead of
+  predicting success from the workspace proxy setting. Unopened connections and
+  missing SSH keys no longer appear connected through a proxy; direct Neptune
+  badges follow its configured request transport.
 
 - Retrying an assistant SQL change after a lost response reuses the saved
   checkpoint. Pending suggestions remain available while recovering from a

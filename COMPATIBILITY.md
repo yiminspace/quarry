@@ -1,5 +1,12 @@
 # Quarry interface and support contract
 
+The unreleased Rust 2.x candidate follows the functional and state-preservation
+contracts below while allowing transport/library API changes. Native crates,
+dependencies, supported evidence and migration limits are recorded separately
+in [the Rust candidate guide](docs/rust-preview.md) and
+[verification](docs/rust-verification.md). Python package claims below describe
+the currently published stable/rollback implementation.
+
 This document defines the stable interface contract starting with Quarry 1.0.0. Experimental capabilities are identified separately. Passing local tests is not a statement that every platform or database version is supported.
 
 ## Entry points

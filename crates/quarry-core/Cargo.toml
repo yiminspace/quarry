@@ -1,0 +1,31 @@
+[package]
+name = "quarry-core"
+version = "2.0.0-alpha.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
+thiserror = "2"
+url = "2"
+regex = "1"
+shell-words = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+bigdecimal = "0.4"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "mysql", "chrono", "uuid", "bigdecimal", "json"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "hooks", "column_decltype"] }
+redis = { version = "0.32.7", features = ["tokio-comp", "tokio-rustls-comp"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
+tempfile = "3"
+
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+
+[dev-dependencies]

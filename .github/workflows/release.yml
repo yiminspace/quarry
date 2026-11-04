@@ -1,132 +1,122 @@
-name: Release to PyPI
-
-run-name: Publish ${{ inputs.tag || github.event.release.tag_name }} to PyPI
-
+name: Native release
 on:
+  push:
+    tags: ['v2.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: "Exact release tag to build and publish"
+        description: Exact version tag to build and publish
         required: true
         type: string
-  release:
-    types: [published]
-
 permissions:
   contents: read
-
 concurrency:
-  group: publish-pypi
+  group: native-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
-
 jobs:
   validate:
     uses: ./.github/workflows/ci.yml
     with:
-      checkout_ref: ${{ inputs.tag || github.event.release.tag_name }}
-
-  publish:
+      checkout_ref: ${{ inputs.tag || github.ref_name }}
+  build:
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, asset: linux-x86_64, manylinux: '2_28'}
+          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: linux-arm64, manylinux: '2_28'}
+          - {os: macos-15, target: aarch64-apple-darwin, asset: macos-arm64, manylinux: 'off'}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, asset: macos-x86_64, manylinux: 'off'}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python scripts/validate_release.py '${{ inputs.tag || github.ref_name }}'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: web
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --out dist
+      - run: python scripts/package_release.py --asset '${{ matrix.asset }}' --output dist
+      - name: Fresh install and Python upgrade acceptance
+        run: python scripts/verify_install.py dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    needs: build
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      contents: read
       id-token: write
-    env:
-      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      contents: write
     steps:
-      - name: Checkout exact release tag
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - uses: actions/setup-python@v6
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
         with:
-          python-version: "3.12"
-
-      - name: Verify tag and package versions
-        run: |
-          python - <<'PY'
-          import os
-          import re
-          import subprocess
-          import tomllib
-          from pathlib import Path
-
-          tag = os.environ["RELEASE_TAG"]
-          match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
-          if match is None:
-              raise SystemExit(f"expected a stable SemVer tag, got {tag!r}")
-
-          version = tag.removeprefix("v")
-          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          init_text = Path("src/quarry/__init__.py").read_text()
-          package_match = re.search(r'^__version__ = "([^"]+)"$', init_text, re.MULTILINE)
-          package_version = package_match.group(1) if package_match else None
-          exact_tags = subprocess.check_output(
-              ["git", "tag", "--points-at", "HEAD"], text=True
-          ).splitlines()
-
-          mismatches = []
-          if project_version != version:
-              mismatches.append(f"pyproject.toml={project_version!r}")
-          if package_version != version:
-              mismatches.append(f"src/quarry/__init__.py={package_version!r}")
-          if tag not in exact_tags:
-              mismatches.append(f"HEAD tags={exact_tags!r}")
-          if mismatches:
-              raise SystemExit(f"release {tag!r} does not match: " + ", ".join(mismatches))
-          PY
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Build React shell
-        run: npm ci && npm run build
-        working-directory: web
-
-      - name: Build distributions
-        run: pipx run build
-
-      - name: Check distribution metadata
-        run: pipx run twine check dist/*
-
-      - name: Publish to PyPI
+          pattern: distribution-*
+          path: dist
+          merge-multiple: true
+      - run: mkdir wheels && cp dist/*.whl wheels/
+      - name: Publish platform wheels
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels
+          skip-existing: true
+          attestations: true
+          # Archives/checksums are GitHub assets, not Python distributions.
+          verbose: true
+        env:
+          TWINE_NON_INTERACTIVE: '1'
+      - name: Publish GitHub release and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --verify-tag "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
 
   publish-mcp:
-    name: Publish to MCP Registry
     needs: publish
+    if: ${{ !contains(inputs.tag || github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
-    env:
-      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
     steps:
-      - name: Checkout exact release tag
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
-          ref: ${{ env.RELEASE_TAG }}
-
+          ref: ${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
-
-      - name: Verify published package and prepare MCP manifest
-        run: python scripts/prepare_mcp_release.py --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/quarry-mcp-server.json"
-
+          python-version: '3.12'
+      - run: python scripts/prepare_mcp_release.py --tag '${{ inputs.tag || github.ref_name }}' --output "$RUNNER_TEMP/server.json"
       - name: Install verified MCP publisher
         run: |
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/mcp-publisher.tar.gz" \
-            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/mcp-publisher.tar.gz" https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
           echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
-
-      - name: Authenticate with GitHub OIDC
-        run: '"$RUNNER_TEMP/mcp-publisher" login github-oidc'
-
-      - name: Publish organization entry
-        run: '"$RUNNER_TEMP/mcp-publisher" publish "$RUNNER_TEMP/quarry-mcp-server.json"'
+      - run: '"$RUNNER_TEMP/mcp-publisher" login github-oidc'
+      - run: '"$RUNNER_TEMP/mcp-publisher" publish "$RUNNER_TEMP/server.json"'

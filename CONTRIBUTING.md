@@ -1,3 +1,8 @@
+> Rust 2.x is the current implementation. Build web assets, then use Cargo for
+> runtime tests and Maturin for platform wheels. See docs/install.md and
+> .github/workflows/ci.yml. Python commands below support the historical test
+> baseline; Python runtime publication belongs to archive/python-1.x.
+
 # Contributing to Quarry
 
 Thanks for your interest! Quarry is young and contributions of all sizes are welcome — bug reports, docs, new engine backends, GUI polish.

@@ -1,0 +1,24 @@
+[package]
+name = "quarry-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+quarry-core = { path = "../quarry-core" }
+quarry-runtime = { path = "../quarry-runtime" }
+quarry-local = { path = "../quarry-local" }
+quarry-assistant = { path = "../quarry-assistant" }
+async-trait.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+url.workspace = true
+percent-encoding = "2"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
