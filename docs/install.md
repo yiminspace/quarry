@@ -5,7 +5,23 @@ Windows and musl/Alpine binaries are not part of this release.
 
 ## Native binary (no Python or Rust toolchain)
 
-Download `install.sh` from the matching Git tag, inspect it, then run:
+Install or upgrade to the latest stable release with one command:
+
+```sh
+curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh
+```
+
+The website serves the repository's canonical installer. It detects the OS and
+architecture, downloads the latest stable native archive, verifies SHA-256, and
+atomically replaces `~/.local/bin/qy`. Python is not required.
+
+For a specific version or custom directory:
+
+```sh
+curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh -s -- --version 2.0.0 --dir "$HOME/.local/bin"
+```
+
+To inspect the script before running, download it from the matching Git tag:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/yiminspace/quarry/v2.0.0/install.sh -o install-quarry.sh

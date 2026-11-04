@@ -5,6 +5,12 @@ All notable changes to Quarry are documented here. The format follows
 [SemVer](https://semver.org/). Public breaking changes require a major release;
 pre-1.0 history followed the earlier development policy.
 
+## [Unreleased]
+
+- Serve the canonical native installer at the website's `/install.sh` and make
+  one-command latest-stable installation the default in both website languages
+  and READMEs. Keep pip/pipx/uv alternatives and version-pinned instructions.
+
 ## [2.0.0] - 2026-11-04
 
 - Promote the native release after supported-platform artifact, fresh-install,

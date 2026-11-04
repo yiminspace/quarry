@@ -85,8 +85,10 @@
   .install {
     display: flex; align-items: center; gap: 12px; background: var(--bg2);
     border: 1px solid var(--line); border-radius: 10px; padding: 11px 16px;
-    font-family: var(--mono); font-size: 15px;
+    font-family: var(--mono); font-size: 15px; max-width: 100%; min-width: 0;
   }
+  .install span:not(.dollar) { min-width: 0; overflow-x: auto; white-space: nowrap; }
+  .install .dollar, .install button { flex-shrink: 0; }
   .install .dollar { color: var(--faint); user-select: none; }
   .install button {
     background: none; border: 0; color: var(--faint); cursor: pointer; font-size: 15px; padding: 2px 4px;
@@ -222,8 +224,8 @@
       <p class="sub">所有数据库工具都默认键盘前坐着一个人。Quarry 默认操作者是 agent —— 给它一个带安全栏的查询内核,长出多张脸:CLI、GUI、agent skill、MCP。</p>
       <div class="cta-row">
         <div class="install">
-          <span class="dollar">$</span><span id="pipcmd">pipx install quarry-db==2.0.0</span>
-          <button onclick="navigator.clipboard.writeText('pipx install quarry-db==2.0.0');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
+          <span class="dollar">$</span><span id="pipcmd">curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh</span>
+          <button onclick="navigator.clipboard.writeText('curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
         </div>
         <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">原生安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装 / 升级 / Python 归档</a></p>
         <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">去 GitHub 点个 Star</a>
@@ -393,8 +395,8 @@
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">
-        <span class="dollar">$</span><span>pipx install quarry-db==2.0.0</span>
-        <button onclick="navigator.clipboard.writeText('pipx install quarry-db==2.0.0');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
+        <span class="dollar">$</span><span>curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh</span>
+        <button onclick="navigator.clipboard.writeText('curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
       </div>
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">在 GitHub 看源码</a>
     </div>

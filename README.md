@@ -11,7 +11,7 @@ policies, SSH tunnels, saved queries, local Docker services and a SQL assistant.
 Version 2.0 is the native Rust stable release.
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0
+curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh
 qy --version
 qy gui
 ```
@@ -19,6 +19,12 @@ qy gui
 Or download a native archive and SHA256SUMS from [GitHub Releases](https://github.com/yiminspace/quarry/releases).
 The native executable needs neither Python nor a Rust toolchain. Supported:
 macOS/Linux arm64/x86_64; Linux glibc 2.28+. See [install and upgrade](docs/install.md).
+
+Or use pip (the same native executable):
+
+```sh
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0
+```
 
 ## Use
 
