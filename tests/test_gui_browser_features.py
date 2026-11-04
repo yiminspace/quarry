@@ -6276,7 +6276,15 @@ def _hosted_workbench(page, *, online=True, engine="sqlite"):
                 return
             route.fulfill(content_type='application/x-ndjson', headers=headers, body=stream)
             return
-        elif path in ('/api/local/up', '/api/local/down', '/api/schema/import', '/api/cancel'):
+        elif path == '/api/schema/import':
+            state['operations'].append((path, body))
+            # The real companion resolves its target through resourceId before
+            # checking the source binding; accepting an alias masks a broken UI.
+            if body.get('resourceId') != local['id'] or body.get('sourceResourceId') != remote['id']:
+                route.fulfill(status=400, json={'error': 'Explicit matching source and Local resource required'}, headers=headers)
+                return
+            value = {'ok': True}
+        elif path in ('/api/local/up', '/api/local/down', '/api/cancel'):
             state['operations'].append((path, body))
             value = {'ok': True}
         else:
@@ -6403,13 +6411,15 @@ def test_platform_local_create_sync_stop_require_explicit_actions(page_sqlite):
     page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local database created')")
     page.get_by_label('Local target', exact=True).select_option('local-notes')
     page.once('dialog', lambda dialog: dialog.accept())
-    page.get_by_role('button', name='Sync schema to Local', exact=True).click()
+    with page.expect_request(lambda request: urlparse(request.url).path == '/api/schema/import') as schema_request:
+        page.get_by_role('button', name='Sync schema to Local', exact=True).click()
+    assert schema_request.value.post_data_json == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
     page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Schema synced')")
     page.once('dialog', lambda dialog: dialog.accept())
     page.get_by_role('button', name='Stop Local', exact=True).click()
     page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local service stopped')")
     assert [path for path, _ in state['operations']] == ['/api/local/up', '/api/schema/import', '/api/local/down']
-    assert state['operations'][1][1] == {'sourceResourceId': 'remote-notes', 'targetResourceId': 'local-notes'}
+    assert state['operations'][1][1] == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
     assert not state['queries']
 
 
@@ -6469,6 +6479,54 @@ def test_platform_cancel_query_never_repaints_grid_from_late_response(page_sqlit
     page.wait_for_load_state('networkidle')
     assert not page.locator('#status').is_visible()
     assert page.locator('#sql').input_value() == 'select 1 as slow_result'
+
+
+def test_platform_late_cancel_ack_preserves_new_query_pending_and_result(page_sqlite):
+    page = page_sqlite
+    _hosted_workbench(page)
+    queries, cancellations = [], []
+    page.route('**/api/db/query', lambda route: queries.append(route))
+    page.route('**/api/db/cancel', lambda route: cancellations.append(route))
+
+    def wait_for_requests(requests, count):
+        deadline = time.monotonic() + 5
+        while len(requests) < count and time.monotonic() < deadline:
+            page.wait_for_timeout(10)
+        assert len(requests) == count
+
+    def respond(route, value):
+        route.fulfill(json={'columns': [{'name': 'value', 'type': 'INTEGER'}], 'rows': [{'value': value}],
+            'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite',
+            'sql': route.request.post_data_json['sql'], 'downloadBytes': 12, 'sizeIsEstimated': True})
+
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as old_pending_query')
+    page.locator('#runBtn').click()
+    wait_for_requests(queries, 1)
+    page.get_by_test_id('cancel-platform-query').click()
+    wait_for_requests(cancellations, 1)
+    assert cancellations[0].request.post_data_json['requestId'] == queries[0].request.post_data_json['requestId']
+
+    # The replacement request starts on the same tab before cancellation of the
+    # old request is acknowledged. Its spinner and result belong to the new ID.
+    page.locator('#sql').fill('select 2 as newer_pending_query')
+    page.locator('#runBtn').click()
+    wait_for_requests(queries, 2)
+    assert queries[0].request.post_data_json['requestId'] != queries[1].request.post_data_json['requestId']
+    with page.expect_response('**/api/db/cancel') as acknowledged:
+        cancellations[0].fulfill(json={'cancelled': True})
+    acknowledged.value.finished()
+    page.locator('#sql').click()
+    assert page.get_by_test_id('cancel-platform-query').is_visible()
+
+    respond(queries[1], 202)
+    page.wait_for_function("document.querySelector('#grid')?.textContent.includes('202')", timeout=5000)
+    page.get_by_test_id('cancel-platform-query').wait_for(state='hidden')
+    respond(queries[0], 999)
+    page.wait_for_load_state('networkidle')
+    assert '202' in page.locator('#grid').inner_text()
+    assert '999' not in page.locator('#grid').inner_text()
+    assert page.locator('#sql').input_value() == 'select 2 as newer_pending_query'
 
 
 def test_platform_pairing_rejects_non_loopback_destination(page_sqlite):

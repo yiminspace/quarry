@@ -7,6 +7,9 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Fix hosted PostgreSQL schema transfer to address the selected Local target,
+  and preserve newer queries and results when an earlier cancellation completes
+  late on the same tab.
 - Refresh both website languages with standalone, embedded and IAM-hosted
   capabilities, desktop personal storage, offline behavior and Local database
   workflows. Add bilingual hosting guides with explicit IAM, browser-session and

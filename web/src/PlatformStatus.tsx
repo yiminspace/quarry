@@ -46,7 +46,7 @@ function ConnectionPanel({ onClose }: { onClose: () => void }) {
         <p>{t("platform_engines_help")}</p>
         <label>{t("platform_target")}<select aria-label={t("platform_target")} value={target} onChange={(event) => setTarget(event.target.value)}><option value="">{t("platform_select_local")}</option>{local.map((item) => <option key={item.id} value={item.id}>{item.project}/{item.db} · {resourceLabel(item)}</option>)}</select></label>
         <div className="platform-actions"><button className="vg-btn btn" disabled={busy || !remote.some((item) => item.id === source && item.engine === "postgres") || !local.some((item) => item.id === target && item.engine === "postgres")} onClick={() => {
-          if (window.confirm(t("platform_sync_confirm"))) void perform(async () => { await platformJSON("/api/schema/import", { sourceResourceId: source, targetResourceId: target }, true); await reconnectLocal(); }, t("platform_synced_notice"));
+          if (window.confirm(t("platform_sync_confirm"))) void perform(async () => { await platformJSON("/api/schema/import", { sourceResourceId: source, resourceId: target }, true); await reconnectLocal(); }, t("platform_synced_notice"));
         }}>{t("platform_sync")}</button>
         <button className="vg-btn btn" disabled={busy || !target} onClick={() => { const item = local.find((item) => item.id === target)!; if (window.confirm(tv("platform_stop_confirm", { engine: item.engine }))) void perform(async () => { await platformJSON("/api/local/down", { engine: item.engine, resourceId: item.id }, true); await reconnectLocal(); }, t("platform_stopped_notice")); }}>{t("platform_stop")}</button></div>
       </section>}

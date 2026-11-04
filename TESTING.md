@@ -304,10 +304,10 @@ administration, credential reveal and shared saved-query management.
 | H2 | targets/results | hosted and paired Local targets use stable resource/placement identity; grid and exports retain active-tab ownership | F:test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution; F:test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_old_device | ✅ |
 | H3 | connections | independent cloud/local status, explicit pair/revoke/reconnect, draft preservation and no SQL replay | F:test_platform_reconnect_and_revoke_preserve_draft_without_query_replay | ✅ |
 | H4 | assistant | request-scoped remote generation; proposals/apply/restore/reload use companion personal documents, never cloud history or automatic execution | F:test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store; F:test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen; F:test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql | ✅ |
-| H5 | Local/schema | create, stop and PostgreSQL schema import are explicit operations bound to source and local target; unavailable without pairing | F:test_platform_local_create_sync_stop_require_explicit_actions | ✅ |
+| H5 | Local/schema | create, stop and PostgreSQL schema import are explicit operations bound to source and local target; schema import sends the companion's required `resourceId` with `sourceResourceId`, checked by a strict target-resolving fixture; unavailable without pairing | F:test_platform_local_create_sync_stop_require_explicit_actions | ✅ |
 | H6 | personal SQLite | revision conflicts retain the current draft, offer export and explicit reload, and never overwrite another document silently | F:test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload | ✅ |
 | H7 | shared local history | native CLI and GUI canonical query-history document feeds SQL recall; shared platform SQL remains unavailable | F:test_platform_cli_history_is_loaded_from_same_local_document; F:test_platform_offline_result_queue_is_bounded_and_reconnect_saves_all_sql; ylab native test_database.py | ✅ |
-| H8 | cancellation | request-ID cancellation and latest-wins suppress a response after cancellation | F:test_platform_cancel_query_never_repaints_grid_from_late_response | ✅ |
+| H8 | cancellation | request-ID cancellation and latest-wins suppress a response after cancellation; a delayed cancellation acknowledgement cannot clear a newer query's pending state or discard its result on the same tab | F:test_platform_cancel_query_never_repaints_grid_from_late_response; F:test_platform_late_cancel_ack_preserves_new_query_pending_and_result | ✅ |
 | H9 | pairing | UI rejects non-loopback destinations before transmitting credentials; status/dialog use theme tokens in both themes | F:test_platform_pairing_rejects_non_loopback_destination; V:test_platform_status_and_pairing_chrome_use_theme_tokens; F:test_platform_chrome_follows_language_toggle_and_documents_real_connect_command | ✅ |
 | H10 | offline assets | previously loaded static shell reopens with the entire network offline; service-worker cache contains no API or personal responses | F:test_platform_cached_shell_reopens_with_entire_network_offline | ✅ |
 | H11 | IAM refresh | expired IAM refreshes once for pairing/schema/model operations; local-only operations stay independent of cloud refresh | F:test_platform_local_schema_action_refreshes_iam_without_changing_local_identity; F:test_platform_cloud_failure_does_not_disconnect_paired_local_history | ✅ |
@@ -1194,3 +1194,27 @@ upgrade path in addition to pipx. Shared-state: no new store or writer.
   H2/H4/H6/H7/H8 interact across those readers, recovery, results and assistant
   checkpoints; the existing standalone overwrite/race/production-auto-run tests
   continue to protect their original paths.
+
+### 2026-11-04 hosted schema/cancellation contract corrections
+
+- **Existence:** H5 asserts the actual schema-import request carries
+  `sourceResourceId` and target `resourceId`; its fixture rejects a missing or
+  mismatched target just as the companion does. H8 covers a second query started
+  before the first query's cancellation acknowledgement. No interaction bindings,
+  API routes or storage keys were added.
+- **Capability:** explicit schema transfer can reach the selected Local target.
+  Cancelling one execution leaves a newer execution on the same tab running and
+  able to publish its result. Other connection-dialog payloads were checked
+  against the companion: pair (`code`), unpair (empty object), Local creation
+  (`db`, `engine`, `project`, `sourceResourceId`), stop (`engine`, `resourceId`),
+  and personal read/reload/save (`kind`, `key`, `value`, `revision`) agree.
+  No additional capability gap was introduced.
+- **Shared state / all write sites:** request sequence writes are `startReq` and
+  the guarded cancellation acknowledgement; request-ID writes are `startReq`.
+  Pending-state writers are `startReq` (true), `endReq` (false only for the current
+  sequence), and the cancellation acknowledgement (false only for its captured
+  sequence). Result/error readers and writers continue through `isCurrentReq`,
+  `applyTabResult` and `reqFailed`. The cancellation-ID set in `api.ts` still
+  adds/removes only the cancelled request's UUID. H8 interacts across both
+  requests, the pending control and active-tab results, including an old response
+  arriving after the newer result.

@@ -1258,10 +1258,15 @@ export default function ResultWorkbench() {
           />
           {PLATFORM_MODE && pendingByTab[activeTabId] && current && <button className="vg-btn btn" data-testid="cancel-platform-query" onClick={() => {
             const requestId = reqIdsRef.current[activeTabId];
-            if (!requestId) return;
+            const seq = reqSeqRef.current[activeTabId];
+            if (!requestId || seq === undefined) return;
+            const ctx: ReqCtx = { tabId: activeTabId, requestId, seq, db: current.db, env: current.env };
             void cancelPlatformQuery(current.db, current.env, requestId).then(() => {
-              reqSeqRef.current[activeTabId] = (reqSeqRef.current[activeTabId] ?? 0) + 1;
-              setPendingByTab((previous) => ({ ...previous, [activeTabId]: false }));
+              // Cancellation belongs to the request clicked, even if another
+              // query starts on this tab before the acknowledgement arrives.
+              if (!isCurrentReq(ctx)) return;
+              reqSeqRef.current[ctx.tabId] = ctx.seq + 1;
+              setPendingByTab((previous) => ({ ...previous, [ctx.tabId]: false }));
             }).catch((error) => toast((error as Error).message, false));
           }}>{t("platform_cancel_query")}</button>}
           {activeTab.savedQueryId && <button className="vg-btn btn" id="copySavedBtn"
