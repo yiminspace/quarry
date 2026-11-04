@@ -1,6 +1,6 @@
 # Install and upgrade Quarry 2
 
-Supported release artifacts: macOS arm64/x86_64 and Linux glibc 2.28+ arm64/x86_64.
+Supported release artifacts: macOS 11+ arm64/x86_64 and Linux glibc 2.28+ arm64/x86_64.
 Windows and musl/Alpine binaries are not part of this release.
 
 ## Native binary (no Python or Rust toolchain)
@@ -8,11 +8,11 @@ Windows and musl/Alpine binaries are not part of this release.
 Download `install.sh` from the matching Git tag, inspect it, then run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/yiminspace/quarry/v2.0.0-rc.4/install.sh -o install-quarry.sh
+curl -fsSL https://raw.githubusercontent.com/yiminspace/quarry/v2.0.0/install.sh -o install-quarry.sh
 ```
 
 ```sh
-sh install-quarry.sh --version 2.0.0-rc.4
+sh install-quarry.sh --version 2.0.0
 $HOME/.local/bin/qy --version
 ```
 
@@ -23,9 +23,9 @@ Release archives and `SHA256SUMS` are available on GitHub Releases.
 ## pip / pipx / uv
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc4
-# or: pipx install --pip-args='--only-binary=:all:' quarry-db==2.0.0rc4
-# or: uv tool install quarry-db==2.0.0rc4
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0
+# or: pipx install --pip-args='--only-binary=:all:' quarry-db==2.0.0
+# or: uv tool install quarry-db==2.0.0
 qy --version
 ```
 

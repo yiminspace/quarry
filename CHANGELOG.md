@@ -5,6 +5,13 @@ All notable changes to Quarry are documented here. The format follows
 [SemVer](https://semver.org/). Public breaking changes require a major release;
 pre-1.0 history followed the earlier development policy.
 
+## [2.0.0] - 2026-11-04
+
+- Promote the native release after supported-platform artifact, fresh-install,
+  Python-upgrade, native archive and published-package acceptance passed.
+- GitHub Releases and PyPI distribute the same Rust program. Python 1.x remains
+  archived; current MCP installation is pinned to the matching native version.
+
 ## [2.0.0-rc.4] - 2026-11-04
 
 ### Distribution

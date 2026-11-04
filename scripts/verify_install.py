@@ -14,6 +14,7 @@ with tempfile.TemporaryDirectory() as tmp:
   args=[qy,'--config',t/'config.toml','--workspace',ws,'exec','test','--sql','SELECT value FROM sentinel']
   assert json.loads(run(args,env=dict(env,PATH='/nonexistent')))==[{'value':'preserved'}]
  run([python,'-m','pip','install','--no-deps',wheels[0]],env=env);smoke(path/'bin/qy')
+ run([sys.executable,root/'scripts/verify_gui_install.py',path/'bin/qy'],env=env)
  upgrade=t/'upgrade';venv.create(upgrade,with_pip=True);py=upgrade/'bin/python'
  run([py,'-m','pip','install','quarry-db==1.11.0'],env=env)
  run([py,'-m','pip','install','--force-reinstall','--no-deps',wheels[0]],env=env);smoke(upgrade/'bin/qy')

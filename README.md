@@ -8,10 +8,10 @@ policies, SSH tunnels, saved queries, local Docker services and a SQL assistant.
 
 ## Install
 
-Version 2.0 is currently a release candidate.
+Version 2.0 is the native Rust stable release.
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc4
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0
 qy --version
 qy gui
 ```

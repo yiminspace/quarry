@@ -1,10 +1,10 @@
-# Rust compatibility candidate
+# Rust architecture and migration
 
-This branch contains a native Quarry 2.0.0-alpha.1 implementation. The existing
-Python 1.11.0 source remains as the behavior baseline and rollback release; it is
-not called by the Rust binary or libraries. The daily installed `qy`, real user
-configuration, and application databases have not been replaced by this work.
-This candidate is not a published stable release.
+Quarry 2.x uses a native Rust runtime. Python 1.11.0 is preserved in its release
+tag and the locked `archive/python-1.x` branch as a rollback release and behavior
+baseline; it is not called by the Rust binary or libraries. Python files retained
+in this checkout support development and regression tests, not production
+execution. See [installation and upgrade](install.md) for published artifacts.
 
 ## Build and run without replacing the installed CLI
 
@@ -57,7 +57,7 @@ The facade accepts explicit config/workspace/state paths. Identity and resource
 authorization belong to the host; query write/production restrictions remain
 in the kernel. A hosted adapter must resolve only its granted resources and
 must deliberately select which local/configuration/Docker capabilities to
-expose. This candidate does not connect to IAM or change ylab/bcli repositories.
+expose. Quarry itself does not provide IAM authorization or change ylab/bcli repositories.
 
 A host that wants a durable local Neptune process supplies a `DaemonLauncher`
 pointing to its own hidden dispatch command; a keeper also accepts an explicit
@@ -102,10 +102,9 @@ service file, rather than an argument containing a secret.
 ## Validation and release gates
 
 See [Rust verification](rust-verification.md) for the exact test commands and
-remaining evidence. The Rust CI workflow is separate from publication and never
-publishes to PyPI. Python automatic/direct publication rejects revisions
-containing the native workspace; historical Python tags remain usable for
-rollback releases. Migration to the daily installation,
-native release publication and removal of the Python baseline require the
-remaining release gates. A configured workflow is not proof that a remote run
-has passed.
+verification boundaries. CI must pass for the exact main commit before the
+release workflow builds four native platform wheels and matching archives. Each
+platform must pass fresh-install, Python 1.11 upgrade and Python-free execution
+checks before publication to PyPI and GitHub Releases. Stable versions also
+publish the pinned MCP manifest. Historical Python tags remain available for
+rollback. A configured workflow alone is not proof that a remote run has passed.

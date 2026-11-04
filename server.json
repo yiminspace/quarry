@@ -7,18 +7,18 @@
     "source": "github"
   },
   "websiteUrl": "https://yiminspace.github.io/quarry/",
-  "version": "2.0.0-rc.4",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "quarry-db",
-      "version": "2.0.0rc4",
+      "version": "2.0.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
           "type": "named",
           "name": "--from",
-          "value": "quarry-db==2.0.0rc4",
+          "value": "quarry-db==2.0.0",
           "description": "resolve the qy entry point from the quarry-db package"
         },
         {

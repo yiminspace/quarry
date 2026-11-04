@@ -13,7 +13,7 @@ case "$(uname -s)" in Darwin) os=macos;; Linux) os=linux;; *) echo 'Supported: m
 case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64|amd64) arch=x86_64;; *) echo 'Unsupported architecture' >&2; exit 1;; esac
 if [ -z "$version" ]; then
   version=$(curl -fsSL https://api.github.com/repos/yiminspace/quarry/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -n 1)
-  case "$version" in 2.*) ;; *) echo 'Rust stable release is not published; select --version 2.0.0-rc.1 explicitly.' >&2; exit 1;; esac
+  case "$version" in 2.*) ;; *) echo 'Rust stable release is not published; select an explicit published --version.' >&2; exit 1;; esac
 fi
 printf '%s\n' "$version" | grep -Eq '^2\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || { echo 'Invalid version' >&2; exit 1; }
 asset="quarry-$version-$os-$arch.tar.gz"
