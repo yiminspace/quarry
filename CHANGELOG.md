@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Honor system certificate trust for HTTPS platform and assistant connections,
+  supporting private certificate authorities installed by users or organizations.
 - Add reusable IAM-hosted database execution and an explicitly paired local
   companion for platform CLIs. Resource ACLs and live operation permissions
   protect hosted read-only queries, metadata, cancellation and schema export;
