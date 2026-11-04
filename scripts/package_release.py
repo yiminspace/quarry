@@ -12,5 +12,5 @@ with tempfile.TemporaryDirectory() as d:
  archive=a.output/f'quarry-{version}-{a.asset}.tar.gz'
  with tarfile.open(archive,'w:gz') as tf:
   tf.add(binary,arcname='qy');tf.add(root/'LICENSE',arcname='LICENSE');tf.add(root/'docs/install.md',arcname='INSTALL.md')
- archive.with_suffix('.tar.gz.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\n')
+ pathlib.Path(str(archive)+'.sha256').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\n')
 print(archive)

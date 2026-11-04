@@ -8,7 +8,7 @@ Windows and musl/Alpine binaries are not part of this release.
 Download `install.sh` from the matching Git tag, inspect it, then run:
 
 ```sh
-sh install.sh --version 2.0.0-rc.1
+sh install.sh --version 2.0.0-rc.2
 $HOME/.local/bin/qy --version
 ```
 
@@ -19,9 +19,9 @@ Release archives and `SHA256SUMS` are available on GitHub Releases.
 ## pip / pipx / uv
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc1
-# or: pipx install --pip-args='--only-binary=:all:' quarry-db==2.0.0rc1
-# or: uv tool install quarry-db==2.0.0rc1
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc2
+# or: pipx install --pip-args='--only-binary=:all:' quarry-db==2.0.0rc2
+# or: uv tool install quarry-db==2.0.0rc2
 qy --version
 ```
 

@@ -166,12 +166,12 @@ impl SavedQuery {
                             )));
                         }
                     }
-                    "bool" | "boolean" => {
-                        if !["true", "false", "0", "1"].contains(&value.as_str()) {
-                            return Err(RuntimeError::Invalid(format!(
-                                "parameter {name} must be boolean"
-                            )));
-                        }
+                    "bool" | "boolean"
+                        if !["true", "false", "0", "1"].contains(&value.as_str()) =>
+                    {
+                        return Err(RuntimeError::Invalid(format!(
+                            "parameter {name} must be boolean"
+                        )));
                     }
                     _ => {}
                 }

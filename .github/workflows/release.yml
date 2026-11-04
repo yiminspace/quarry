@@ -49,6 +49,7 @@ jobs:
         working-directory: web
       - uses: PyO3/maturin-action@v1
         with:
+          rust-toolchain: 1.98.1
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           args: --release --locked --out dist
