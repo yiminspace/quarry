@@ -33,6 +33,7 @@ def release_manifest(root: Path, tag: str) -> dict:
     # Semantic Release updates the top-level server version. The nested package
     # version must follow the same release, not the version of an earlier tag.
     packages[0]["version"] = version
+    packages[0]["runtimeArguments"][0]["value"] = f"quarry-db=={version}"
     return manifest
 
 

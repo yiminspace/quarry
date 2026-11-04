@@ -11,7 +11,7 @@ policies, SSH tunnels, saved queries, local Docker services and a SQL assistant.
 Version 2.0 is currently a release candidate.
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc3
+pip install --upgrade --only-binary=:all: quarry-db==2.0.0rc4
 qy --version
 qy gui
 ```

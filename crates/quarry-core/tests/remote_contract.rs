@@ -22,7 +22,7 @@ async fn postgres_native_value_metadata_readonly_and_cancellation() {
     let name = format!("quarry_{}", uuid::Uuid::new_v4().simple());
     write(&c,&format!("CREATE TABLE {name}(id BIGINT PRIMARY KEY, code TEXT UNIQUE, parent_id BIGINT REFERENCES {name}(id), amount NUMERIC(30,10), body JSONB)")).await;
     write(&c,&format!("INSERT INTO {name} VALUES(1,'one',1,12345678901234567890.1234567890,'{{\"n\":9007199254740993,\"d\":0.1234567890123456789}}')")).await;
-    let r=execute(&c,QueryRequest::new(format!("SELECT id,amount,body,9007199254740993::bigint AS big,ARRAY[1,2,NULL] AS a,ARRAY['x,y',NULL,'NULL'] AS b,decode('00ff','hex') AS binary,1 AS id FROM {name}"))).await.unwrap();
+    let r=execute(&c,QueryRequest::new(format!("SELECT id,amount,body,9007199254740993::bigint AS big,ARRAY[1,2,NULL] AS a,ARRAY['x,y',NULL,'NULL'] AS b,decode('00ff','hex') AS `binary`,1 AS id FROM {name}"))).await.unwrap();
     let row = &r.rows_json()[0];
     assert_eq!(
         r.affected_rows, 0,
@@ -117,7 +117,7 @@ async fn mysql_native_value_metadata_and_readonly() {
     let name = format!("quarry_{}", uuid::Uuid::new_v4().simple());
     write(&c,&format!("CREATE TABLE {name}(id BIGINT PRIMARY KEY, code VARCHAR(30) UNIQUE,parent_id BIGINT,amount DECIMAL(30,10),stamp DATETIME(6),FOREIGN KEY(parent_id) REFERENCES {name}(id))")).await;
     write(&c,&format!("INSERT INTO {name} VALUES(1,'one',1,12345678901234567890.1234567890,'2026-01-02 03:04:05.123456')")).await;
-    let out=execute(&c,QueryRequest::new(format!("SELECT id,amount,stamp,CAST(18446744073709551615 AS UNSIGNED) AS huge,UNHEX('00ff') AS binary,1 AS id FROM {name}"))).await.unwrap();
+    let out=execute(&c,QueryRequest::new(format!("SELECT id,amount,stamp,CAST(18446744073709551615 AS UNSIGNED) AS huge,UNHEX('00ff') AS `binary`,1 AS id FROM {name}"))).await.unwrap();
     let row = &out.rows_json()[0];
     assert_eq!(row["amount"], json!("12345678901234567890.1234567890"));
     assert_eq!(row["huge"], json!("18446744073709551615"));

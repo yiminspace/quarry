@@ -15,9 +15,30 @@ concurrency:
   cancel-in-progress: false
 jobs:
   validate:
-    uses: ./.github/workflows/ci.yml
-    with:
-      checkout_ref: ${{ inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python scripts/validate_release.py '${{ inputs.tag || github.ref_name }}'
+      - name: Require successful CI for the exact main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source_sha=$(git rev-parse HEAD)
+          for attempt in $(seq 1 90); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$source_sha" --limit 1 --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
+            if [[ "$result" == $'completed\tsuccess' ]]; then exit 0; fi
+            if [[ "$result" == completed* ]]; then echo "Exact-commit CI did not pass: $result"; exit 1; fi
+            sleep 20
+          done
+          echo 'Timed out waiting for exact-commit CI'; exit 1
   build:
     needs: validate
     strategy:
@@ -96,7 +117,7 @@ jobs:
           cat dist/*.sha256 > dist/SHA256SUMS
           prerelease=()
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
-          gh release create "$RELEASE_TAG" --verify-tag "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
           gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
 
   publish-mcp:
