@@ -67,6 +67,7 @@ struct Active {
 struct Inner {
     store: ConversationStore,
     config: ConfigManager,
+    model_override: Option<ModelConfig>,
     metadata: Arc<dyn MetadataProvider>,
     active: Mutex<HashMap<String, Active>>,
 }
@@ -139,10 +140,20 @@ impl AssistantService {
             inner: Arc::new(Inner {
                 store,
                 config,
+                model_override: None,
                 metadata,
                 active: Mutex::new(HashMap::new()),
             }),
         }
+    }
+    /// Supply host-selected endpoint/model and a request-scoped IAM credential.
+    /// This never writes credentials or reads model configuration from disk.
+    pub fn with_model_config(mut self, config: ModelConfig) -> Result<Self> {
+        config.validate()?;
+        std::sync::Arc::get_mut(&mut self.inner)
+            .ok_or_else(|| AssistantError::invalid("Configure the assistant before sharing it"))?
+            .model_override = Some(config);
+        Ok(self)
     }
     pub fn config(&self) -> &ConfigManager {
         &self.inner.config
@@ -288,7 +299,10 @@ impl AssistantService {
         };
         let doc = self.get_conversation(&id).await?;
         let ctx = self.context(&doc).await?;
-        let config = self.inner.config.load()?;
+        let config = match &self.inner.model_override {
+            Some(config) => config.clone(),
+            None => self.inner.config.load()?,
+        };
         let sql = error::text(
             body.get("sql").unwrap_or(&doc["sql"]),
             "SQL",
@@ -353,7 +367,13 @@ impl AssistantService {
             .history(move |s| s.update(&id_copy, rev, &sql_copy))
             .await?;
         let base_revision = doc["revision"].as_u64().unwrap();
-        let language = if gui {
+        let language = if gui && self.inner.model_override.is_some() {
+            let language = body["replyLanguage"].as_str().unwrap_or("zh");
+            if !["zh", "en"].contains(&language) {
+                return Err(AssistantError::invalid("Invalid reply language"));
+            }
+            Some(language.to_owned())
+        } else if gui {
             self.inner.config.preferences()?["resolvedReplyLanguage"]
                 .as_str()
                 .map(str::to_owned)

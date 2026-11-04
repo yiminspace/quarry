@@ -1,3 +1,4 @@
+import { displayEnvironment } from "./platform";
 import { useEffect, useRef, useState } from "react";
 import { t } from "./i18n";
 import { sameTabGroup, tabTitle, useTabsStore, type Tab } from "./store/tabsStore";
@@ -121,7 +122,7 @@ export default function TabBar({ onSwitch, onClose, isProduction = false }: TabB
               stripRef.current?.querySelector<HTMLElement>(`[data-i="${index}"]`)?.focus();
             }
           }}
-          title={`${tabTitle(tab)} · ${tab.db ?? ""}${tab.env ? `@${tab.env}` : ""}\n${tab.sql.slice(0, 300)}`}
+          title={`${tabTitle(tab)} · ${tab.db ?? ""}${tab.env ? `@${displayEnvironment(tab.db || "", tab.env)}` : ""}\n${tab.sql.slice(0, 300)}`}
           draggable
           onClick={() => {
             if (renamingId === tab.id) return;

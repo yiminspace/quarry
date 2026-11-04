@@ -1,3 +1,4 @@
+import { personalStorage } from "./platform";
 import { useCallback, useRef, useState } from "react";
 
 export type HistEntry = { sql: string; db: string | null; env: string | null; ts: number };
@@ -21,7 +22,7 @@ function normalizeEntry(h: unknown): HistEntry | null {
 
 function readHistory(): HistEntry[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    const raw = JSON.parse(personalStorage.getItem(STORAGE_KEY) ?? "[]");
     if (!Array.isArray(raw)) return [];
     return raw.map(normalizeEntry).filter((e): e is HistEntry => e !== null);
   } catch {
@@ -31,7 +32,7 @@ function readHistory(): HistEntry[] {
 
 function persist(entries: HistEntry[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    personalStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
   } catch {
     // storage full/unavailable — history just won't survive a reload
   }

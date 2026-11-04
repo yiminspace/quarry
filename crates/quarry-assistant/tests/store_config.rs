@@ -332,3 +332,50 @@ fn explicit_language_provider_is_live_while_default_configuration_is_a_snapshot(
         "en"
     );
 }
+
+#[test]
+fn ephemeral_documents_are_isolated_and_host_fingerprint_cannot_be_forged() {
+    let first = ConversationStore::memory().unwrap();
+    let doc = first
+        .create(&target(), "select 1", "authorized-target", None)
+        .unwrap();
+    let id = doc["id"].as_str().unwrap();
+    let clone = first.clone();
+    drop(first);
+    assert_eq!(clone.get(id).unwrap()["sql"], "select 1");
+    let second = ConversationStore::memory().unwrap();
+    assert!(second.get(id).is_err());
+    let mut imported = doc.clone();
+    imported["_fingerprint"] = json!("forged");
+    imported["_credential"] = json!("never-store");
+    let public = second.import_document(imported, "host-target").unwrap();
+    assert!(public.get("_credential").is_none());
+    assert_eq!(second.fingerprint(id).unwrap(), "host-target");
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("must-not-exist/history.sqlite3");
+    assert!(
+        ConversationStore::new(&path)
+            .import_document(doc, "fp")
+            .is_err()
+    );
+    assert!(!path.parent().unwrap().exists());
+}
+
+#[test]
+fn ephemeral_import_rejects_malformed_and_oversized_history_before_mutation() {
+    let store = ConversationStore::memory().unwrap();
+    let doc = store
+        .create(&target(), "select original", "fp", None)
+        .unwrap();
+    let id = doc["id"].as_str().unwrap();
+    for field in ["id", "db", "sql", "revision", "messages", "checkpoints"] {
+        let mut bad = doc.clone();
+        bad[field] = serde_json::Value::Null;
+        assert!(store.import_document(bad, "forged").is_err(), "{field}");
+    }
+    let mut huge = doc.clone();
+    huge["messages"] = json!([{"content":"x".repeat(2_097_152)}]);
+    assert!(store.import_document(huge, "forged").is_err());
+    assert_eq!(store.get(id).unwrap(), doc);
+    assert_eq!(store.fingerprint(id).unwrap(), "fp");
+}

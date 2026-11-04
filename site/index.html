@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — The database workbench built for the AI era</title>
-<meta name="description" content="One safety-railed query kernel, many faces: CLI, GUI, agent skill, MCP. Read-only by default, structured results, workspace as code. Native Rust.">
+<meta name="description" content="Native CLI, GUI, MCP and Rust libraries for safe database work. Run locally or integrate an IAM-protected workbench with paired desktop storage.">
 <meta property="og:title" content="Quarry — The database workbench built for the AI era">
-<meta property="og:description" content="One safety-railed query kernel, many faces: CLI, GUI, agent skill, MCP. Read-only by default, structured results, workspace as code.">
+<meta property="og:description" content="Native CLI, GUI, MCP and Rust libraries. Local database work or an IAM-protected hosted workbench, with personal records on your computer.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://yiminspace.github.io/quarry/">
 <meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
@@ -211,7 +211,7 @@
       <a href="#faces">Faces</a>
       <a href="#rails">Safety</a>
       <a href="#workspace">Workspace</a>
-      <a href="#roadmap">Roadmap</a>
+      <a href="#hosting">Hosting</a>
       <a href="zh.html">中文</a>
       <a class="gh" href="https://github.com/yiminspace/quarry">GitHub ↗</a>
     </div>
@@ -223,7 +223,7 @@
     <div>
       <span class="kicker">Open source · MIT · Native Rust</span>
       <h1>The database workbench<br>built for the <span class="c">AI&nbsp;era</span></h1>
-      <p class="sub">Every database tool assumes a human at the keyboard. Quarry assumes an agent — and gives it one safety-railed query kernel with many faces: CLI, GUI, agent skill, MCP.</p>
+      <p class="sub">One native database kernel for people, scripts and agents. Use the CLI, GUI or MCP locally, embed the Rust libraries, or bring an IAM-protected workbench into your platform.</p>
       <div class="cta-row">
         <div class="install">
           <span class="dollar">$</span><span id="pipcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
@@ -231,6 +231,7 @@
         </div>
         <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">Native downloads and checksums</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">Install / upgrade / Python archive</a></p>
         <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">Star on GitHub</a>
+        <a href="#hosting">Integrate into your platform →</a>
       </div>
     </div>
     <div class="showcase">
@@ -274,7 +275,21 @@
   <div class="wrap">
     <div class="eyebrow">The human face</div>
     <h2>And a real workbench for you</h2>
-    <p class="lede"><code>qy gui</code> serves a local, zero-build web workbench over the same kernel: grouped connection tree with an environment switcher (prod turns red), a multi-tab SQL editor with autocomplete, one-click EXPLAIN, a type-aware grid with keyboard navigation and a collapsible JSON inspector, searchable history — light &amp; dark, English &amp; 中文, drafts and bounded result snapshots persist when browser storage is available. Large results stay in-session. Redis keys already support a collapsible namespace tree.</p>
+    <p class="lede"><code>qy gui</code> opens the bundled web workbench: grouped connections and schema browsing, SQL tabs with completion and EXPLAIN, searchable history, a type-aware grid, JSON inspection, Redis key namespaces, and CSV/JSON export. Light &amp; dark themes, English &amp; 中文. Standalone drafts and bounded result snapshots use browser storage; large results stay in-session.</p>
+    <div class="grid3">
+      <div class="card">
+        <h3><span class="ico">✦</span> A SQL assistant beside the editor</h3>
+        <p>Explain, generate or revise SQL with table metadata as context. A proposal can update the editor, and you can restore the previous SQL. Running a query remains a separate action.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">▣</span> Keep control of your drafts</h3>
+        <p>Opening a table preserves hand-written SQL. Connections explicitly marked as production start with Auto-run off; enabling it is a deliberate choice for that target.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⇄</span> Results follow the active tab</h3>
+        <p>The grid and exports use the current tab's result. Overlapping requests keep the newest result; an older response cannot replace it. Sort, page, inspect and cancel without losing the target.</p>
+      </div>
+    </div>
     <div style="display:flex;justify-content:flex-end;margin-top:34px">
       <button id="shotTheme" onclick="const i=document.getElementById('guiShot');const d=i.src.includes('gui-dark');i.src=d?'assets/gui-light.png?v=020':'assets/gui-dark.png?v=020';this.textContent=d?'◐ Dark theme':'◑ Light theme'"
         style="background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 14px;font-size:13px;cursor:pointer">◑ Light theme</button>
@@ -299,7 +314,40 @@
         <div class="face"><span class="mono">qy gui</span> <span class="tag">local web GUI — humans</span></div>
         <div class="face"><span class="mono">qy mcp</span> <span class="tag">MCP server — agents, natively</span></div>
         <div class="face"><span class="mono">skill</span> <span class="tag">Claude Code &amp; friends</span></div>
+        <div class="face"><span class="mono">Rust crates</span> <span class="tag">embed directly in your app or CLI</span></div>
+        <div class="face"><span class="mono">quarry-platform</span> <span class="tag">IAM host + paired desktop companion</span></div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="hosting">
+  <div class="wrap">
+    <div class="eyebrow">Hosted integration · source SDK</div>
+    <h2>Your IAM, your databases, the same workbench</h2>
+    <p class="lede">The current source SDK lets you embed Quarry's Rust libraries in your service and CLI. A hosted workbench uses your platform's accounts and resource grants; a separately paired desktop companion handles personal records and Local databases. These integration APIs are separate from the standalone 2.0.0 download.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3><span class="ico">▣</span> Host-controlled read-only access</h3>
+        <p>Expose only registered resources. Every remote query, metadata operation, cancellation and schema export checks live IAM permission and resource access. Database credentials stay on the server.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⌁</span> Personal work on your computer</h3>
+        <p>Drafts, tabs, query history, bounded result caches, assistant conversations, generated SQL and restore checkpoints are saved to desktop SQLite through the companion, separated by platform, account and target. GUI and CLI share the local records. Without it, the page keeps a limited browser recovery copy and shows its save state.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⇄</span> Keep editing through a disconnect</h3>
+        <p>After the first successful load, cached assets let the workbench reopen offline. Remote and local connections have separate states. Reconnecting never runs SQL, starts Docker, imports a schema or replaces an unsaved draft. Local operations remain available while the paired capability is valid.</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">▤</span> Bring structure to Local</h3>
+        <p>Explicitly start isolated Local PostgreSQL or Redis services with Docker. For PostgreSQL, import an authorized remote schema into staging without business rows or source passwords; retain the previous local database for recovery. Schema transfer is PostgreSQL-only.</p>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:26px">Remote queries send SQL to your host; the assistant sends required context to the configured model gateway. Their retention follows host policy. Hosted shared SQL, cloud personal history and cross-device sync are not included.</p>
+    <div class="cta-row" style="margin-top:26px">
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.md">Read the hosting integration guide</a>
+      <span class="lede">Bring your IAM adapter, resource registry and browser session integration.</span>
     </div>
   </div>
 </section>
@@ -308,7 +356,7 @@
   <div class="wrap">
     <div class="eyebrow">Safety rails</div>
     <h2>Read-only by default. Escalation is explicit and graduated.</h2>
-    <p class="lede">CLI writes require <code>--write</code>; prod also requires confirmation or <code>--yes</code>. MCP writes need server and per-call opt-in, plus <code>confirm_prod</code> on prod. Rust callers authorize with <code>allow_write=True</code>; GUI queries are read-only. Read queries without an outer LIMIT default to 500 rows; <code>--max-rows 0</code> disables the cap. Utility/locking queries are not rewritten; Redis caps after receipt. Environments default to <code>dev</code>.</p>
+    <p class="lede">CLI writes require <code>--write</code>; production targets also require confirmation or <code>--yes</code>. MCP writes need server and per-call opt-in, plus <code>confirm_prod</code> for production. Rust callers supply explicit write authorization; GUI and hosted queries are read-only. Read queries without an outer LIMIT default to 500 rows; <code>--max-rows 0</code> disables the cap. Utility/locking queries are not rewritten; Redis caps after receipt. Production protection follows the connection's explicit classification, not its environment name.</p>
     <div class="exits">
       <div class="exit e0"><div class="code">0</div><div class="name">success — rows optional</div></div>
       <div class="exit e2"><div class="code">2</div><div class="name">connection / CLI syntax error</div></div>
@@ -322,7 +370,7 @@
   <div class="wrap">
     <div class="eyebrow">Workspace as code</div>
     <h2>Your connections and queries are files, not clicks</h2>
-    <p class="lede">A workspace is just a directory: <code>connections.toml</code> plus named queries as plain <code>.sql</code> files with metadata headers. Version query files and credential-free configuration templates in <em>your</em> repo; keep real connection credentials local. Quarry aggregates multiple workspaces into one view.</p>
+    <p class="lede">In standalone mode, a workspace is a directory: <code>connections.toml</code> plus named queries as plain <code>.sql</code> files with metadata headers. Version query files and credential-free configuration templates in <em>your</em> repo; keep real connection credentials local. Quarry aggregates multiple workspaces into one view. These local query files are separate from hosted personal history; a hosted shared-query library is not implemented.</p>
     <div class="codes">
       <div class="code-pane">
         <div class="head">connections.toml</div>
@@ -335,6 +383,7 @@
 <span class="k">url</span>    = <span class="s">"postgresql://user:password@prod.example.com:5432/shop"</span>
 <span class="k">db</span>     = <span class="s">"shop"</span>
 <span class="k">env</span>    = <span class="s">"prod"</span>
+<span class="k">production</span> = <span class="k">true</span>
 
 <span class="cp">[internal_db]</span>
 <span class="k">url</span>      = <span class="s">"postgresql://user:password@127.0.0.1:5432/appdb"</span>
@@ -374,11 +423,11 @@
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> A real library, importable</h3>
-        <p><code>quarry-service::QuarryService</code> embeds the same Rust kernel used by CLI, GUI and MCP, with explicit configuration and shared execution policies. Python 1.x remains available in the archive branch.</p>
+        <p><code>quarry-service::QuarryService</code> embeds the execution kernel; <code>quarry-cli::run_from</code> embeds the CLI; <code>quarry-platform</code> adds hosted authorization and a paired companion. No separately installed <code>qy</code> or Python process is required.</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▣</span> Local app, your databases</h3>
-        <p>Quarry does not upload connection credentials, queries or results to a Quarry service. Queries go to your configured databases. The GUI binds to localhost by default and checks local origins; GitHub release checks can be disabled with <code>QUARRY_UPDATE_CHECK=0</code>.</p>
+        <h3><span class="ico">▣</span> Choose where it runs</h3>
+        <p>Standalone Quarry connects to your configured databases and binds its GUI to localhost by default. Hosting runs under your own platform; Quarry provides no central cloud account. Model requests use your configured provider. Disable GitHub release checks with <code>QUARRY_UPDATE_CHECK=0</code>.</p>
       </div>
     </div>
   </div>
@@ -389,11 +438,12 @@
     <div class="eyebrow">Roadmap</div>
     <h2>Where this is going</h2>
     <div class="roadmap">
-      <div class="rm"><b>SQLite &amp; DuckDB engines</b> zero-setup local experience</div>
+      <div class="rm"><b>DuckDB engine</b> planned; SQLite is already available</div>
       <div class="rm"><b>Column types</b> in the result contract for all engines</div>
       <div class="rm"><b>Cross-env diff</b> compare schema &amp; data across environments</div>
       <div class="rm"><b>Write audit log</b> who ran what, where, when</div>
       <div class="rm"><b>Available in 2.0</b> native binaries and platform wheels</div>
+      <div class="rm"><b>Shared SQL &amp; cross-device sync</b> not available in hosted integration</div>
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">

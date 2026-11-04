@@ -1,3 +1,4 @@
+import { PLATFORM_MODE } from "./platform";
 import { VoyageToolbar } from "@yiminlab/voyage/react";
 import { useEffect, useRef, useState } from "react";
 import { fetchHealth, keepAliveDown, keepAliveUp } from "./api";
@@ -93,6 +94,7 @@ export default function Header() {
       </span>
       <button
         className="vg-iconbtn iconbtn"
+        style={{ display: PLATFORM_MODE ? "none" : undefined }}
         id="wsBtn"
         title={t("ws_manage")}
         aria-label={t("ws_manage")}
@@ -103,6 +105,7 @@ export default function Header() {
       <span className="vg-sp sp" />
       <button
         className={`vg-badge badge keeper-control ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`}
+        style={{ display: PLATFORM_MODE ? "none" : undefined }}
         id="kaBadge"
         title={`${kaLabel} · ${kaBtn}`}
         aria-label={`${kaLabel} · ${kaBtn}`}
@@ -115,7 +118,7 @@ export default function Header() {
       >
         <i className={`ti ${kaState === "up" ? "ti-plug-connected" : "ti-plug"}`} /> {kaLabel}
       </button>
-      {updateInfo?.available && (
+      {!PLATFORM_MODE && updateInfo?.available && (
         <button className="vg-badge badge update" id="updateBadge" onClick={() => setUpdOpen(true)}>
           <span className="vg-update-dot update-dot" /> {t("update_available")}
         </button>

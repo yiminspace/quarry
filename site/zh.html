@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — 为 AI 时代而生的数据库工作台</title>
-<meta name="description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。Rust 原生内核。">
+<meta name="description" content="Rust 原生 CLI、GUI、MCP 与类库。独立使用，或接入自己的 IAM 托管工作台，通过配对本机服务保存个人记录。">
 <meta property="og:title" content="Quarry — 为 AI 时代而生的数据库工作台">
-<meta property="og:description" content="一个带安全栏的查询内核,多张脸:CLI、GUI、agent skill、MCP。默认只读、结构化结果、workspace 即代码。">
+<meta property="og:description" content="Rust 原生 CLI、GUI、MCP 与类库；独立使用或集成 IAM 托管工作台，个人记录保存在自己的电脑。">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://yiminspace.github.io/quarry/zh.html">
 <meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
@@ -211,7 +211,7 @@
       <a href="#faces">多脸</a>
       <a href="#rails">安全栏</a>
       <a href="#workspace">Workspace</a>
-      <a href="#roadmap">路线图</a>
+      <a href="#hosting">托管集成</a>
       <a href="index.html">EN</a>
       <a class="gh" href="https://github.com/yiminspace/quarry">GitHub ↗</a>
     </div>
@@ -223,7 +223,7 @@
     <div>
       <span class="kicker">开源 · MIT · Rust 原生内核</span>
       <h1>为 <span class="c">AI 时代</span>而生的<br>数据库工作台</h1>
-      <p class="sub">所有数据库工具都默认键盘前坐着一个人。Quarry 默认操作者是 agent —— 给它一个带安全栏的查询内核,长出多张脸:CLI、GUI、agent skill、MCP。</p>
+      <p class="sub">人、脚本和 agent 共用一个原生数据库内核。本机使用 CLI、GUI 和 MCP，直接嵌入 Rust 类库，或把带 IAM 授权的工作台集成到你的平台。</p>
       <div class="cta-row">
         <div class="install">
           <span class="dollar">$</span><span id="pipcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
@@ -231,6 +231,7 @@
         </div>
         <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">原生安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装 / 升级 / Python 归档</a></p>
         <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">去 GitHub 点个 Star</a>
+        <a href="#hosting">集成到你的平台 →</a>
       </div>
     </div>
     <div class="showcase">
@@ -274,7 +275,21 @@
   <div class="wrap">
     <div class="eyebrow">给人的那张脸</div>
     <h2>也是一个真正好用的工作台</h2>
-    <p class="lede"><code>qy gui</code> 在同一个内核上起一个本地零构建 web 工作台:分组连接树 + 环境切换器(prod 变红)、多标签 SQL 编辑器(补全)、一键 EXPLAIN、类型着色网格(键盘导航 + 可折叠 JSON 查看器)、可搜索历史 —— 亮暗双主题、中英双语,浏览器存储可用时保留草稿和有大小限制的结果快照;大结果仅保留在当前会话。Redis key 已支持可折叠命名空间树。</p>
+    <p class="lede"><code>qy gui</code> 打开内置的网页工作台：分组连接与结构浏览、多标签 SQL 编辑器、补全与 EXPLAIN、历史搜索、类型着色网格、JSON 查看、Redis 命名空间树，以及 CSV/JSON 导出。支持亮暗主题、中英双语。独立模式通过浏览器存储保留草稿和有大小限制的结果快照；大结果仅留在当前会话。</p>
+    <div class="grid3">
+      <div class="card">
+        <h3><span class="ico">✦</span> 编辑器旁的 SQL 助手</h3>
+        <p>结合表结构解释、生成和修改 SQL。建议可写入编辑器，也能恢复修改前的 SQL；查询仍需手动执行。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">▣</span> 草稿与执行由你掌控</h3>
+        <p>打开表时保留已写的 SQL。明确标记为生产的连接默认关闭自动执行，需要你为相应目标主动开启。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⇄</span> 结果跟随当前标签</h3>
+        <p>网格与导出使用当前标签的结果。请求重叠时保留最新结果，旧响应不会覆盖它；排序、分页、查看和取消都保留目标归属。</p>
+      </div>
+    </div>
     <div style="display:flex;justify-content:flex-end;margin-top:34px">
       <button id="shotTheme" onclick="const i=document.getElementById('guiShot');const d=i.src.includes('gui-dark');i.src=d?'assets/gui-light.png?v=020':'assets/gui-dark.png?v=020';this.textContent=d?'◐ 暗色主题':'◑ 亮色主题'"
         style="background:var(--bg2);border:1px solid var(--line);border-radius:8px;color:var(--dim);padding:7px 14px;font-size:13px;cursor:pointer">◑ 亮色主题</button>
@@ -299,7 +314,40 @@
         <div class="face"><span class="mono">qy gui</span> <span class="tag">本地 web GUI — 人</span></div>
         <div class="face"><span class="mono">qy mcp</span> <span class="tag">MCP server — agent 原生接入</span></div>
         <div class="face"><span class="mono">skill</span> <span class="tag">Claude Code 及友商</span></div>
+        <div class="face"><span class="mono">Rust crates</span> <span class="tag">直接嵌入应用或 CLI</span></div>
+        <div class="face"><span class="mono">quarry-platform</span> <span class="tag">IAM 托管 + 配对本机服务</span></div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="hosting">
+  <div class="wrap">
+    <div class="eyebrow">托管集成 · 源码 SDK</div>
+    <h2>你的 IAM、你的数据库，同一个工作台</h2>
+    <p class="lede">当前源码 SDK 可将 Quarry 的 Rust 类库嵌入自己的服务与 CLI。托管工作台沿用平台账号和资源授权；另行配对的本机服务负责个人记录与 Local 数据库。这些集成接口与独立的 2.0.0 安装包分别提供。</p>
+    <div class="grid2">
+      <div class="card">
+        <h3><span class="ico">▣</span> 平台控制只读访问</h3>
+        <p>只展示平台登记的资源。每次远程查询、结构查看、取消和 schema 导出都检查实时 IAM 权限与资源授权，数据库连接凭据保留在服务器。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⌁</span> 个人工作保存在自己电脑</h3>
+        <p>草稿、标签、查询历史、有大小限制的结果缓存、助手对话、生成的 SQL 和恢复点，通过本机服务存进 SQLite，按平台、账号和目标隔离，网页与 CLI 共用记录。未连接时，网页只保留有限的浏览器恢复副本，并明确显示保存状态。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">⇄</span> 断开连接也能继续编辑</h3>
+        <p>首次成功加载后，可用缓存的页面离线重新打开工作台。远程和本机分别显示连接状态；重连不会自动执行 SQL、启动 Docker、导入结构或替换未保存草稿。有效配对授权内，本机操作可继续离线使用。</p>
+      </div>
+      <div class="card">
+        <h3><span class="ico">▤</span> 把结构带到 Local</h3>
+        <p>主动通过 Docker 启动隔离的 Local PostgreSQL 或 Redis。PostgreSQL 可从已授权的远程资源导入纯结构，先导入临时库，再保留旧 Local 数据库用于恢复；不复制业务行或源库密码。结构迁移目前仅支持 PostgreSQL。</p>
+      </div>
+    </div>
+    <p class="lede" style="margin-top:26px">远程查询会把 SQL 发送到平台；助手会把所需上下文发送到配置的模型网关，日志保留遵循平台策略。托管共享 SQL、云端个人历史与跨设备同步暂未实现。</p>
+    <div class="cta-row" style="margin-top:26px">
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.zh-CN.md">查看托管接入指南</a>
+      <span class="lede">接入自己的 IAM、资源登记与网页会话。</span>
     </div>
   </div>
 </section>
@@ -308,7 +356,7 @@
   <div class="wrap">
     <div class="eyebrow">安全栏</div>
     <h2>默认只读。放行是显式且分级的。</h2>
-    <p class="lede">CLI 写入需 <code>--write</code>,prod 还需确认或 <code>--yes</code>;MCP 需服务端和调用同时授权,prod 额外要求 <code>confirm_prod</code>。Rust 由调用方通过 <code>allow_write=True</code> 授权;GUI 查询只读。无外层 LIMIT 的读查询默认 500 行,<code>--max-rows 0</code> 可取消;工具/锁定查询不改写,Redis 在取回后截断。环境默认 <code>dev</code>。</p>
+    <p class="lede">CLI 写入需 <code>--write</code>，生产目标还需确认或 <code>--yes</code>；MCP 需服务端和调用同时授权，生产额外要求 <code>confirm_prod</code>。Rust 调用方提供显式写入授权；GUI 与托管查询只读。无外层 LIMIT 的读查询默认 500 行，<code>--max-rows 0</code> 可取消；工具/锁定查询不改写，Redis 在取回后截断。生产保护取决于连接的明确标记，与环境名称无关。</p>
     <div class="exits">
       <div class="exit e0"><div class="code">0</div><div class="name">成功 — 可无返回行</div></div>
       <div class="exit e2"><div class="code">2</div><div class="name">连接 / CLI 参数语法错误</div></div>
@@ -322,7 +370,7 @@
   <div class="wrap">
     <div class="eyebrow">Workspace 即代码</div>
     <h2>你的连接和查询是文件,不是点点点</h2>
-    <p class="lede">一个 workspace 就是一个目录:<code>connections.toml</code> 加上带元信息头的 <code>.sql</code> 命名查询。查询文件和不含凭据的配置模板可放进<em>你的</em>仓库共享;真实连接凭据留在本机。Quarry 能把多个 workspace 聚合到同一个视图。</p>
+    <p class="lede">独立模式的 workspace 是一个目录：<code>connections.toml</code> 加上带元信息头的 <code>.sql</code> 命名查询。查询文件和不含凭据的配置模板可放进<em>你的</em>仓库；真实连接凭据留在本机。多个 workspace 可聚合到同一视图。这些本地查询文件与托管个人历史分别管理，托管共享查询库尚未实现。</p>
     <div class="codes">
       <div class="code-pane">
         <div class="head">connections.toml</div>
@@ -335,6 +383,7 @@
 <span class="k">url</span>    = <span class="s">"postgresql://user:password@prod.example.com:5432/shop"</span>
 <span class="k">db</span>     = <span class="s">"shop"</span>
 <span class="k">env</span>    = <span class="s">"prod"</span>
+<span class="k">production</span> = <span class="k">true</span>
 
 <span class="cp">[internal_db]</span>
 <span class="k">url</span>      = <span class="s">"postgresql://user:password@127.0.0.1:5432/appdb"</span>
@@ -374,11 +423,11 @@
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> 真类库,可 import</h3>
-        <p><code>quarry-service::QuarryService</code> 可直接嵌入 Rust 宿主，与 CLI、GUI、MCP 共用执行策略。Python 1.x 保存在归档分支。</p>
+        <p><code>quarry-service::QuarryService</code> 嵌入执行内核，<code>quarry-cli::run_from</code> 嵌入 CLI，<code>quarry-platform</code> 提供托管授权与配对本机服务。不依赖另装的 <code>qy</code> 或 Python 子进程。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▣</span> 本地应用,连接你的数据库</h3>
-        <p>Quarry 不向 Quarry 服务上传连接凭据、查询或结果;查询发送到你配置的目标数据库。GUI 默认绑定 localhost 并检查本地来源。GitHub Release 更新检查可用 <code>QUARRY_UPDATE_CHECK=0</code> 关闭。</p>
+        <h3><span class="ico">▣</span> 自己选择运行位置</h3>
+        <p>独立 Quarry 连接你配置的数据库，GUI 默认绑定 localhost。托管模式运行在你自己的平台，Quarry 没有中心云账号。模型请求发往你配置的服务。GitHub Release 更新检查可用 <code>QUARRY_UPDATE_CHECK=0</code> 关闭。</p>
       </div>
     </div>
   </div>
@@ -389,11 +438,12 @@
     <div class="eyebrow">路线图</div>
     <h2>接下来往哪走</h2>
     <div class="roadmap">
-      <div class="rm"><b>SQLite / DuckDB 引擎</b> 零配置本地体验</div>
+      <div class="rm"><b>DuckDB 引擎</b> 规划中；SQLite 已支持</div>
       <div class="rm"><b>结果契约列类型</b> 覆盖全部引擎</div>
       <div class="rm"><b>跨环境 diff</b> 对比环境间的 schema 与数据</div>
       <div class="rm"><b>写操作审计日志</b> 谁在哪跑了什么、什么时候</div>
       <div class="rm"><b>2.0 已提供</b> 原生二进制与平台 wheel</div>
+      <div class="rm"><b>共享 SQL / 跨设备同步</b> 托管集成暂未提供</div>
     </div>
     <div class="cta-row" style="margin-top:40px">
       <div class="install">

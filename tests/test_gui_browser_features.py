@@ -6158,3 +6158,621 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
         finally:
             page.unroute_all(behavior="wait")
             ctx.close()
+
+
+# Hosted UI contract tests use the built bundle with explicit platform marker.
+# Network fixtures exercise browser behavior; Rust platform tests cover IAM/CAS.
+def _hosted_workbench(page, *, online=True, engine="sqlite"):
+    state = {'online': online, 'queries': [], 'documents': {}, 'paired': False,
+             'local_requests': [], 'assistant_requests': [], 'operations': [], 'refreshes': 0}
+    remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
+                  engine=engine, production=True)
+    local = dict(id='local-notes', project='lab', db='notes', env='local',
+                 engine=engine, production=False, sourceResourceId='remote-notes')
+    state['local_resource'] = local
+    page.add_init_script("""(() => {
+      // Route-backed platform fixtures do not cover worker fetches. The genuine
+      // offline-shell test below runs a real service worker against static HTML.
+      if ('serviceWorker' in navigator) navigator.serviceWorker.register = async () => { throw new Error('service worker disabled for intercepted API fixture'); };
+      if (!localStorage.getItem('ylab.console.session.v1')) localStorage.setItem('ylab.console.session.v1', JSON.stringify({access_token:'alpha-token',refresh_token:'alpha-refresh',expires_in:3600,user:{id:'alpha'}}));
+    })()""")
+
+    def document(route):
+        if route.request.resource_type != 'document':
+            route.continue_()
+            return
+        response = route.fetch()
+        route.fulfill(response=response, body=response.text().replace(
+            '<head>', '<head><meta name="quarry-mode" content="platform">', 1))
+    page.route('**/quarry/**', document)
+
+    def api(route):
+        request = route.request
+        parsed = urlparse(request.url)
+        companion = parsed.port == 18766
+        path = parsed.path.replace('/api/db/', '/api/', 1)
+        headers = {'Access-Control-Allow-Origin': urlparse(page.url).scheme + '://' + urlparse(page.url).netloc,
+                   'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Quarry-Companion-Token,X-Quarry-User-Id',
+                   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'}
+        if request.method == 'OPTIONS':
+            route.fulfill(status=204, headers=headers)
+            return
+        body = request.post_data_json if request.method == 'POST' else {}
+        account = request.headers.get('x-quarry-user-id') or request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
+        if companion:
+            state['local_requests'].append((path, request.headers))
+        if not companion and not state['online']:
+            route.fulfill(status=503, json={'error': {'message': 'remote unavailable'}}, headers=headers)
+            return
+        if path == '/api/iam/auth/refresh':
+            if state.get('refresh_error'):
+                route.fulfill(status=503, json={'error': {'code': 'unavailable', 'message': 'Cloud authentication unavailable'}}, headers=headers)
+                return
+            state['refreshes'] += 1
+            value = {'access_token': 'alpha-rotated', 'refresh_token': 'alpha-next-refresh', 'expires_in': 3600, 'user': {'id': 'alpha'}}
+        elif companion and path in state.get('cloud_failures', {}):
+            status = state['cloud_failures'][path]
+            route.fulfill(status=status, json={'error': {'code': 'forbidden' if status == 403 else 'unavailable', 'message': 'Cloud operation unavailable'}}, headers=headers)
+            return
+        elif companion and state.get('expired_live_iam') and path in ('/api/schema/import', '/api/assistant/chat', '/api/pair') and request.headers.get('authorization') == 'Bearer alpha-token':
+            route.fulfill(status=401, json={'error': 'IAM token expired'}, headers=headers)
+            return
+        elif path == '/api/platform':
+            value = {'mode': 'companion' if companion else 'hosted', 'principal': {'id': account},
+                     'capabilities': {'assistant': True}, 'resources': [local if companion else remote], 'personalStorage': 'companion'}
+        elif path == '/api/pair':
+            assert body['code'] == 'pair-fixture'
+            state['paired'] = True
+            value = {'token': 'local-capability'}
+        elif path == '/api/unpair':
+            state['paired'] = False
+            value = {'revoked': True}
+        elif path == '/api/personal':
+            if request.method == 'GET':
+                args = parse_qs(parsed.query)
+                kind, key = args['kind'][0], args['key'][0]
+            else:
+                kind, key = body['kind'], body['key']
+            identity = (account, kind, key)
+            stored = state['documents'].get(identity, {'value': None, 'revision': 0})
+            if request.method == 'POST':
+                if body['revision'] != stored['revision']:
+                    route.fulfill(status=409, json={'error': 'revision conflict'}, headers=headers)
+                    return
+                stored = {'value': body['value'], 'revision': stored['revision'] + 1}
+                state['documents'][identity] = stored
+            value = stored
+        elif path == '/api/tables':
+            value = {'engine': 'sqlite', 'tables': ['entries'], 'capped': False}
+        elif path == '/api/columns':
+            value = {'columns': ['id'], 'types': {'id': 'INTEGER'}}
+        elif path == '/api/health':
+            value = {'ok': True}
+        elif path == '/api/query':
+            state['queries'].append((companion, body))
+            if state.get('hold_query'):
+                state['held_query'] = route
+                return
+            value = {'columns': [{'name': 'value', 'type': 'INTEGER'}], 'rows': [{'value': 22 if companion else 11}],
+                     'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite', 'sql': body['sql'],
+                     'downloadBytes': 12, 'sizeIsEstimated': True}
+            if state.get('large_result'):
+                value['rows'] = [{'value': 'x' * 220000}]
+                value['downloadBytes'] = 220000
+        elif path == '/api/assistant/config':
+            value = {'configured': True, 'model': 'fixture'}
+        elif path == '/api/assistant/chat':
+            state['assistant_requests'].append(body)
+            conversation = body['conversation']
+            conversation['messages'] += [
+                {'id': 'question', 'role': 'user', 'content': body['prompt']},
+                {'id': 'answer', 'role': 'assistant', 'content': 'Generated SQL', 'sql': 'select 99 as generated',
+                 'status': 'complete', 'baseRevision': conversation['revision']}]
+            events = [dict(type='sql_proposal', sql='select 99 as generated', messageId='answer'),
+                      dict(type='done', conversation=conversation)]
+            stream = '\n'.join(json.dumps(dict(event, requestId=body['requestId'], conversationId=conversation['id'])) for event in events) + '\n'
+            if state.get('hold_assistant'):
+                state['held_assistant'] = (route, headers, stream)
+                return
+            route.fulfill(content_type='application/x-ndjson', headers=headers, body=stream)
+            return
+        elif path == '/api/schema/import':
+            state['operations'].append((path, body))
+            # The real companion resolves its target through resourceId before
+            # checking the source binding; accepting an alias masks a broken UI.
+            if body.get('resourceId') != local['id'] or body.get('sourceResourceId') != remote['id']:
+                route.fulfill(status=400, json={'error': 'Explicit matching source and Local resource required'}, headers=headers)
+                return
+            value = {'ok': True}
+        elif path in ('/api/local/up', '/api/local/down', '/api/cancel'):
+            state['operations'].append((path, body))
+            value = {'ok': True}
+        else:
+            route.fulfill(status=404, json={'error': f'unsupported fixture route {path}'}, headers=headers)
+            return
+        route.fulfill(json=value, headers=headers)
+    page.route('**/api/db/**', api)
+    page.route('**/api/iam/auth/refresh', api)
+    page.route('http://127.0.0.1:18766/**', api)
+    origin = urlparse(page.url)
+    page.goto(f'{origin.scheme}://{origin.netloc}/quarry/', wait_until='networkidle')
+    page.locator('[data-testid="platform-status"]').wait_for()
+    return state
+
+
+def _pair_workbench(page):
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_label('Local address', exact=True).fill('http://127.0.0.1:18766')
+    page.get_by_label('Pairing code', exact=True).fill('pair-fixture')
+    page.get_by_role('button', name='Pair', exact=True).click()
+    page.wait_for_function("document.querySelector('[data-testid=companion-status]').textContent.includes('Connected')")
+    page.get_by_role('button', name='Close', exact=True).click()
+
+
+def test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page, online=False)
+    page.locator('#sql').fill('select 42 as offline_draft')
+    assert page.locator('[data-testid="remote-status"]').inner_text() == 'Remote: Disconnected'
+    assert page.locator('[data-testid="personal-storage-status"]').inner_text() == 'Personal changes are only in browser recovery'
+    page.reload(wait_until='networkidle')
+    assert page.locator('#sql').input_value() == 'select 42 as offline_draft'
+    assert not state['queries']
+    assert not page.locator('#ciBtn').is_visible()
+    assert not page.locator('#wsBtn').is_visible()
+    assert not page.locator('#kaBadge').is_visible()
+    page.evaluate("""() => { const value = JSON.parse(localStorage.getItem('ylab.console.session.v1')); value.user.id = 'beta'; value.access_token = 'beta-token'; value.refresh_token = 'beta-refresh'; localStorage.setItem('ylab.console.session.v1', JSON.stringify(value)); }""")
+    page.reload(wait_until='networkidle')
+    assert page.locator('#sql').input_value() == ''
+    assert not state['queries']
+
+
+def test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 11 as remote_value')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('11')")
+    _pair_workbench(page)
+    assert state['paired']
+    page.locator('.ep').filter(has_text='Local').click()
+    page.locator('#sql').fill('select 22 as local_value')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('22')")
+    assert state['queries'][-1][0] is True
+    assert state['queries'][-1][1]['resourceId'] == 'local-notes'
+    page.locator('.ep').filter(has_text='prod').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('11')")
+    assert page.locator('#sql').input_value() == 'select 11 as remote_value'
+    assert len(state['queries']) == 2
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    history = state['documents'][('alpha', 'query-history', 'entries')]['value']
+    assert {entry['resourceId'] for entry in history} == {'remote-notes', 'local-notes'}
+    assert all(headers.get('x-quarry-user-id') == 'alpha' for path, headers in state['local_requests'] if path != '/api/pair')
+    state['online'] = False
+    page.get_by_role('button', name='Reconnect remote', exact=True).click()
+    page.wait_for_function("document.querySelector('[data-testid=remote-status]').textContent.includes('Disconnected')")
+    assert 'Connected' in page.locator('[data-testid="companion-status"]').inner_text()
+    assert page.locator('#sql').input_value() == 'select 11 as remote_value'
+    assert len(state['queries']) == 2
+
+
+def test_platform_reconnect_and_revoke_preserve_draft_without_query_replay(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('#sql').fill('select 55 as keep_after_revoke')
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_role('button', name='Reconnect local', exact=True).click()
+    page.get_by_role('button', name='Revoke pairing', exact=True).click()
+    page.wait_for_function("document.querySelector('[data-testid=companion-status]').textContent.includes('Disconnected')")
+    page.get_by_role('button', name='Close', exact=True).click()
+    assert page.locator('#sql').input_value() == 'select 55 as keep_after_revoke'
+    assert not state['queries']
+    assert not state['paired']
+    assert ('alpha', 'workbench', 'workspace') in state['documents']
+
+
+def test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 7 as original')
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    page.get_by_test_id('assistant-input').fill('Generate a query')
+    page.get_by_test_id('assistant-input').press('Enter')
+    page.wait_for_function("document.querySelector('#sql').value === 'select 99 as generated'")
+    assert not state['queries']
+    page.get_by_test_id('assistant-restore').click()
+    page.wait_for_function("document.querySelector('#sql').value === 'select 7 as original'")
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
+    conversations = json.loads(document['values']['qy_assistant_conversations'])
+    assert next(iter(conversations.values()))['sql'] == 'select 7 as original'
+    assert len(next(iter(conversations.values()))['checkpoints']) == 1
+    assert state['assistant_requests'][0]['resourceId'] == 'remote-notes'
+    page.reload(wait_until='networkidle')
+    assert page.locator('#sql').input_value() == 'select 7 as original'
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    assert 'Generated SQL' in page.get_by_test_id('assistant-messages').inner_text()
+    assert not state['queries']
+
+
+def test_platform_local_create_sync_stop_require_explicit_actions(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page, engine='postgres')
+    _pair_workbench(page)
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_label('Source database', exact=True).select_option('remote-notes')
+    page.get_by_role('button', name='Create Local', exact=True).click()
+    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local database created')")
+    page.get_by_label('Local target', exact=True).select_option('local-notes')
+    page.once('dialog', lambda dialog: dialog.accept())
+    with page.expect_request(lambda request: urlparse(request.url).path == '/api/schema/import') as schema_request:
+        page.get_by_role('button', name='Sync schema to Local', exact=True).click()
+    assert schema_request.value.post_data_json == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
+    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Schema synced')")
+    page.once('dialog', lambda dialog: dialog.accept())
+    page.get_by_role('button', name='Stop Local', exact=True).click()
+    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local service stopped')")
+    assert [path for path, _ in state['operations']] == ['/api/local/up', '/api/schema/import', '/api/local/down']
+    assert state['operations'][1][1] == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
+    assert not state['queries']
+
+
+def test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload(page_sqlite, tmp_path):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('#sql').fill('select 1 as first_saved')
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    stored = state['documents'][('alpha', 'workbench', 'workspace')]
+    stored['revision'] += 1
+    page.locator('#sql').fill('select 2 as unsynced_conflict')
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('conflict')")
+    assert page.locator('#sql').input_value() == 'select 2 as unsynced_conflict'
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    with page.expect_download() as download:
+        page.get_by_role('button', name='Export personal recovery', exact=True).click()
+    target = tmp_path / 'recovery.json'
+    download.value.save_as(target)
+    recovery = json.loads(target.read_text())
+    assert any(tab['sql'] == 'select 2 as unsynced_conflict' for tab in json.loads(recovery['values']['qy_tabs']))
+    page.once('dialog', lambda dialog: dialog.accept())
+    page.get_by_role('button', name='Load local personal records', exact=True).click()
+    page.wait_for_function("document.querySelector('#sql')?.value === 'select 1 as first_saved'")
+    assert not state['queries']
+
+
+def test_platform_cli_history_is_loaded_from_same_local_document(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    state['documents'][('alpha', 'query-history', 'entries')] = {'revision': 1, 'value': [
+        {'id': 'cli-run', 'resourceId': 'remote-notes', 'sql': 'select 123 as from_cli', 'createdAt': int(time.time() * 1000),
+         'target': {'project': 'lab', 'db': 'notes', 'env': 'prod', 'placement': 'remote'}}]}
+    page.reload(wait_until='networkidle')
+    page.locator('#histBtn').click()
+    page.get_by_text('select 123 as from_cli', exact=True).click()
+    assert page.locator('#sql').input_value() == 'select 123 as from_cli'
+    assert not state['queries']
+
+
+def test_platform_cancel_query_never_repaints_grid_from_late_response(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    state['hold_query'] = True
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as slow_result')
+    page.locator('#runBtn').click()
+    page.get_by_test_id('cancel-platform-query').wait_for()
+    page.get_by_test_id('cancel-platform-query').click()
+    page.get_by_test_id('cancel-platform-query').wait_for(state='hidden')
+    assert state['operations'][-1][0] == '/api/cancel'
+    assert state['operations'][-1][1]['requestId'] == state['queries'][0][1]['requestId']
+    state['held_query'].fulfill(json={'columns': [{'name': 'late', 'type': 'INTEGER'}], 'rows': [{'late': 999}],
+        'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite', 'sql': 'select 1 as slow_result',
+        'downloadBytes': 12, 'sizeIsEstimated': True})
+    page.wait_for_load_state('networkidle')
+    assert not page.locator('#status').is_visible()
+    assert page.locator('#sql').input_value() == 'select 1 as slow_result'
+
+
+def test_platform_late_cancel_ack_preserves_new_query_pending_and_result(page_sqlite):
+    page = page_sqlite
+    _hosted_workbench(page)
+    queries, cancellations = [], []
+    page.route('**/api/db/query', lambda route: queries.append(route))
+    page.route('**/api/db/cancel', lambda route: cancellations.append(route))
+
+    def wait_for_requests(requests, count):
+        deadline = time.monotonic() + 5
+        while len(requests) < count and time.monotonic() < deadline:
+            page.wait_for_timeout(10)
+        assert len(requests) == count
+
+    def respond(route, value):
+        route.fulfill(json={'columns': [{'name': 'value', 'type': 'INTEGER'}], 'rows': [{'value': value}],
+            'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite',
+            'sql': route.request.post_data_json['sql'], 'downloadBytes': 12, 'sizeIsEstimated': True})
+
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as old_pending_query')
+    page.locator('#runBtn').click()
+    wait_for_requests(queries, 1)
+    page.get_by_test_id('cancel-platform-query').click()
+    wait_for_requests(cancellations, 1)
+    assert cancellations[0].request.post_data_json['requestId'] == queries[0].request.post_data_json['requestId']
+
+    # The replacement request starts on the same tab before cancellation of the
+    # old request is acknowledged. Its spinner and result belong to the new ID.
+    page.locator('#sql').fill('select 2 as newer_pending_query')
+    page.locator('#runBtn').click()
+    wait_for_requests(queries, 2)
+    assert queries[0].request.post_data_json['requestId'] != queries[1].request.post_data_json['requestId']
+    with page.expect_response('**/api/db/cancel') as acknowledged:
+        cancellations[0].fulfill(json={'cancelled': True})
+    acknowledged.value.finished()
+    page.locator('#sql').click()
+    assert page.get_by_test_id('cancel-platform-query').is_visible()
+
+    respond(queries[1], 202)
+    page.wait_for_function("document.querySelector('#grid')?.textContent.includes('202')", timeout=5000)
+    page.get_by_test_id('cancel-platform-query').wait_for(state='hidden')
+    respond(queries[0], 999)
+    page.wait_for_load_state('networkidle')
+    assert '202' in page.locator('#grid').inner_text()
+    assert '999' not in page.locator('#grid').inner_text()
+    assert page.locator('#sql').input_value() == 'select 2 as newer_pending_query'
+
+
+def test_platform_pairing_rejects_non_loopback_destination(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_label('Local address', exact=True).fill('https://example.com')
+    page.get_by_label('Pairing code', exact=True).fill('pair-fixture')
+    page.get_by_role('button', name='Pair', exact=True).click()
+    page.get_by_text('Use a loopback address such as http://127.0.0.1:port.', exact=True).wait_for()
+    assert not state['paired']
+    assert not state['local_requests']
+
+
+def test_platform_cached_shell_reopens_with_entire_network_offline(page_sqlite, tmp_path):
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    import threading
+
+    assets = Path(__file__).resolve().parents[1] / 'src/quarry/web_dist'
+    hosted = tmp_path / 'offline-site' / 'quarry'
+    shutil.copytree(assets, hosted)
+    index = hosted / 'index.html'
+    index.write_text(index.read_text().replace('<head>', '<head><meta name="quarry-mode" content="platform">', 1))
+    handler = partial(SimpleHTTPRequestHandler, directory=str(hosted.parent))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    page = page_sqlite
+    page.add_init_script("""localStorage.setItem('ylab.console.session.v1', JSON.stringify({access_token:'offline-token',refresh_token:'offline-refresh',expires_in:3600,user:{id:'offline-user'}}));""")
+    try:
+        page.goto(f'http://127.0.0.1:{server.server_port}/quarry/', wait_until='networkidle')
+        page.locator('#sql').fill('select 314 as offline_shell_draft')
+        page.wait_for_function(r"""async () => {
+          const names = await caches.keys();
+          const name = names.find(value => value.startsWith('quarry-platform-shell-'));
+          if (!name || !navigator.serviceWorker.controller) return false;
+          const cache = await caches.open(name); const urls = (await cache.keys()).map(request => request.url);
+          return !!await cache.match('/quarry/') && urls.some(url => /\/App-[^/]+\.js$/.test(url)) && urls.some(url => /\.woff2$/.test(url));
+        }""")
+        assert page.evaluate("""async () => { const names = await caches.keys(); for (const name of names.filter(name => name.startsWith('quarry-platform-shell-'))) { const urls = (await (await caches.open(name)).keys()).map(request => request.url); if (urls.some(url => new URL(url).pathname.startsWith('/api/'))) return false; } return true; }""")
+        page.context.set_offline(True)
+        page.reload(wait_until='domcontentloaded')
+        page.locator('#sql').wait_for(state='visible')
+        assert page.locator('#sql').input_value() == 'select 314 as offline_shell_draft'
+        page.locator('#sql').fill('select 271 as edited_fully_offline')
+        page.reload(wait_until='domcontentloaded')
+        page.locator('#sql').wait_for(state='visible')
+        assert page.locator('#sql').input_value() == 'select 271 as edited_fully_offline'
+        assert 'Disconnected' in page.get_by_test_id('remote-status').inner_text()
+        assert 'browser recovery' in page.get_by_test_id('personal-storage-status').inner_text()
+    finally:
+        page.context.set_offline(False)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_platform_offline_result_queue_is_bounded_and_reconnect_saves_all_sql(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    state['large_result'] = True
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    for index in range(10):
+        page.locator('#sql').fill(f'select {index} as large_result')
+        page.locator('#runBtn').click()
+        page.wait_for_function("""expected => {
+          const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
+          const value = key && JSON.parse(localStorage.getItem(key));
+          return value?.values?.qy_pending_query_history && JSON.parse(value.values.qy_pending_query_history).length === expected;
+        }""", arg=index + 1)
+    page.locator('#sql').fill('select 77 as latest_protected_draft')
+    recovery = page.evaluate("""() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
+      return JSON.parse(localStorage.getItem(key));
+    }""")
+    pending = json.loads(recovery['values']['qy_pending_query_history'])
+    assert len(pending) == 10
+    assert sum(len(json.dumps(entry.get('result'))) for entry in pending) <= 1_500_000
+    assert all(entry['sql'] == f'select {index} as large_result' for index, entry in enumerate(pending))
+    _pair_workbench(page)
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    assert page.locator('#sql').input_value() == 'select 77 as latest_protected_draft'
+    history = state['documents'][('alpha', 'query-history', 'entries')]['value']
+    assert len(history) == 10
+    assert len(json.dumps(state['documents'][('alpha', 'workbench', 'workspace')]['value'])) < 16 * 1024 * 1024
+    assert len(state['queries']) == 10
+
+
+def test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_old_device(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('.ep').filter(has_text='Local').click()
+    page.locator('#sql').fill('select 1 as first_device')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid').textContent.includes('22')")
+    state['local_resource']['id'] = 'second-device-notes'
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_role('button', name='Reconnect local', exact=True).click()
+    page.wait_for_function("!!document.querySelector('.ep[data-env=\"local:second-device-notes\"]')")
+    page.get_by_role('button', name='Close', exact=True).click()
+    assert page.locator('#sql').input_value() == 'select 1 as first_device'
+    page.locator('.ep[data-env="local:second-device-notes"]').click()
+    assert not page.locator('#status').is_visible()
+    assert len(state['queries']) == 1
+    page.locator('#sql').fill('select 2 as second_device_draft')
+    recovery = page.evaluate("""() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
+      return JSON.parse(localStorage.getItem(key));
+    }""")
+    tabs = json.loads(recovery['values']['qy_tabs'])
+    assert any(tab['env'] == 'local:local-notes' and tab['sql'] == 'select 1 as first_device' for tab in tabs)
+    assert any(tab['env'] == 'local:second-device-notes' and tab['sql'] == 'select 2 as second_device_draft' for tab in tabs)
+    results = json.loads(recovery['values']['qy_tabres'])
+    assert any(result and result['env'] == 'local:local-notes' and result['res']['rows'] == [{'value': 22}] for result in results)
+
+
+def test_platform_local_schema_action_refreshes_iam_without_changing_local_identity(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page, engine='postgres')
+    _pair_workbench(page)
+    state['expired_live_iam'] = True
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    page.get_by_label('Source database', exact=True).select_option('remote-notes')
+    page.get_by_label('Local target', exact=True).select_option('local-notes')
+    page.once('dialog', lambda dialog: dialog.accept())
+    page.get_by_role('button', name='Sync schema to Local', exact=True).click()
+    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Schema synced')")
+    assert state['refreshes'] == 1
+    requests = [headers for path, headers in state['local_requests'] if path == '/api/schema/import']
+    assert len(requests) == 2
+    assert requests[0]['authorization'] == 'Bearer alpha-token'
+    assert requests[1]['authorization'] == 'Bearer alpha-rotated'
+    assert requests[0]['x-quarry-companion-token'] == requests[1]['x-quarry-companion-token']
+    assert requests[0]['x-quarry-user-id'] == requests[1]['x-quarry-user-id'] == 'alpha'
+    assert not state['queries']
+
+
+def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as initial_before_stream')
+    state['hold_assistant'] = True
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    page.get_by_test_id('assistant-input').fill('Generate a query')
+    page.get_by_test_id('assistant-input').press('Enter')
+    page.get_by_test_id('assistant-stream').wait_for()
+    page.locator('#sql').fill('select 88 as manual_during_stream')
+    page.get_by_role('button', name='Hide SQL assistant', exact=True).click()
+    route, headers, stream = state['held_assistant']
+    route.fulfill(content_type='application/x-ndjson', headers=headers, body=stream)
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    assert page.locator('#sql').input_value() == 'select 88 as manual_during_stream'
+    page.locator('#tabs [aria-selected="true"] .x').click()
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').click()
+    assert page.locator('#sql').input_value() == 'select 88 as manual_during_stream'
+    assert 'Generated SQL' in page.get_by_test_id('assistant-messages').inner_text()
+    page.get_by_test_id('assistant-apply').click()
+    page.wait_for_function("document.querySelector('#sql').value === 'select 99 as generated'")
+    page.get_by_test_id('assistant-restore').click()
+    page.wait_for_function("document.querySelector('#sql').value === 'select 88 as manual_during_stream'")
+    page.get_by_test_id('assistant-restored').wait_for()
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
+    conversation = next(iter(json.loads(document['values']['qy_assistant_conversations']).values()))
+    assert conversation['sql'] == 'select 88 as manual_during_stream'
+    assert len(conversation['checkpoints']) == 1
+    assert not state['queries']
+
+
+def test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as before_cancelled_stream')
+    state['hold_assistant'] = True
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    page.get_by_test_id('assistant-input').fill('Generate a query')
+    page.get_by_test_id('assistant-input').press('Enter')
+    page.get_by_test_id('assistant-stream').wait_for()
+    page.locator('#sql').fill('select 66 as manual_before_tab_close')
+    page.locator('#tabs [aria-selected="true"] .x').click()
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    if page.locator('#emptyNewTab').is_visible():
+        page.locator('#emptyNewTab').click()
+    page.locator('#histBtn').click()
+    page.get_by_test_id('history-conversations').click()
+    page.get_by_test_id('conversation-item').click()
+    assert page.locator('#sql').input_value() == 'select 66 as manual_before_tab_close'
+    assert not state['queries']
+
+
+@pytest.mark.parametrize('cloud_action,status', [('assistant', 403), ('schema', 503), ('assistant-refresh', 401)])
+def test_platform_cloud_failure_does_not_disconnect_paired_local_history(page_sqlite, cloud_action, status):
+    page = page_sqlite
+    state = _hosted_workbench(page, engine='postgres')
+    _pair_workbench(page)
+    state['cloud_failures'] = {'/api/assistant/chat' if cloud_action.startswith('assistant') else '/api/schema/import': status}
+    state['refresh_error'] = cloud_action == 'assistant-refresh'
+    if cloud_action.startswith('assistant'):
+        page.locator('.dbrow[data-db="lab/notes"]').click()
+        page.locator('.ep').filter(has_text='Local').click()
+        page.locator('#sql').fill('select 1 as local_model_denied')
+        page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+        page.get_by_test_id('assistant-input').fill('Generate a query')
+        page.get_by_test_id('assistant-input').press('Enter')
+        page.get_by_test_id('assistant-panel').get_by_role('alert').wait_for()
+    else:
+        page.get_by_role('button', name='Connect local', exact=True).click()
+        page.get_by_label('Source database', exact=True).select_option('remote-notes')
+        page.get_by_label('Local target', exact=True).select_option('local-notes')
+        page.once('dialog', lambda dialog: dialog.accept())
+        page.get_by_role('button', name='Sync schema to Local', exact=True).click()
+        page.get_by_text('Cloud operation unavailable', exact=True).wait_for()
+        page.get_by_role('button', name='Close', exact=True).click()
+    assert 'Connected' in page.get_by_test_id('companion-status').inner_text()
+    page.locator('#sql').fill('select 55 as personal_history_still_available')
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    stored = state['documents'][('alpha', 'workbench', 'workspace')]['value']
+    assert any(tab['sql'] == 'select 55 as personal_history_still_available' for tab in json.loads(stored['values']['qy_tabs']))
+    assert state['paired']
+    assert not state['queries']
+
+
+def test_platform_chrome_follows_language_toggle_and_documents_real_connect_command(page_sqlite):
+    page = page_sqlite
+    _hosted_workbench(page)
+    assert page.get_by_test_id('remote-status').inner_text() == 'Remote: Connected'
+    assert page.get_by_test_id('companion-status').inner_text() == 'Local: Disconnected'
+    page.get_by_role('button', name='Connect local', exact=True).click()
+    assert 'ylab db connect' in page.get_by_role('dialog').inner_text()
+    assert 'ylab db companion' not in page.get_by_role('dialog').inner_text()
+    page.get_by_label('Local address', exact=True).wait_for()
+    page.get_by_role('button', name='Close', exact=True).click()
+    page.locator('.vg-lang-switch').click()
+    page.get_by_role('button', name='连接本机', exact=True).wait_for()
+    assert page.get_by_test_id('remote-status').inner_text() == '远程：已连接'
+    assert page.get_by_test_id('companion-status').inner_text() == '本机：未连接'
+    page.get_by_role('button', name='连接本机', exact=True).click()
+    page.get_by_label('本机地址', exact=True).wait_for()
+    assert 'ylab db connect' in page.get_by_role('dialog').inner_text()

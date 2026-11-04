@@ -228,6 +228,7 @@ pub struct QuarryService {
     pub state_dir: PathBuf,
     pub tunnels: Arc<TunnelManager>,
     pub cache: Arc<MetadataCache>,
+    pub keeper_launcher: Option<quarry_runtime::DaemonLauncher>,
     local_psql: Option<PathBuf>,
     local_pg_dump: Option<PathBuf>,
     neptune_launcher: Option<quarry_runtime::DaemonLauncher>,
@@ -241,11 +242,16 @@ impl QuarryService {
             state_dir: state_dir.clone(),
             tunnels: Arc::new(TunnelManager::new(state_dir.join("tunnels"))),
             cache: Arc::new(MetadataCache::new(state_dir.join("metadata-cache.json"))),
+            keeper_launcher: None,
             local_psql: None,
             local_pg_dump: None,
             neptune_launcher: None,
             executor: Executor::new(16, 64).expect("valid host execution limits"),
         }
+    }
+    pub fn with_keeper_launcher(mut self, launcher: quarry_runtime::DaemonLauncher) -> Self {
+        self.keeper_launcher = Some(launcher);
+        self
     }
     pub fn with_local_tools(mut self, psql: Option<PathBuf>, pg_dump: Option<PathBuf>) -> Self {
         self.local_psql = psql;

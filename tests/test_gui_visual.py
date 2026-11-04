@@ -920,3 +920,29 @@ def test_assistant_markdown_chrome_tracks_theme_tokens(page, tmp_path, monkeypat
     _drag(page, '#edresizer', 0, 280)
     page.get_by_test_id('assistant-messages').evaluate('el => { el.scrollTop = 0; }')
     page.screenshot(path=str(tmp_path / f'assistant-markdown-{mode}.png'))
+
+
+def test_platform_status_and_pairing_chrome_use_theme_tokens(page_sqlite):
+    from test_gui_browser_features import _hosted_workbench
+
+    page = page_sqlite
+    _hosted_workbench(page)
+    for mode in ('dark', 'light'):
+        if page.evaluate('document.documentElement.dataset.mode') != mode:
+            page.locator('.vg-switcher-mode').click()
+        page.get_by_role('button', name='Connect local', exact=True).click()
+        for selector, prop, token in (
+            ('.platform-status', 'backgroundColor', '--surf-1'),
+            ('.platform-status', 'color', '--fg2'),
+            ('.platform-dialog input', 'backgroundColor', '--surf-2'),
+            ('.platform-dialog input', 'color', '--fg'),
+        ):
+            assert page.locator(selector).first.evaluate('''(element, args) => {
+              const [prop, token] = args;
+              const probe = document.createElement('span');
+              probe.style[prop] = `var(${token})`;
+              element.parentElement.append(probe);
+              const equal = getComputedStyle(element)[prop] === getComputedStyle(probe)[prop];
+              probe.remove(); return equal;
+            }''', [prop, token]), (mode, selector, prop, token)
+        page.get_by_role('button', name='Close', exact=True).click()

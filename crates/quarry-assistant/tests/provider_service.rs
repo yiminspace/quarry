@@ -502,3 +502,36 @@ async fn close_cancels_four_pending_generations_and_admission_recovers() {
     let next = f.service.start_chat(body, true).await.unwrap();
     drop(next);
 }
+
+#[tokio::test]
+async fn hosted_override_uses_request_identity_without_reading_or_creating_local_config() {
+    let f = fixture("plain").await;
+    let mut config = f.service.config().load().unwrap();
+    config.api_key = "request-scoped-iam".into();
+    config.bifrost = false;
+    let missing = f._dir.path().join("never-created/config.toml");
+    let service = AssistantService::new(
+        ConversationStore::memory().unwrap(),
+        ConfigManager::new(&missing, HashMap::new(), "en"),
+        Arc::new(f.meta.clone()),
+    )
+    .with_model_config(config)
+    .unwrap();
+    let doc = service
+        .create_conversation(json!({"db":"shop","env":"dev","sql":"SELECT 1"}))
+        .await
+        .unwrap();
+    let mut stream = service.start_chat(json!({"conversationId":doc["id"],"requestId":"ephemeral","revision":0,"sql":"SELECT 1","prompt":"Explain","explain":true,"replyLanguage":"en"}),true).await.unwrap();
+    let mut done = false;
+    while let Some(event) = stream.next().await {
+        done |= event["type"] == "done";
+    }
+    assert!(done);
+    assert!(!missing.parent().unwrap().exists());
+    let requests = f.requests.lock().unwrap();
+    assert_eq!(
+        requests.last().unwrap().0["authorization"],
+        "Bearer request-scoped-iam"
+    );
+    assert!(!requests.last().unwrap().0.contains_key("x-bf-vk"));
+}
