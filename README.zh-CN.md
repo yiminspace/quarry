@@ -24,4 +24,9 @@ main 及 2.x 发布由 Rust 接管；Python 1.11.0 保存在原标签和受保�
 SSH、Docker 和 PostgreSQL schema sync 分别按需使用系统工具；普通查询使用原生驱动。
 类库按 core/runtime/local/assistant/service 分层，供宿主 CLI 直接共用。
 
+平台可通过当前源码 SDK 的 `quarry-platform` 接入自己的 IAM、明确的资源授权和配对本机服务。
+远程查询只读，个人记录保存在电脑 SQLite；宿主负责网页会话、CLI 与部署。
+这些接口与独立的 2.0.0 安装包分别提供，公开接口、存储与离线行为及当前接入边界见
+[托管接入指南](docs/hosting.zh-CN.md)。
+
 [英文文档](README.md) · [GUI 功能矩阵](TESTING.md) · [验收边界](docs/rust-verification.md)

@@ -49,6 +49,15 @@ Rust owns main and all 2.x distribution. `quarry-core`, `quarry-runtime`,
 `quarry-local`, `quarry-assistant` and `quarry-service` can be embedded directly
 in host applications. [Architecture](docs/rust-migration.md).
 
+For an IAM-protected platform workbench, the current source SDK's
+`quarry-platform` adds a host-provided
+authorization adapter, explicit resource ACLs and a paired desktop companion.
+Personal work is stored in computer SQLite; remote execution stays read-only.
+The host integrates its browser session, CLI and deployment. See the
+[hosting integration guide](docs/hosting.md) for the public API, storage and
+offline behavior, and current integration boundaries. These APIs are separate
+from the standalone 2.0.0 download.
+
 Python 1.11.0 is preserved at its tag and the protected `archive/python-1.x`
 branch. Python import APIs do not ship in 2.x. The Python source retained in this
 checkout is a development/test baseline, not a runtime dependency or published

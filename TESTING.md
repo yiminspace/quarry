@@ -432,9 +432,9 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 ### Design gaps (capability-audit output — missing on purpose until scheduled)
 
 | Region | Missing capability | Decision |
+|--------|--------------------|----------|
 | platform | shared SQL library and cloud/cross-device personal history sync | explicitly excluded; personal SQLite is on the paired computer |
 | platform/offline | first visit with no cached application assets | application must be downloaded once; cached static shell supports later offline visits |
-|--------|--------------------|----------|
 | SQLite | create/import databases, remote file access, attached databases, schema editing and GUI connection configuration | first release opens configured existing local files; connections remain CLI/TOML managed |
 | editor | autocomplete does not quote reserved/special table names or parse quoted column qualifiers | backlog; table-click previews are dialect-quoted, while these autocomplete cases need manual quoting |
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |

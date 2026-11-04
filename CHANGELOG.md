@@ -7,6 +7,10 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Refresh both website languages with standalone, embedded and IAM-hosted
+  capabilities, desktop personal storage, offline behavior and Local database
+  workflows. Add bilingual hosting guides with explicit IAM, browser-session and
+  companion integration requirements and current sharing/sync boundaries.
 - Honor system certificate trust for HTTPS platform and assistant connections,
   supporting private certificate authorities installed by users or organizations.
 - Add reusable IAM-hosted database execution and an explicitly paired local
