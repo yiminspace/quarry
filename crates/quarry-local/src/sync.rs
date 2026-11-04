@@ -208,6 +208,229 @@ impl LocalManager {
         write_journal("complete")?;
         Ok(json!({"db":db,"prev":exists.then_some(previous),"journal":journal,"schema_only":true}))
     }
+    /// Export authorized PostgreSQL structure without connection credentials or
+    /// business rows. The host performs IAM/resource checks before calling this.
+    /// Consumers must import only into an explicitly local staging database.
+    pub async fn export_schema(
+        &self,
+        source: &ConnectionRecord,
+        tunnels: &TunnelManager,
+    ) -> Result<String> {
+        use tokio::io::AsyncReadExt;
+        if source.spec()?.engine != quarry_core::Engine::Postgres {
+            return Err(RuntimeError::Invalid(
+                "schema export requires PostgreSQL".into(),
+            ));
+        }
+        let lease = tunnels
+            .open(
+                source,
+                self.config
+                    .enabled("proxy", &source.workspace)
+                    .then_some(true),
+            )
+            .await?;
+        let mut source_url = url::Url::parse(&source.url)
+            .map_err(|_| RuntimeError::Invalid("invalid schema source URL".into()))?;
+        if let Some(endpoint) = lease.endpoint() {
+            source_url
+                .query_pairs_mut()
+                .append_pair("hostaddr", &endpoint.host)
+                .append_pair("port", &endpoint.port.to_string());
+        }
+        let server = self
+            .pg_query(&source_url, "SHOW server_version_num")
+            .await?;
+        let major = server.trim().parse::<u32>().map_err(|_| {
+            RuntimeError::Operation("cannot identify PostgreSQL source version".into())
+        })? / 10000;
+        let dump_bin = self.select_pg_dump(major).await?;
+        let public_exists = self
+            .pg_query(
+                &source_url,
+                "SELECT 1 FROM pg_namespace WHERE nspname='public'",
+            )
+            .await?
+            .trim()
+            == "1";
+        let (safe_url, env) = pg_command_connection(&source_url)?;
+        let mut child = Command::new(dump_bin)
+            .args(["--schema-only", "--no-owner", "--no-privileges", &safe_url])
+            .envs(env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| RuntimeError::Operation("cannot read schema export".into()))?;
+        let read = async {
+            let mut bytes = Vec::new();
+            stdout.take(8_388_609).read_to_end(&mut bytes).await?;
+            if bytes.len() > 8_388_608 {
+                return Err(RuntimeError::Invalid("schema export exceeds 8 MiB".into()));
+            }
+            Ok::<_, RuntimeError>(bytes)
+        };
+        let wait = async { child.wait().await.map_err(RuntimeError::from) };
+        let (bytes, status) = tokio::time::timeout(Duration::from_secs(120), async {
+            tokio::try_join!(read, wait)
+        })
+        .await
+        .map_err(|_| RuntimeError::Operation("schema export timed out".into()))??;
+        if !status.success() {
+            return Err(RuntimeError::Operation(
+                "schema export failed; source was not modified".into(),
+            ));
+        }
+        let raw = String::from_utf8(bytes)
+            .map_err(|_| RuntimeError::Invalid("schema export was not UTF-8".into()))?;
+        let schema = transport_schema(&raw, true)?;
+        let creates_public =
+            regex::Regex::new(r#"(?im)^CREATE\s+SCHEMA\s+(?:public|"public")[;\s]"#)
+                .unwrap()
+                .is_match(&schema);
+        let mut normalized = String::from("DROP SCHEMA IF EXISTS public CASCADE;\n");
+        if public_exists && !creates_public {
+            normalized.push_str("CREATE SCHEMA public;\n");
+        }
+        normalized.push_str(&schema);
+        if normalized.len() > 8_388_608 {
+            return Err(RuntimeError::Invalid("schema export exceeds 8 MiB".into()));
+        }
+        Ok(normalized)
+    }
+    /// Import a schema supplied by a trusted authorized host. No arbitrary
+    /// psql commands or database-level operations are accepted. Activation uses
+    /// the same per-target lock, staging and rollback journal as local sync.
+    pub async fn import_schema(&self, target: &ConnectionRecord, schema: &str) -> Result<Value> {
+        if target.spec()?.engine != quarry_core::Engine::Postgres {
+            return Err(RuntimeError::Invalid(
+                "schema import requires PostgreSQL".into(),
+            ));
+        }
+        let tools = self.clone();
+        let dump = transport_schema(schema, false)?;
+        let target_url = url::Url::parse(&target.url)
+            .map_err(|_| RuntimeError::Invalid("invalid local target URL".into()))?;
+        if target.env != "local"
+            || target.ssh_host.is_some()
+            || !target_url.host_str().is_some_and(super::is_loopback)
+        {
+            return Err(RuntimeError::Invalid(
+                "schema target must be local, loopback and without SSH".into(),
+            ));
+        }
+        let db = target_url.path().trim_start_matches('/').to_string();
+        quarry_runtime::validate_name(&db)?;
+        if db.len() > 54 {
+            return Err(RuntimeError::Invalid(
+                "local database name leaves no room for staging suffix".into(),
+            ));
+        }
+        std::fs::create_dir_all(&self.state_dir)?;
+        let key = sync_key(&target_url);
+        let _lock = self.state_lock(&format!("sync-{key}")).await?;
+        let journal = self.state_dir.join(format!("sync-{key}.json"));
+        if journal.exists() {
+            let old: Value = serde_json::from_slice(&std::fs::read(&journal)?)?;
+            if old["state"] != "complete" && old["state"] != "rolled_back" {
+                return Err(RuntimeError::Operation(format!(
+                    "an interrupted schema sync requires recovery; inspect {}",
+                    journal.display()
+                )));
+            }
+        }
+        let mut admin = target_url.clone();
+        admin.set_path("/postgres");
+        let staging = format!("{db}__staging");
+        let previous = format!("{db}__prev");
+        let mut staging_url = target_url.clone();
+        staging_url.set_path(&format!("/{staging}"));
+        let exists = tools
+            .pg_query(
+                &admin,
+                &format!("SELECT 1 FROM pg_database WHERE datname='{}'", db),
+            )
+            .await?
+            .trim()
+            == "1";
+        tools
+            .pg_query(
+                &admin,
+                &format!("DROP DATABASE IF EXISTS \"{staging}\" WITH (FORCE)"),
+            )
+            .await?;
+        tools
+            .pg_query(
+                &admin,
+                &format!("CREATE DATABASE \"{staging}\" TEMPLATE template0"),
+            )
+            .await?;
+        if let Err(error) = tools.pg_script(&staging_url, &dump).await {
+            let _ = tools
+                .pg_query(
+                    &admin,
+                    &format!("DROP DATABASE IF EXISTS \"{staging}\" WITH (FORCE)"),
+                )
+                .await;
+            return Err(error);
+        }
+        let write_journal = |state: &str| {
+            atomic_write(
+                &journal,
+                &serde_json::to_vec_pretty(
+                    &json!({"state":state,"database":db,"staging":staging,"previous":previous,"target":target.key,"had_live":exists}),
+                )?,
+            )
+        };
+        write_journal("prepared")?;
+        tools.pg_query(&admin,&format!("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('{db}','{previous}') AND pid<>pg_backend_pid()")).await?;
+        tools
+            .pg_query(
+                &admin,
+                &format!("DROP DATABASE IF EXISTS \"{previous}\" WITH (FORCE)"),
+            )
+            .await?;
+        if exists {
+            tools
+                .pg_query(
+                    &admin,
+                    &format!("ALTER DATABASE \"{db}\" RENAME TO \"{previous}\""),
+                )
+                .await?;
+            write_journal("main_renamed")?;
+        }
+        if let Err(error) = tools
+            .pg_query(
+                &admin,
+                &format!("ALTER DATABASE \"{staging}\" RENAME TO \"{db}\""),
+            )
+            .await
+        {
+            if exists
+                && tools
+                    .pg_query(
+                        &admin,
+                        &format!("ALTER DATABASE \"{previous}\" RENAME TO \"{db}\""),
+                    )
+                    .await
+                    .is_err()
+            {
+                write_journal("recovery_required")?;
+                return Err(RuntimeError::Operation(format!(
+                    "schema activation failed and automatic rollback failed; recovery journal: {}",
+                    journal.display()
+                )));
+            }
+            write_journal("rolled_back")?;
+            return Err(error);
+        }
+        write_journal("complete")?;
+        Ok(json!({"db":db,"prev":exists.then_some(previous),"journal":journal,"schema_only":true}))
+    }
     pub async fn recover_sync(&self, target: &ConnectionRecord) -> Result<Value> {
         if target.spec()?.engine != quarry_core::Engine::Postgres {
             return Err(RuntimeError::Invalid(
@@ -482,6 +705,43 @@ fn percent_decode(value: &str) -> Result<String> {
     }
     String::from_utf8(bytes).map_err(|_| RuntimeError::Invalid("password is not UTF-8".into()))
 }
+/// PostgreSQL plain-format structure, never an executable psql program.
+fn transport_schema(schema: &str, from_dump: bool) -> Result<String> {
+    if schema.is_empty() || schema.len() > 8_388_608 || schema.contains('\0') {
+        return Err(RuntimeError::Invalid(
+            "schema must be nonempty UTF-8, up to 8 MiB".into(),
+        ));
+    }
+    let database =
+        regex::Regex::new(r"(?i)^(?:CREATE|ALTER|DROP|COMMENT ON)\s+DATABASE\b").unwrap();
+    let timeout = regex::Regex::new(r"(?i)^SET\s+transaction_timeout\s*=\s*0;").unwrap();
+    let mut out = String::new();
+    for line in schema.lines() {
+        let text = line.trim_start();
+        if text.starts_with('\\') {
+            if from_dump && (text.starts_with("\\restrict ") || text.starts_with("\\unrestrict ")) {
+                continue;
+            }
+            return Err(RuntimeError::Invalid(
+                "schema contains a psql command".into(),
+            ));
+        }
+        if database.is_match(text) {
+            if from_dump {
+                continue;
+            }
+            return Err(RuntimeError::Invalid(
+                "schema contains a database-level operation".into(),
+            ));
+        }
+        if timeout.is_match(text) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    Ok(out)
+}
 fn sanitize_dump(dump: &str, source_db: &str, target_db: &str) -> Result<String> {
     quarry_runtime::validate_name(target_db)?;
     let mut out = String::new();
@@ -513,6 +773,58 @@ fn sanitize_dump(dump: &str, source_db: &str, target_db: &str) -> Result<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_dump_removes_database_scope_and_rejects_client_programs() {
+        let schema = transport_schema("\\restrict nonce\nCREATE DATABASE remote;\nALTER DATABASE remote SET search_path=evil;\nCREATE TABLE test(id integer);\n\\unrestrict nonce\n", true).unwrap();
+        assert_eq!(schema, "CREATE TABLE test(id integer);\n");
+        for bad in [
+            "\\! touch /tmp/no",
+            "  \\copy rows FROM PROGRAM 'bad'",
+            "DROP DATABASE other;",
+            "ALTER DATABASE other RENAME TO stolen;",
+            "",
+            "SELECT 1;\0",
+        ] {
+            assert!(transport_schema(bad, false).is_err(), "{bad:?}");
+        }
+        assert!(transport_schema(&"x".repeat(8_388_609), false).is_err());
+    }
+    #[tokio::test]
+    async fn transport_import_rejects_nonlocal_targets_before_invoking_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = LocalManager::new(
+            RuntimeConfig::load(dir.path().join("config.toml")).unwrap(),
+            dir.path().join("state"),
+        )
+        .with_tools(Some(dir.path().join("must-not-run")), None, None);
+        let base = json!({"key":"app","url":"postgres://u:p@db.example/app","engine":"postgres","env":"local","workspace":dir.path()});
+        for record in [
+            base.clone(),
+            {
+                let mut r = base.clone();
+                r["url"] = json!("postgres://u:p@localhost/app");
+                r["env"] = json!("prod");
+                r
+            },
+            {
+                let mut r = base;
+                r["url"] = json!("postgres://u:p@localhost/app");
+                r["ssh_host"] = json!("jump.example");
+                r
+            },
+        ] {
+            let record: ConnectionRecord = serde_json::from_value(record).unwrap();
+            let error = manager
+                .import_schema(&record, "CREATE TABLE t(id integer);")
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("target must be local"),
+                "{error}"
+            );
+        }
+        assert!(!manager.state_dir.exists());
+    }
     #[test]
     fn credentials_are_not_in_pg_arguments() {
         let url = url::Url::parse("postgres://test:secret%21@localhost/db").unwrap();

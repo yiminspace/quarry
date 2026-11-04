@@ -362,3 +362,17 @@
 .assistant-expanded .assistant-divider{width:6px}
 @media(max-width:760px){.editor-workspace.assistant-expanded{grid-template-columns:minmax(180px,var(--assistant-width)) 6px minmax(0,1fr)}}
 .editor-input{position:relative;min-width:0}
+
+/* Hosted status and pairing use the same tokens as the standalone workbench. */
+.platform-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 12px;border-bottom:1px solid var(--line);background:var(--surf-1);color:var(--fg2);font-size:12px;flex:none}
+.platform-status a{color:var(--accent)}
+.platform-status .btn{font-size:11px;padding:3px 7px}
+.platform-error{color:var(--red-fg);overflow-wrap:anywhere}
+.platform-dialog{width:min(620px,92vw);max-height:90vh;overflow:auto}
+.platform-dialog h2{font-size:17px;margin:0 0 12px}
+.platform-dialog h3{font-size:14px;margin:12px 0}
+.platform-dialog p{font-size:12px;line-height:1.6;color:var(--fg2)}
+.platform-dialog label{display:flex;flex-direction:column;gap:5px;font-size:12px;margin:10px 0;color:var(--fg2)}
+.platform-dialog input,.platform-dialog select{width:100%;padding:8px;background:var(--surf-2);color:var(--fg);border:1px solid var(--line);border-radius:var(--r-btn)}
+.platform-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.platform-local-actions{border-top:1px solid var(--line);margin-top:14px}

@@ -7,6 +7,23 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Add reusable IAM-hosted database execution and an explicitly paired local
+  companion for platform CLIs. Resource ACLs and live operation permissions
+  protect hosted read-only queries, metadata, cancellation and schema export;
+  server connection credentials remain private.
+- Store personal drafts, bounded query results, SQL history and assistant
+  conversations in account- and platform-scoped desktop SQLite, with a browser
+  recovery buffer while disconnected. Hosted model requests use temporary memory
+  and the caller's IAM credentials rather than durable server-side history.
+- Let the existing workbench combine authorized hosted resources and paired
+  Local targets, with independent connection states and no query replay on
+  reconnection. Platform SQL sharing is intentionally unavailable.
+- Embed the complete standalone CLI as a Rust library for host CLIs, including
+  host-owned keeper/Neptune dispatch. Preserve the standalone `qy` entry point.
+- Support authorized PostgreSQL schema-only export and local staged import,
+  retaining the prior database and recovery journal on activation failure.
+
+
 - Show the complete website installation command with wrapping and a separate
   copy button at desktop and mobile widths; remove the hidden horizontal scroll.
 

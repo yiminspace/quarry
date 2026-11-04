@@ -1,3 +1,4 @@
+import { PLATFORM_MODE, displayEnvironment, personalStorage } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
@@ -72,13 +73,13 @@ function tabGroupKey(tab: Pick<Tab, "workspace" | "db" | "env">): string {
 
 function readEmptyGroups(): string[] {
   try {
-    const groups = JSON.parse(localStorage.getItem(EMPTY_GROUPS_KEY) || "[]");
+    const groups = JSON.parse(personalStorage.getItem(EMPTY_GROUPS_KEY) || "[]");
     return Array.isArray(groups) ? groups.filter((key): key is string => typeof key === "string") : [];
   } catch { return []; }
 }
 
 function persistEmptyGroups(groups: string[]): void {
-  try { localStorage.setItem(EMPTY_GROUPS_KEY, JSON.stringify(groups)); } catch { /* storage unavailable */ }
+  try { personalStorage.setItem(EMPTY_GROUPS_KEY, JSON.stringify(groups)); } catch { /* storage unavailable */ }
 }
 // Even older single-state keys, migrated from when qy_tabs was never written.
 const LEGACY_UI_KEY = "qy_ui";
@@ -114,13 +115,13 @@ function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
 
 function readStoredTabs(): StoredTab[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(TABS_KEY) || "null");
+    const parsed = JSON.parse(personalStorage.getItem(TABS_KEY) || "null");
     if (Array.isArray(parsed)) return parsed;
   } catch {
     // corrupt value — fall through to the single-state key
   }
   try {
-    const ui = JSON.parse(localStorage.getItem(LEGACY_UI_KEY) || "null") as StoredTab | null;
+    const ui = JSON.parse(personalStorage.getItem(LEGACY_UI_KEY) || "null") as StoredTab | null;
     return [{ sql: ui?.sql ?? "", db: ui?.db ?? null, env: ui?.env ?? null }];
   } catch {
     return [{ sql: "", db: null, env: null }];
@@ -144,7 +145,7 @@ function readStoredResults(tabs: Tab[], ati: number): Record<TabId, TabResultSna
     };
   };
   try {
-    const parsed = JSON.parse(localStorage.getItem(TABRES_KEY) || "null");
+    const parsed = JSON.parse(personalStorage.getItem(TABRES_KEY) || "null");
     if (Array.isArray(parsed)) {
       tabs.forEach((tab, i) => accept(parsed[i] as StoredResult, tab));
       return out;
@@ -153,7 +154,7 @@ function readStoredResults(tabs: Tab[], ati: number): Record<TabId, TabResultSna
     // corrupt value — fall through to the single-result key
   }
   try {
-    const single = JSON.parse(localStorage.getItem(LEGACY_RESULT_KEY) || "null") as StoredResult;
+    const single = JSON.parse(personalStorage.getItem(LEGACY_RESULT_KEY) || "null") as StoredResult;
     const tab = tabs[ati];
     if (tab) accept(single, tab);
   } catch {
@@ -180,17 +181,18 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     conversationId: typeof tb.conversationId === "string" ? tb.conversationId : undefined,
     sqlRevision: Number.isSafeInteger(tb.sqlRevision) ? tb.sqlRevision : 0,
   }));
-  const ati = Math.min(Math.max(Number(localStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
+  if (PLATFORM_MODE && tabs.length === 0) tabs.push({ id: newId(), title: null, sql: "", db: null, env: null });
+  const ati = Math.min(Math.max(Number(personalStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
   return { tabs, activeId: tabs[ati]?.id ?? "", results: readStoredResults(tabs, ati) };
 }
 
 function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
-    localStorage.setItem(
+    personalStorage.setItem(
       TABS_KEY,
       JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision }))),
     );
-    localStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
+    personalStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
     // storage full/unavailable — tabs just won't survive a reload
   }
@@ -229,10 +231,10 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
   }
   const serialized = JSON.stringify(packed);
   try {
-    localStorage.setItem(TABRES_KEY, serialized);
+    personalStorage.setItem(TABRES_KEY, serialized);
   } catch {
     try {
-      localStorage.removeItem(TABRES_KEY);
+      personalStorage.removeItem(TABRES_KEY);
     } catch {
       // storage completely unavailable — results just won't survive a reload
     }
@@ -276,7 +278,7 @@ export function tabTitle(tab: Tab): string {
   if (tab.title) return tab.title;
   const sql = tab.sql.trim();
   if (sql) return parseMainTable(sql) ?? sql.split(/\s+/).slice(0, 2).join(" ");
-  if (tab.db) return tab.db + (tab.env ? `@${tab.env}` : "");
+  if (tab.db) return tab.db + (tab.env ? `@${displayEnvironment(tab.db, tab.env)}` : "");
   return t("new_query");
 }
 

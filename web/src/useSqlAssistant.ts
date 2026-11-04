@@ -1,3 +1,4 @@
+import { PLATFORM_MODE, personalStorage } from "./platform";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { assistantStatusText, t } from "./i18n";
 import {
@@ -24,7 +25,13 @@ type KeepDraft = (current: string, next: string, db: string | null, env: string 
 
 /** Owns assistant requests independently from database execution. No query API is used here. */
 export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: string) => void) {
-  const [sessions, setSessions] = useState<Record<string, AssistantSession>>({});
+  const [sessions, setSessions] = useState<Record<string, AssistantSession>>(() => {
+    if (!PLATFORM_MODE) return {};
+    try {
+      const drafts = JSON.parse(personalStorage.getItem("qy_assistant_prompt_drafts") || "{}");
+      return Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, { draft: draft as AssistantDraft }]));
+    } catch { return {}; }
+  });
   const sessionsRef = useRef(sessions);
   const locks = useRef(new Map<string, Promise<unknown>>());
   const creating = useRef(new Map<string, Promise<Conversation>>());
@@ -39,6 +46,7 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
   const setDraft = useCallback((tabId: string, update: AssistantDraftUpdate) => {
     const current = sessionsRef.current[tabId]?.draft ?? { text: "", explain: false };
     publish(tabId, { draft: typeof update === "function" ? update(current) : update });
+    if (PLATFORM_MODE) personalStorage.setItem("qy_assistant_prompt_drafts", JSON.stringify(Object.fromEntries(Object.entries(sessionsRef.current).filter(([, session]) => session.draft?.text).map(([id, session]) => [id, session.draft]))));
   }, [publish]);
   const markUnapplied = useCallback((tabId: string, messageId: string) => {
     const pending = sessionsRef.current[tabId]?.unappliedMessageIds ?? [];
@@ -155,7 +163,17 @@ export function useSqlAssistant(keepDraft: KeepDraft, beforeWrite: (tabId: strin
         await chatAssistant({ conversationId: conversation.id, revision: conversation.revision, sql: tab.sql, prompt, explain, requestId }, (event) => {
           if (event.type === "text_delta") publish(tab.id, { stream: (sessionsRef.current[tab.id]?.stream ?? "") + (event.delta ?? "") });
           if (event.type === "sql_proposal" && event.sql && event.messageId) proposal = { sql: event.sql, messageId: event.messageId };
-          if (event.type === "done" && event.conversation) completed = event.conversation;
+          if (event.type === "done" && event.conversation) {
+            if (PLATFORM_MODE) {
+              const live = useTabsStore.getState().tabs.find((item) => item.id === tab.id);
+              // Editor changes are persisted immediately in tabs; the conversation
+              // SQL flush may still be queued behind this streaming request.
+              if (live && sameAssistantContext(live, event.conversation) && live.sql !== event.conversation.sql) {
+                event.conversation = { ...event.conversation, sql: live.sql, revision: event.conversation.revision + 1 };
+              }
+            }
+            completed = event.conversation;
+          }
         }, controller.signal);
         if (!completed) throw new Error(t("assistant_interrupted"));
         publish(tab.id, { conversation: completed, stream: undefined, prompt: undefined });

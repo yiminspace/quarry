@@ -51,16 +51,134 @@ fn public(mut doc: Value) -> Value {
 #[derive(Clone, Debug)]
 pub struct ConversationStore {
     path: PathBuf,
+    // Keep a named in-memory SQLite database alive across per-operation connections.
+    memory_keeper: Option<std::sync::Arc<std::sync::Mutex<Connection>>>,
 }
 impl ConversationStore {
     /// The caller supplies the exact location. No user home or environment is discovered.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            memory_keeper: None,
+        }
+    }
+    /// Request-scoped storage which never creates a directory or file. The last
+    /// clone dropping destroys its database, including messages and SQL proposals.
+    pub fn memory() -> Result<Self> {
+        let uri = format!(
+            "file:quarry-assistant-{}?mode=memory&cache=shared",
+            Uuid::new_v4()
+        );
+        let connection = Connection::open_with_flags(
+            &uri,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(storage_error)?;
+        let store = Self {
+            path: uri.into(),
+            memory_keeper: Some(std::sync::Arc::new(std::sync::Mutex::new(connection))),
+        };
+        store.open()?;
+        Ok(store)
+    }
+    /// Seed a single ephemeral request from the owner's local document. Client
+    /// private fields never survive; the host supplies the authorized fingerprint.
+    pub fn import_document(&self, document: Value, fingerprint: &str) -> Result<Value> {
+        if self.memory_keeper.is_none() {
+            return Err(AssistantError::invalid(
+                "Document import requires ephemeral storage",
+            ));
+        }
+        let object = document
+            .as_object()
+            .ok_or_else(|| AssistantError::invalid("Invalid conversation"))?;
+        if serde_json::to_vec(&document).map_err(storage_error)?.len() > 2_097_152 {
+            return Err(AssistantError::invalid("Conversation is too large"));
+        }
+        for key in ["id", "db"] {
+            let value = object
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| AssistantError::invalid("Invalid conversation identity"))?;
+            if value.is_empty()
+                || value.len() > if key == "id" { 100 } else { 512 }
+                || value.chars().any(char::is_control)
+            {
+                return Err(AssistantError::invalid("Invalid conversation identity"));
+            }
+        }
+        valid_sql(
+            document["sql"]
+                .as_str()
+                .ok_or_else(|| AssistantError::invalid("Invalid conversation SQL"))?,
+        )?;
+        current_revision(&document)?;
+        for key in ["env", "workspace"] {
+            if let Some(value) = document.get(key)
+                && !value.is_null()
+                && value
+                    .as_str()
+                    .is_none_or(|s| s.len() > 4096 || s.chars().any(char::is_control))
+            {
+                return Err(AssistantError::invalid("Invalid conversation target"));
+            }
+        }
+        for key in ["messages", "checkpoints"] {
+            let items = document[key]
+                .as_array()
+                .ok_or_else(|| AssistantError::invalid("Invalid conversation history"))?;
+            if items.len() > 2000 || items.iter().any(|v| !v.is_object()) {
+                return Err(AssistantError::invalid("Invalid conversation history"));
+            }
+        }
+        let keys = [
+            "id",
+            "title",
+            "db",
+            "env",
+            "workspace",
+            "sql",
+            "revision",
+            "messages",
+            "checkpoints",
+            "createdAt",
+            "updatedAt",
+        ];
+        let mut doc = Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| keys.contains(&key.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
+        doc["_fingerprint"] = json!(fingerprint);
+        let mut c = self.open()?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        Self::save(&tx, &mut doc)?;
+        tx.commit().map_err(storage_error)?;
+        Ok(public(doc))
     }
     pub fn path(&self) -> &Path {
         &self.path
     }
     fn open(&self) -> Result<Connection> {
+        if self.memory_keeper.is_some() {
+            let c = Connection::open_with_flags(
+                &self.path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+                    | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+            )
+            .map_err(storage_error)?;
+            c.busy_timeout(Duration::from_secs(10))
+                .map_err(storage_error)?;
+            c.execute_batch("CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, document TEXT NOT NULL)").map_err(storage_error)?;
+            return Ok(c);
+        }
         let parent = self.path.parent().ok_or_else(|| {
             AssistantError::invalid("History requires an explicit parent directory")
         })?;

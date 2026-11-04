@@ -291,6 +291,36 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 126 | assistant/Markdown | assistant replies render headings, emphasis, lists, inline/fenced code, tables and blockquotes in streams and recovered history; user/system messages stay literal; code examples cannot apply or run SQL; raw HTML, executable/local URLs and remote image requests are blocked; external links open separately; code/tables scroll within a narrow panel; headings use the theme accent and SQL keywords/strings/numbers/comments use distinct theme tokens | F:test_assistant_markdown_formats_reply_and_reopened_history_without_sql_changes, F:test_assistant_markdown_blocks_html_unsafe_urls_and_remote_images, F:test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed, F:test_assistant_markdown_wide_code_and_tables_scroll_inside_narrow_panel, V:test_assistant_markdown_chrome_tracks_theme_tokens | ✅ |
 | 127 | assistant/language | no reply-language controls appear on hover or keyboard focus; the GUI reads the CLI-owned preference and backend-resolved system language, independently of interface language and obsolete localStorage; reopening/focus/visibility/reload reads CLI updates without changing drafts/SQL/history or sending model/query requests; the preference affects GUI replies only | F:test_assistant_has_no_reply_language_settings_on_hover_or_focus, F:test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state, F:test_assistant_reply_language_rereads_cli_and_system_changes, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
 
+
+### Hosted and companion workbench matrix
+
+The following rows cover the platform-marked built bundle. Standalone rows above
+continue to apply to standalone mode; hosted mode deliberately excludes workspace
+administration, credential reveal and shared saved-query management.
+
+| # | Area | Feature | Covered by | ✓ |
+|---|------|---------|------------|---|
+| H1 | offline/editor | editor opens with cloud and companion disconnected; drafts use account/origin-scoped recovery and never migrate to another account | F:test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries | ✅ |
+| H2 | targets/results | hosted and paired Local targets use stable resource/placement identity; grid and exports retain active-tab ownership | F:test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution; F:test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_old_device | ✅ |
+| H3 | connections | independent cloud/local status, explicit pair/revoke/reconnect, draft preservation and no SQL replay | F:test_platform_reconnect_and_revoke_preserve_draft_without_query_replay | ✅ |
+| H4 | assistant | request-scoped remote generation; proposals/apply/restore/reload use companion personal documents, never cloud history or automatic execution | F:test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store; F:test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen; F:test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql | ✅ |
+| H5 | Local/schema | create, stop and PostgreSQL schema import are explicit operations bound to source and local target; unavailable without pairing | F:test_platform_local_create_sync_stop_require_explicit_actions | ✅ |
+| H6 | personal SQLite | revision conflicts retain the current draft, offer export and explicit reload, and never overwrite another document silently | F:test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload | ✅ |
+| H7 | shared local history | native CLI and GUI canonical query-history document feeds SQL recall; shared platform SQL remains unavailable | F:test_platform_cli_history_is_loaded_from_same_local_document; F:test_platform_offline_result_queue_is_bounded_and_reconnect_saves_all_sql; ylab native test_database.py | ✅ |
+| H8 | cancellation | request-ID cancellation and latest-wins suppress a response after cancellation | F:test_platform_cancel_query_never_repaints_grid_from_late_response | ✅ |
+| H9 | pairing | UI rejects non-loopback destinations before transmitting credentials; status/dialog use theme tokens in both themes | F:test_platform_pairing_rejects_non_loopback_destination; V:test_platform_status_and_pairing_chrome_use_theme_tokens; F:test_platform_chrome_follows_language_toggle_and_documents_real_connect_command | ✅ |
+| H10 | offline assets | previously loaded static shell reopens with the entire network offline; service-worker cache contains no API or personal responses | F:test_platform_cached_shell_reopens_with_entire_network_offline | ✅ |
+| H11 | IAM refresh | expired IAM refreshes once for pairing/schema/model operations; local-only operations stay independent of cloud refresh | F:test_platform_local_schema_action_refreshes_iam_without_changing_local_identity; F:test_platform_cloud_failure_does_not_disconnect_paired_local_history | ✅ |
+
+Backend resource ACL, scoped credentials, per-user cancellation/admission,
+loopback Origin/Host validation, pairing expiry/revoke, SQLite CAS and cloud
+outage behavior are verified by `crates/quarry-platform/tests/platform.rs`.
+`crates/quarry-local/tests/hosted_schema.rs` requires an explicit disposable
+PostgreSQL URL and verifies split schema export/import, no source row transfer,
+prior-database preservation and failed import safety. The separate YiminLab
+`database-integration.py` harness exercises actual AuthKit/gateway/native binary
+processes against disposable fixtures; its model replies are fixtures.
+
 ### SQLite integration audit (2026-10-12)
 
 - **Existence:** audited all JSX interaction bindings, localStorage uses and API
@@ -402,6 +432,8 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 ### Design gaps (capability-audit output — missing on purpose until scheduled)
 
 | Region | Missing capability | Decision |
+| platform | shared SQL library and cloud/cross-device personal history sync | explicitly excluded; personal SQLite is on the paired computer |
+| platform/offline | first visit with no cached application assets | application must be downloaded once; cached static shell supports later offline visits |
 |--------|--------------------|----------|
 | SQLite | create/import databases, remote file access, attached databases, schema editing and GUI connection configuration | first release opens configured existing local files; connections remain CLI/TOML managed |
 | editor | autocomplete does not quote reserved/special table names or parse quoted column qualifiers | backlog; table-click previews are dialect-quoted, while these autocomplete cases need manual quoting |
@@ -1124,3 +1156,41 @@ and pip upgrade instructions. Its existing version/release-note/command state
 is unchanged; the new anchor has no state writes. Existence: upgradeGuide maps
 to the update-panel browser contract. Capability: native installations have an
 upgrade path in addition to pipx. Shared-state: no new store or writer.
+
+
+### 2026-11-04 hosted/local integration audits
+
+- **Existence:** `PlatformStatus` owns explicit pair, revoke, reconnect, Local
+  create/stop/schema sync, conflict export and reload bindings (H1–H9). Platform
+  requests map to `/api/db/platform`, `connections`, `tables`, `columns`, `health`,
+  `query`, `cancel`, `inspect`, `record-link`, `assistant/config`, `assistant/chat`.
+  Companion routes are `/api/platform`, `pair`, `unpair`, `personal`, `local/up`,
+  `local/down`, `schema/import` and the scoped query/metadata routes. Platform
+  unsupported standalone endpoints return deliberate local capability responses,
+  not server configuration access. Account-scoped recovery/pairing keys are
+  `qy_platform:[origin,account]:recovery/pairing`; personal values retain legacy
+  `qy_tabs`, `qy_tabres`, `qy_hist`, `qy_auto_run` and UI preferences, plus
+  `qy_assistant_conversations`, `qy_assistant_prompt_drafts`,
+  `qy_pending_query_history`. SQLite documents are `workbench/workspace` and
+  `query-history/entries`. H1–H11 cover interactions, disconnection and ownership.
+- **Capability:** the editor must open without either backend, preserve unsaved
+  SQL, explain where it is saved, reveal unavailable actions and reconnect
+  without execution. Paired Local creation/status/stop and PostgreSQL structure
+  transfer are exposed explicitly. Existing engine limits remain: managed Local
+  supports PG/Redis/Neptune; schema sync is PG-only. Platform shared SQL and cloud
+  personal-history synchronization are excluded by the agreed scope. Browser
+  caches contain static assets only; a first-ever offline visit cannot download
+  an application it has never loaded.
+- **Shared state / all write sites:** `platform.ts` writes recovery values via
+  `personalStorage.setItem/removeItem`, SQLite scheduling/flush, initial hydration,
+  explicit conflict reload and canonical history enqueue/flush. Account changes
+  stop the old page before applying an in-flight response. Readers are existing
+  tabs, history, UI stores, assistant state and connection controls; platform
+  target IDs include project/database plus placement/resource ID. Tab SQL write
+  sites remain `tabsStore.updateTab/updateActiveTab`, editor typing, table and
+  Alt-table previews, key inspect, Format, history/link restoration, saved-query
+  loading (standalone only), assistant apply/restore, and tab close through
+  `keepDraft/pushHist`. Result writes remain per-tab snapshots with request guards.
+  H2/H4/H6/H7/H8 interact across those readers, recovery, results and assistant
+  checkpoints; the existing standalone overwrite/race/production-auto-run tests
+  continue to protect their original paths.

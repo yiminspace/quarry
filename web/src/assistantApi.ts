@@ -1,3 +1,5 @@
+import { PLATFORM_MODE, platformFetch, platformJSON, resourceFor } from "./platform";
+import { personalAssistantRequest, personalConversation, storePersonalConversation, mergePersonalAssistantResponse } from "./personalAssistant";
 import { assistantStatusText, t, tv } from "./i18n";
 
 export type AssistantMessage = {
@@ -51,12 +53,17 @@ export class AssistantApiError extends Error {
 }
 
 async function json<T>(path: string, body?: unknown): Promise<T> {
+  if (PLATFORM_MODE) {
+    if (path === "/config") return platformJSON<T>("/api/assistant/config");
+    return personalAssistantRequest(path, body) as T;
+  }
   const response = await fetch(base + path, body === undefined ? undefined : {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new AssistantApiError(response.status, payload.error ? assistantStatusText(payload.error) : tv("assistant_http_failed", { status: response.status }));
+    const message = typeof payload.error === "string" ? payload.error : payload.error?.message;
+    throw new AssistantApiError(response.status, message ? assistantStatusText(message) : tv("assistant_http_failed", { status: response.status }));
   }
   return response.json() as Promise<T>;
 }
@@ -108,20 +115,30 @@ export async function chatAssistant(
   onEvent: (event: AssistantEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(base + "/chat", {
+  const localConversation = PLATFORM_MODE ? personalConversation(request.conversationId) : null;
+  const resource = localConversation?.db ? resourceFor(localConversation.db, localConversation.env) : null;
+  const init = {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(PLATFORM_MODE ? { ...request, resourceId: resource?.id, conversation: localConversation } : request), signal,
+  };
+  const response = PLATFORM_MODE ? await platformFetch(base + "/chat", init, resource?.placement === "local") : await fetch(base + "/chat", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request), signal,
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new AssistantApiError(response.status, payload.error ? assistantStatusText(payload.error) : tv("assistant_http_failed", { status: response.status }));
+    const message = typeof payload.error === "string" ? payload.error : payload.error?.message;
+    throw new AssistantApiError(response.status, message ? assistantStatusText(message) : tv("assistant_http_failed", { status: response.status }));
   }
   if (!response.body) throw new Error(t("assistant_empty_response"));
   let completed = false;
   await readAssistantStream(response.body, (event) => {
     if (event.requestId !== request.requestId || event.conversationId !== request.conversationId) return;
     if (event.type === "error") throw new Error(event.error ? assistantStatusText(event.error) : t("assistant_request_failed"));
-    if (event.type === "done") completed = true;
+    if (event.type === "done") {
+      completed = true;
+      if (localConversation && event.conversation) event.conversation = mergePersonalAssistantResponse(localConversation, event.conversation, personalConversation(localConversation.id));
+    }
     onEvent(event);
+    if (localConversation && event.type === "done" && event.conversation) storePersonalConversation(event.conversation);
   });
   if (!completed) throw new Error(t("assistant_interrupted"));
 }

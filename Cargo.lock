@@ -1547,6 +1547,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "quarry-platform"
+version = "2.0.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "fs2",
+ "futures-util",
+ "http-body-util",
+ "quarry-assistant",
+ "quarry-core",
+ "quarry-local",
+ "quarry-runtime",
+ "quarry-service",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tower",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "quarry-runtime"
 version = "2.0.0"
 dependencies = [

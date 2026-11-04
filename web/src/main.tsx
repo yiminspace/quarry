@@ -2,13 +2,16 @@ import { VOYAGE_APP_DEFAULTS } from "@yiminlab/voyage";
 import { VoyageProvider } from "@yiminlab/voyage/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App from "./App.tsx";
+import { initializePlatform } from "./platform";
 // Self-hosted (no external CDN dependency — matches the old GUI's icon set
 // without its jsdelivr-CDN tech debt; see epic issue for #14).
 import "@tabler/icons-webfont/dist/tabler-icons.min.css";
 import "@yiminlab/voyage/tokens.css";
 import "@yiminlab/voyage/voyage.css";
 import "./App.css";
+
+await initializePlatform();
+const { default: App } = await import("./App.tsx");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

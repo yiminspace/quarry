@@ -1,3 +1,4 @@
+import { PLATFORM_MODE, platformSnapshot, platformDb, platformEnv, platformJSON, resourceFor, resourceLabel, platformFetch, recordPlatformQuery } from "./platform";
 export type ConnEnv = {
   env: string | null;
   key: string;
@@ -6,6 +7,9 @@ export type ConnEnv = {
   ssh: boolean;
   proxied: boolean;
   production?: boolean;
+  label?: string;
+  resourceId?: string;
+  placement?: "remote" | "local";
 };
 
 export type VersionInfo = { name: string; version: string };
@@ -88,6 +92,7 @@ export type QueryRequest = {
   sql: string;
   maxRows: number;
   offset?: number;
+  requestId?: string;
 };
 
 export type ConnTunnel = { host: string; user: string | null; port: number; key: string | null };
@@ -158,6 +163,7 @@ export type UpdateInfo = { current: string; latest: string | null; available: bo
 export type ChangelogVersion = { version: string; date: string; entries: string[] };
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+  if (PLATFORM_MODE) return platformGet<T>(path);
   const res = await fetch(path, { signal });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
@@ -167,6 +173,12 @@ async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  if (PLATFORM_MODE) {
+    const source = body as Record<string, unknown>;
+    if (typeof source.db !== "string") throw new Error("此操作在托管工作台中不可用。");
+    const resource = resourceFor(source.db, typeof source.env === "string" ? source.env : null);
+    return platformJSON<T>(path, { ...source, db: undefined, env: undefined, resourceId: resource.id, requestId: source.requestId || crypto.randomUUID() }, resource.placement === "local");
+  }
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -206,8 +218,18 @@ export function fetchColumns(
   return getJSON(`/api/columns?${qs}`);
 }
 
-export function runQuery(req: QueryRequest): Promise<QueryResult> {
-  return postJSON("/api/query", req);
+const cancelledPlatformRequests = new Set<string>();
+export async function runQuery(req: QueryRequest): Promise<QueryResult> {
+  const request = PLATFORM_MODE ? { ...req, requestId: req.requestId || crypto.randomUUID() } : req;
+  const result = await postJSON<QueryResult>("/api/query", request);
+  if (PLATFORM_MODE && request.requestId && cancelledPlatformRequests.delete(request.requestId)) throw new Error("查询已取消。");
+  if (PLATFORM_MODE) recordPlatformQuery(resourceFor(req.db, req.env), req.sql, result, request.requestId!);
+  return result;
+}
+export async function cancelPlatformQuery(db: string, env: string | null, requestId: string): Promise<void> {
+  const resource = resourceFor(db, env);
+  await platformJSON("/api/cancel", { requestId }, resource.placement === "local");
+  cancelledPlatformRequests.add(requestId);
 }
 
 export function fetchHealth(
@@ -292,4 +314,33 @@ export function fetchChangelog(): Promise<ChangelogVersion[]> {
 
 export function fetchRecordLink(db: string, env: string | null, sql: string, row: Record<string, unknown>): Promise<{ sql?: string; table?: string; reason?: string }> {
   return postJSON("/api/record-link", { db, env, sql, row });
+}
+
+/** Adapt the standalone protocol to explicit, authorized platform targets. */
+async function platformGet<T>(path: string): Promise<T> {
+  const url = new URL(path, location.origin);
+  if (url.pathname === "/api/connections") {
+    const groups: ConnGroup[] = [];
+    for (const resource of platformSnapshot().resources) {
+      let group = groups.find((item) => item.group === resource.project);
+      if (!group) { group = { group: resource.project, ws: resource.project, items: [] }; groups.push(group); }
+      const db = platformDb(resource);
+      let item = group.items.find((item) => item.db === db);
+      if (!item) { item = { db, engine: resource.engine, is_env_set: true, envs: [] }; group.items.push(item); }
+      item.envs.push({ env: platformEnv(resource), key: resource.id, resourceId: resource.id, label: resourceLabel(resource), placement: resource.placement, engine: resource.engine, production: resource.production, region: null, ssh: false, proxied: false });
+    }
+    return { groups, workspace: location.origin, workspaces: groups.map((group) => group.ws!) } as T;
+  }
+  if (url.pathname === "/api/queries") return [] as T;
+  if (url.pathname === "/api/keepalive") return { workspace: "", enabled: false, reconnect: false, keeper: { running: false, pid: null }, tunnels: [] } as T;
+  const db = url.searchParams.get("db");
+  if (!db) throw new Error("此操作在托管工作台中不可用。");
+  const resource = resourceFor(db, url.searchParams.get("env"));
+  url.searchParams.delete("db"); url.searchParams.delete("env"); url.searchParams.set("resourceId", resource.id);
+  const response = await platformFetch(url.pathname + url.search, {}, resource.placement === "local");
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(typeof payload.error === "string" ? payload.error : payload.error?.message || `请求失败 (${response.status})`);
+  }
+  return response.json() as Promise<T>;
 }

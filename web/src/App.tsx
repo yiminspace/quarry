@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { prepareOfflineShell } from "./offlineShell";
+import PlatformStatus from "./PlatformStatus";
 import Header from "./Header";
 import ResultWorkbench from "./ResultWorkbench";
 import { t, tv } from "./i18n";
@@ -43,11 +46,13 @@ function UpgradeBanner() {
  * filling the rest — the legacy GUI's `<body>` layout. */
 export default function App() {
   useEvents();
+  useEffect(() => { void prepareOfflineShell(); }, []);
   const isProduction = useConnStore((s) => s.current?.production === true);
   return (
     <div className="app-shell" data-production={isProduction}>
       <UpgradeBanner />
       <Header />
+      <PlatformStatus />
       <ResultWorkbench />
       <Toast />
     </div>

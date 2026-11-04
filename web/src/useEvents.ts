@@ -1,3 +1,4 @@
+import { PLATFORM_MODE } from "./platform";
 import { useEffect } from "react";
 import { fetchChangelog, fetchUpdate, fetchVersion } from "./api";
 import { t } from "./i18n";
@@ -71,6 +72,11 @@ function checkWhatsNew(version: string): void {
  */
 export function useEvents(): void {
   useEffect(() => {
+    if (PLATFORM_MODE) {
+      const refresh = () => useConnStore.getState().requestReload();
+      window.addEventListener("quarry-platform-changed", refresh);
+      return () => window.removeEventListener("quarry-platform-changed", refresh);
+    }
     let baseVersion: string | null = null;
     let wasDown = false;
     let closed = false;

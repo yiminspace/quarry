@@ -649,6 +649,25 @@ fn parse_changelog(text: &str) -> Value {
     json!(items)
 }
 
+pub(crate) fn web_asset(path: &str) -> Option<(&'static [u8], String)> {
+    let path = path.trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    if Path::new(path)
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
+    UI.get_file(path).map(|file| {
+        (
+            file.contents(),
+            mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .to_string(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod native_http_tests {
     use super::*;

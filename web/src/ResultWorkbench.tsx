@@ -1,5 +1,7 @@
+import { PLATFORM_MODE, displayEnvironment } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  cancelPlatformQuery,
   fetchConnections,
   fetchHealth,
   fetchInspect,
@@ -59,7 +61,7 @@ type ModalState =
 /** Snapshot of the connection a request was fired against — used to route the
  * response back to its issuing tab and drop it if that tab was re-pointed to
  * another connection while the request was in flight. */
-type ReqCtx = { tabId: TabId; seq: number; db: string; env: string | null };
+type ReqCtx = { tabId: TabId; requestId: string; seq: number; db: string; env: string | null };
 
 function canAutoRun(): boolean {
   const current = useConnStore.getState().current;
@@ -186,6 +188,7 @@ export default function ResultWorkbench() {
   // Per-tab in-flight bookkeeping: a request snapshots its issuing tab and a
   // sequence number, so a later request on the same tab always wins and a
   // response only ever lands on — or shows an error on — the tab that fired it.
+  const reqIdsRef = useRef<Record<TabId, string>>({});
   const reqSeqRef = useRef<Record<TabId, number>>({});
   const [pendingByTab, setPendingByTab] = useState<Record<TabId, boolean>>({});
   const [errorByTab, setErrorByTab] = useState<Record<TabId, string | null>>({});
@@ -366,6 +369,7 @@ export default function ResultWorkbench() {
   }, [reloadToken]);
 
   useEffect(() => {
+    if (PLATFORM_MODE) return;
     let cancelled = false;
     const refresh = (): void => {
       fetchKeepAlive()
@@ -405,7 +409,7 @@ export default function ResultWorkbench() {
     }
     const tab = useTabsStore.getState().tabs.find((tb) => tb.id === useTabsStore.getState().activeId);
     if (tab?.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
-    else if (tab?.db) unbindActiveTab();
+    else if (tab?.db && !PLATFORM_MODE) unbindActiveTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, loadSeq]);
 
@@ -414,9 +418,11 @@ export default function ResultWorkbench() {
   const startReq = (tabId: TabId, target: { db: string; env: string | null }): ReqCtx => {
     const seq = (reqSeqRef.current[tabId] ?? 0) + 1;
     reqSeqRef.current[tabId] = seq;
+    const requestId = crypto.randomUUID();
+    reqIdsRef.current[tabId] = requestId;
     setPendingByTab((prev) => ({ ...prev, [tabId]: true }));
     setErrorByTab((prev) => ({ ...prev, [tabId]: null }));
-    return { tabId, seq, db: target.db, env: target.env };
+    return { tabId, requestId, seq, db: target.db, env: target.env };
   };
   const isCurrentReq = (ctx: ReqCtx): boolean => reqSeqRef.current[ctx.tabId] === ctx.seq;
   const endReq = (ctx: ReqCtx): void => {
@@ -476,7 +482,7 @@ export default function ResultWorkbench() {
     pushHist(currentSql, target.db, target.env);
     const ctx = startReq(useTabsStore.getState().activeId, target);
     try {
-      const data = await runQuery({ db: target.db, env: target.env, sql: currentSql, maxRows });
+      const data = await runQuery({ db: target.db, env: target.env, sql: currentSql, maxRows, requestId: ctx.requestId });
       applyTabResult(ctx, () => ({
         result: data,
         queryDb: target.db,
@@ -818,7 +824,7 @@ export default function ResultWorkbench() {
     try {
       const prefix = cur.engine === "sqlite" ? "EXPLAIN QUERY PLAN" : "EXPLAIN";
       const explainSql = `${prefix} ${trimmed.replace(/^\s*explain\s+(?:query\s+plan\s+)?/i, "")}`;
-      const data = await runQuery({ db: cur.db, env: cur.env, sql: explainSql, maxRows });
+      const data = await runQuery({ db: cur.db, env: cur.env, sql: explainSql, maxRows, requestId: ctx.requestId });
       if (data.columns.length > 1) {
         applyTabResult(ctx, () => ({
           result: data,
@@ -965,6 +971,7 @@ export default function ResultWorkbench() {
         sql: querySql,
         maxRows,
         offset: prevRows.length,
+        requestId: ctx.requestId,
       });
       applyTabResult(
         ctx,
@@ -1197,7 +1204,7 @@ export default function ResultWorkbench() {
                   data-env={e.env ?? ""}
                   onClick={() => selectDb(current.db, e.env ?? null, { viaPill: true })}
                 >
-                  {e.env || "default"}
+                  {e.label || e.env || "default"}
                   {e.proxied && (
                     <span
                       className="vg-proxy-badge proxy-badge"
@@ -1217,7 +1224,7 @@ export default function ResultWorkbench() {
             id="ciBtn"
             title={t("conn_info")}
             aria-label={t("conn_info")}
-            style={{ display: current ? undefined : "none" }}
+            style={{ display: current && !PLATFORM_MODE ? undefined : "none" }}
             onClick={() => setConnInfoOpen(true)}
           >
             <i className="ti ti-info-circle" />
@@ -1239,7 +1246,7 @@ export default function ResultWorkbench() {
             key={JSON.stringify([current ? workspaceFor(current.db) : null, current?.db, current?.env, current?.production, activeTabId])}
             autoRun={autoRun}
             disabled={!current || typeof current.production !== "boolean"}
-            scope={[current?.db, current?.env].filter(Boolean).join(" / ")}
+            scope={[current?.db, current ? displayEnvironment(current.db, current.env) : null].filter(Boolean).join(" / ")}
             onRun={() => void run()}
             onModeChange={(enabled) => {
               const target = useConnStore.getState().current;
@@ -1249,6 +1256,14 @@ export default function ResultWorkbench() {
               useUiStore.getState().setAutoRun({ ...target, workspace: workspaceFor(target.db) }, enabled);
             }}
           />
+          {PLATFORM_MODE && pendingByTab[activeTabId] && current && <button className="vg-btn btn" data-testid="cancel-platform-query" onClick={() => {
+            const requestId = reqIdsRef.current[activeTabId];
+            if (!requestId) return;
+            void cancelPlatformQuery(current.db, current.env, requestId).then(() => {
+              reqSeqRef.current[activeTabId] = (reqSeqRef.current[activeTabId] ?? 0) + 1;
+              setPendingByTab((previous) => ({ ...previous, [activeTabId]: false }));
+            }).catch((error) => toast((error as Error).message, false));
+          }}>{t("platform_cancel_query")}</button>}
           {activeTab.savedQueryId && <button className="vg-btn btn" id="copySavedBtn"
             title={t("copy_as_query")} onClick={() => {
               useTabsStore.getState().addTab({ db: activeTab.db, env: activeTab.env });
@@ -1458,7 +1473,7 @@ export default function ResultWorkbench() {
               <span style={{ flex: 1 }} />
               <span id="statusTarget" title={t("result_target_tip")}>
                 {queryDb}
-                {queryEnv ? `@${queryEnv}` : ""} · {result.engine}
+                {queryEnv ? `@${displayEnvironment(queryDb || "", queryEnv)}` : ""} · {result.engine}
               </span>
             </>
           )}

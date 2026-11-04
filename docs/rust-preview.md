@@ -43,6 +43,7 @@ boundary. Normal queries do not need those command-line database clients.
 | `quarry-local` | Docker lifecycle, local registration, Neptune fixtures, staged PostgreSQL schema sync and recovery |
 | `quarry-assistant` | Model transport, metadata-only tools, proposals, historical conversations and revision CAS |
 | `quarry-service` | Shared facade and connection resolution used by entry points and embedding applications |
+| `quarry-platform` | Hosted resource/authorization adapter, paired desktop companion and personal SQLite storage |
 | `apps/qy` | Standalone CLI, MCP stdio and local HTTP adapters; embedded unchanged workbench assets |
 
 `ylab`/`bcli` can depend on these crates directly. No separately installed `qy`
@@ -53,11 +54,13 @@ cargo run -p quarry-core --example embedded_sqlite --locked
 cargo run -p quarry-service --example embedded_host --locked
 ```
 
-The facade accepts explicit config/workspace/state paths. Identity and resource
-authorization belong to the host; query write/production restrictions remain
-in the kernel. A hosted adapter must resolve only its granted resources and
-must deliberately select which local/configuration/Docker capabilities to
-expose. Quarry itself does not provide IAM authorization or change ylab/bcli repositories.
+The facade accepts explicit config/workspace/state paths. Identity authority
+and resource grants belong to the host; query write/production restrictions
+remain in the kernel. `quarry-platform` enforces live host-provided authorization
+and explicit resource ACLs, and provides a separately paired loopback companion.
+Hosted operations exclude standalone connection/configuration/Docker management.
+See [YiminLab integration](ylab-integration.md) for local SQLite ownership,
+offline behavior, exact scope boundaries and validation evidence.
 
 A host that wants a durable local Neptune process supplies a `DaemonLauncher`
 pointing to its own hidden dispatch command; a keeper also accepts an explicit
