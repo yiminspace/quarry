@@ -14,7 +14,22 @@ async fn read(
         .collect();
     r.policy.max_rows = Some(limit);
     r.policy.timeout_ms = Some(conn.timeout_ms.min(30_000));
-    execute(conn, r).await
+    let mut out = execute(conn, r).await?;
+    // This helper runs only fixed system-catalog queries. MySQL 8 marks some
+    // catalog identifiers with BINARY collation, though these DTO fields are
+    // UTF-8 names/default descriptions. Do not apply this to user query values.
+    if conn.engine == Engine::MySql {
+        for row in &mut out.rows {
+            for value in row {
+                if let Value::Binary(bytes) = value {
+                    *value = Value::Text(String::from_utf8(bytes.clone()).map_err(|_| {
+                        Error::new(ErrorCode::Execution, "Invalid UTF-8 MySQL catalog text")
+                    })?);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 fn strings(out: &QueryOutcome, key: &str) -> Vec<String> {
     out.rows_json()
