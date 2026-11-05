@@ -922,20 +922,20 @@ def test_assistant_markdown_chrome_tracks_theme_tokens(page, tmp_path, monkeypat
     page.screenshot(path=str(tmp_path / f'assistant-markdown-{mode}.png'))
 
 
-def test_platform_status_and_pairing_chrome_use_theme_tokens(page_sqlite):
-    from test_gui_browser_features import _hosted_workbench
+def test_platform_status_chrome_uses_theme_tokens(page_sqlite):
+    from test_gui_browser_features import _hosted_workbench, _open_platform_status
 
     page = page_sqlite
     _hosted_workbench(page)
     for mode in ('dark', 'light'):
         if page.evaluate('document.documentElement.dataset.mode') != mode:
             page.locator('.vg-switcher-mode').click()
-        page.get_by_role('button', name='Connect local', exact=True).click()
+        _open_platform_status(page)
         for selector, prop, token in (
+            ('.platform-connection > summary', 'backgroundColor', '--bg1'),
+            ('.platform-connection > summary', 'color', '--fg2'),
             ('.platform-status', 'backgroundColor', '--surf-1'),
             ('.platform-status', 'color', '--fg2'),
-            ('.platform-dialog input', 'backgroundColor', '--surf-2'),
-            ('.platform-dialog input', 'color', '--fg'),
         ):
             assert page.locator(selector).first.evaluate('''(element, args) => {
               const [prop, token] = args;
@@ -945,4 +945,29 @@ def test_platform_status_and_pairing_chrome_use_theme_tokens(page_sqlite):
               const equal = getComputedStyle(element)[prop] === getComputedStyle(probe)[prop];
               probe.remove(); return equal;
             }''', [prop, token]), (mode, selector, prop, token)
-        page.get_by_role('button', name='Close', exact=True).click()
+        assert not page.get_by_role('dialog').is_visible()
+
+
+def test_platform_builtin_login_chrome_uses_theme_tokens(page_sqlite):
+    from test_gui_browser_features import _hosted_workbench, _official_hosted_config
+    page = page_sqlite
+    _official_hosted_config(page)
+    _hosted_workbench(page, expect_login=True)
+    for mode in ('dark', 'light'):
+        page.evaluate('mode => document.documentElement.dataset.mode = mode', mode)
+        for selector, prop, token in (
+            ('.hosted-entry', 'backgroundColor', '--bg1'),
+            ('.hosted-entry', 'color', '--fg'),
+            ('.hosted-login', 'backgroundColor', '--surf-1'),
+            ('.hosted-login', 'borderTopColor', '--line'),
+            ('.hosted-login input', 'backgroundColor', '--surf-2'),
+            ('.hosted-login input', 'color', '--fg'),
+        ):
+            assert page.locator(selector).first.evaluate('''(element, args) => {
+                const [prop, token] = args;
+                const probe = document.createElement('span');
+                probe.style[prop] = `var(${token})`;
+                element.parentElement.append(probe);
+                const equal = getComputedStyle(element)[prop] === getComputedStyle(probe)[prop];
+                probe.remove(); return equal;
+            }''', [prop, token]), (mode, selector, prop, token)

@@ -1,3 +1,4 @@
+import PlatformStatus from "./PlatformStatus";
 import { PLATFORM_MODE } from "./platform";
 import { VoyageToolbar } from "@yiminlab/voyage/react";
 import { useEffect, useRef, useState } from "react";
@@ -103,6 +104,7 @@ export default function Header() {
         <i className="ti ti-settings" />
       </button>
       <span className="vg-sp sp" />
+      <PlatformStatus />
       <button
         className={`vg-badge badge keeper-control ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`}
         style={{ display: PLATFORM_MODE ? "none" : undefined }}

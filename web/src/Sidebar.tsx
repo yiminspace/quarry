@@ -1,3 +1,4 @@
+import { PLATFORM_MODE } from "./platform";
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
@@ -479,7 +480,7 @@ export default function Sidebar(props: SidebarProps) {
                       onClick={() => onSelect(item.db, null)}
                     >
                       <span className={dotClass(item.db)} />
-                      <span className="db-name">{item.db}</span>
+                      <span className="db-name" title={item.db}>{PLATFORM_MODE && g.group && item.db.startsWith(`${g.group}/`) ? item.db.slice(g.group.length + 1) : item.db}</span>
                       <small className="vg-engine-tag">{item.engine}</small>
                       {isCurrent && <button className="vg-iconbtn treload" title={t("refresh_list")}
                         aria-label={t("refresh_list")} onClick={(event) => {

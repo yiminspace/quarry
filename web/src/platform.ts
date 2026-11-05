@@ -1,9 +1,8 @@
 import { t } from "./i18n";
-/** YiminLab adapter. Standalone Quarry never reads Console identity or pairing. */
+import { consumeHostedHandoff, hostedConfig, hostedConfigurationError, loadHostedConfig, readHostedSession, saveHostedSession, type HostedSession } from "./hostedAuth";
+/** Hosted adapter. Standalone Quarry never reads platform identity or pairing. */
 export const PLATFORM_MODE = typeof document !== "undefined" && document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") === "platform";
-const SESSION_KEY = "ylab.console.session.v1";
-const REFRESH_LOCK = "ylab.console.refresh.v1";
-type Session = { access_token: string; refresh_token: string; expires_in: number; user: { id: string } };
+type Session = HostedSession;
 export type PlatformResource = { id: string; project: string; db: string; env: string | null; engine: string; production: boolean; sourceResourceId?: string; placement?: "remote" | "local" };
 type Bootstrap = { principal: { id: string }; resources: PlatformResource[]; capabilities?: Record<string, boolean> };
 type WorkbenchDocument = { values: Record<string, string> };
@@ -18,12 +17,7 @@ export const platformSnapshot = () => state;
 export const subscribePlatform = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 function publish(patch: Partial<PlatformState>) { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); }
 function changed() { window.dispatchEvent(new Event("quarry-platform-changed")); }
-function readSession(): Session | null {
-  try {
-    const value = JSON.parse(localStorage.getItem(SESSION_KEY) || "null") as Session | null;
-    return value?.user?.id && typeof value.access_token === "string" && typeof value.refresh_token === "string" ? value : null;
-  } catch { return null; }
-}
+const readSession = readHostedSession;
 function currentSession(): Session {
   const session = readSession();
   if (!session || session.user.id !== state.account) throw new Error(t("platform_session_changed"));
@@ -35,22 +29,25 @@ async function refreshSession(before: Session): Promise<Session> {
     const rotate = async () => {
       const latest = currentSession();
       if (latest.access_token !== before.access_token || latest.refresh_token !== before.refresh_token) return latest;
-      const response = await fetch("/api/iam/auth/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: before.refresh_token }), signal: AbortSignal.timeout(10000) });
+      const response = await fetch(hostedConfig().auth.refreshPath, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: before.refresh_token }), signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error(t("platform_session_expired"));
       const next = await response.json() as Session;
       const now = currentSession();
       if (!next.access_token || !next.refresh_token || next.user?.id !== before.user.id) throw new Error(t("platform_identity_changed"));
       if (now.access_token !== before.access_token || now.refresh_token !== before.refresh_token) return now;
-      localStorage.setItem(SESSION_KEY, JSON.stringify(next));
+      saveHostedSession(next);
       return next;
     };
-    return navigator.locks?.request ? navigator.locks.request(REFRESH_LOCK, rotate) : rotate();
+    const key = hostedConfig().auth.sessionKey;
+    // Existing Console tabs use this lock for their rotating refresh token.
+    const lock = key === "ylab.console.session.v1" ? "ylab.console.refresh.v1" : `quarry-refresh:${key}`;
+    return navigator.locks?.request ? navigator.locks.request(lock, rotate) : rotate();
   })().finally(() => { refreshFlight = undefined; });
   return refreshFlight;
 }
 function sameOriginPath(path: string): string {
   if (!path.startsWith("/api/") || path.startsWith("//")) throw new Error("Invalid platform API path");
-  return "/api/db/" + path.slice(5);
+  return hostedConfig().apiBase + "/" + path.slice(5);
 }
 async function authenticatedFetch(url: string, init: RequestInit = {}, local = false, pairingRequest = false): Promise<Response> {
   const before = currentSession();
@@ -224,12 +221,27 @@ export function displayEnvironment(db: string, env: string | null): string {
 }
 export async function initializePlatform(): Promise<void> {
   if (!PLATFORM_MODE) return;
+  // One-use launch credentials stay in the fragment, never in HTTP requests or history.
+  const launch = new URLSearchParams(location.hash.slice(1));
+  const localURL = launch.get("quarry_local");
+  const localCode = launch.get("quarry_code");
+  const handoff = launch.get("quarry_handoff");
+  if (localURL !== null || localCode !== null || handoff !== null) {
+    launch.delete("quarry_local"); launch.delete("quarry_code"); launch.delete("quarry_handoff");
+    history.replaceState(null, "", location.pathname + location.search + (launch.size ? `#${launch}` : ""));
+  }
+  await loadHostedConfig();
+  if (hostedConfigurationError()) return;
+  if (handoff) {
+    try { await consumeHostedHandoff(handoff); }
+    catch { publish({ error: t("hosted_launch_failed") }); }
+  }
   const session = readSession();
   publish({ account: session?.user.id ?? null });
   window.addEventListener("storage", (event) => {
-    if (event.key === SESSION_KEY && readSession()?.user.id !== state.account) window.location.reload();
+    if (event.key === hostedConfig().auth.sessionKey && readSession()?.user.id !== state.account) window.location.reload();
   });
-  if (!state.account) { publish({ error: t("platform_login_first") }); return; }
+  if (!state.account) return;
   try {
     const recovery = JSON.parse(localStorage.getItem(scopeKey("recovery")) || "null") as { values?: Record<string,string>; dirty?: boolean; revision?: number } | null;
     values = recovery?.values ?? {}; dirty = recovery?.dirty ?? false; revision = recovery?.revision ?? 0;
@@ -237,7 +249,25 @@ export async function initializePlatform(): Promise<void> {
     if (saved?.token && saved.url) pairing = { ...saved, url: validateCompanionURL(saved.url) };
   } catch { /* malformed recovery cannot load another account */ }
   await Promise.allSettled([reconnectRemote(), pairing ? reconnectLocal(true) : Promise.resolve()]);
+  if (localURL && localCode) {
+    try { await pairCompanion(localURL, localCode); await reconnectLocal(true); }
+    catch (error) { publish({ error: String((error as Error).message) }); }
+  }
   if (state.local === "connected") await loadQueryHistory().catch(() => {});
+
+  let reconnecting = false;
+  const reconnect = async (refresh = false) => {
+    if (reconnecting || readSession()?.user.id !== state.account) return;
+    reconnecting = true;
+    try {
+      await Promise.allSettled([
+        refresh || state.remote === "disconnected" ? reconnectRemote() : Promise.resolve(),
+        pairing && (refresh || state.local === "disconnected") ? reconnectLocal(state.local === "disconnected") : Promise.resolve(),
+      ]);
+    } finally { reconnecting = false; }
+  };
+  window.addEventListener("online", () => { void reconnect(true); });
+  window.setInterval(() => { void reconnect(); }, 5000);
 
   window.addEventListener("pagehide", () => { saveRecovery(); });
 }
@@ -249,7 +279,10 @@ export function recoveryDownload(): void {
 /** Explicit recovery choice; never overwrite newer SQLite records automatically. */
 export async function loadPersonalFromCompanion(): Promise<void> {
   if (state.local !== "connected") throw new Error(t("platform_local_first"));
-  const result = await platformJSON<{ value: WorkbenchDocument | null; revision: number }>("/api/personal?kind=workbench&key=workspace", undefined, true);
+  const result = await platformJSON<{ value: WorkbenchDocument | null; revision: number }>("/api/personal?kind=workbench&key=workspace", undefined, true).catch((error) => {
+    publish({ error: String((error as Error).message) });
+    throw error;
+  });
   values = result.value?.values ?? {};
   revision = result.revision;
   dirty = false;

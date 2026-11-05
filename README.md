@@ -49,14 +49,13 @@ Rust owns main and all 2.x distribution. `quarry-core`, `quarry-runtime`,
 `quarry-local`, `quarry-assistant` and `quarry-service` can be embedded directly
 in host applications. [Architecture](docs/rust-migration.md).
 
-For an IAM-protected platform workbench, the current source SDK's
-`quarry-platform` adds a host-provided
-authorization adapter, explicit resource ACLs and a paired desktop companion.
-Personal work is stored in computer SQLite; remote execution stays read-only.
-The host integrates its browser session, CLI and deployment. See the
-[hosting integration guide](docs/hosting.md) for the public API, storage and
-offline behavior, and current integration boundaries. These APIs are separate
-from the standalone 2.0.0 download.
+For a hosted workbench, the official Docker image serves the GUI, authentication,
+read-only API and execution from one configuration file. Use a built-in
+administrator or configure an existing platform's IAM; YiminLab consumes the same
+image. `ylab` automatically connects and saves personal records to computer
+SQLite. Standalone `qy` needs neither the hosted service nor platform sign-in.
+See the [hosting guide](docs/hosting.md) for deployment, access grants and offline
+behavior. The Rust SDK remains available for advanced embedding.
 
 Python 1.11.0 is preserved at its tag and the protected `archive/python-1.x`
 branch. Python import APIs do not ship in 2.x. The Python source retained in this

@@ -1,140 +1,118 @@
-# 把 Quarry 集成到你的平台
+# 托管 Quarry
 
-[English](hosting.md) · [独立安装](install.md) · [Rust 架构](rust-preview.md)
+[English](hosting.md) · [本地安装](install.md) · [Rust 架构](rust-preview.md)
 
-Quarry 可以独立提供 CLI、GUI 和 MCP，也可以成为已有平台中的数据库工作台。
-平台负责账号、权限、资源登记、凭据与部署；Quarry 提供 Rust 执行类库、只读托管 API、
-工作台界面，以及需要明确配对的本机服务。
+Quarry 托管版由一个官方 Docker 镜像提供网页、登录、只读数据库 API 和查询执行。
+部署者提供数据库与权限配置，无需编写 Rust 适配器或重新编译网页。
+YiminLab 使用同一个镜像，通过运行时配置复用现有 IAM。
 
-本文的托管和本机服务接口由当前源码 SDK 提供，与独立的 2.0.0 发布包分别管理。
-目前这是类库接入方式，没有通用的一键托管安装器。公开的 `quarry-platform` 后端接受
-宿主提供的 IAM 适配器；现有网页适配器使用 Ylab 会话约定，其他平台还需要适配网页会话。
-Ylab 的服务可执行文件与部署配置由宿主管理，不包含在公开 Quarry 安装包中。
+原有本地模式保持独立：安装 `qy` 后，CLI、`qy gui`、`qy mcp` 不依赖这个服务器、
+平台登录或 `ylab`。两种模式使用相同的查询内核，但不会强制迁移已有本地配置和记录。
 
-## 选择接入层
+## 用镜像启动
 
-| 你的需求 | 使用方式 |
-| --- | --- |
-| 在自己的电脑上使用工作台 | 安装 `qy`，配置 workspace，再运行 `qy gui` |
-| 让 agent 使用数据库 | 通过 stdio 启动 `qy mcp` |
-| 在已有 Rust 应用中执行查询 | 嵌入 `quarry-service::QuarryService` |
-| 在自己的 CLI 中提供 Quarry 命令 | 嵌入 `quarry-cli::run_from`，提供宿主的守护进程入口 |
-| 平台 IAM 工作台与本机个人记录 | 接入 `quarry-platform`、托管网页适配器和 CLI 本机服务 |
+使用 [Compose 配置](../deploy/hosted/compose.yaml)，将
+[hosted.example.json](../deploy/hosted/hosted.example.json) 复制到它旁边的
+`config/hosted.json`。这一个文件包含账号、数据库连接和访问权限：
 
-依赖固定的 Quarry 源码版本，类库就在本仓库中。宿主不需要另外安装 `qy`，也不调用
-Python 子进程。编译内嵌 GUI 的程序前，需要先构建 `web/`。可先运行公开的
-[类库示例](../crates/quarry-service/examples/embedded_host.rs)，构建步骤见
-[Rust 架构](rust-preview.md)。
-
-## 1. 在服务端登记资源
-
-用明确的配置文件、workspace 和状态目录创建 `QuarryService`。workspace 与数据库
-凭据保留在服务端。通过 `HostedResource` 登记每个开放目标：稳定 ID、项目、逻辑库、
-环境、服务端连接 key，以及明确的 `readers` 授权列表。列表可包含账号 ID 或
-`role:<角色名>`；空列表代表无人可访问。生产连接需要明确设置 `production = true`。
-
-网页只选择已登记的资源 ID，不能传入 workspace 路径、连接 URL 或数据库密码。
-远程查询保持只读，结构查看、取消查询和 schema 导出也只能操作已授权目标。
-
-## 2. 接入自己的 IAM
-
-实现异步 `Authorizer`。**每次调用**都验证 Bearer 会话仍有效、所请求权限与 token scope
-允许该操作，再返回稳定账号 ID 和当前角色组成的 `Principal`。不能相信浏览器传来的
-身份头，也不能只解码 token 而不检查会话有效性。
-
-当前类库使用下列权限名。平台命名不同时，在 `Authorizer` 内映射到自己的权限策略。
-
-| 权限 | 能力 |
-| --- | --- |
-| `lab:db:read` | 远程只读查询、结构查看与取消 |
-| `lab:db:schema:export` | PostgreSQL 结构导出，同时需要读取权限 |
-| `lab:db:local` | 初次本机配对，以及需要云端授权的 Local 操作 |
-| `lab:ai:invoke` | 助手模型请求，同时需要相应目标访问权限 |
-
-一次操作必须同时满足 IAM 权限和资源授权。给账号分配数据库权限，不代表开放全部资源。
-首次接入可先只给一个账号和一份明确的资源列表。
-
-把执行服务、IAM 实现和资源表传给公开路由：
-
-```rust
-use std::sync::Arc;
-use axum::Router;
-use quarry_platform::{Authorizer, HostedResource, HostedState, hosted_router};
-use quarry_service::QuarryService;
-
-fn database_api(
-    service: Arc<QuarryService>,
-    iam: Arc<dyn Authorizer>,
-    resources: Vec<HostedResource>,
-) -> quarry_platform::Result<Router> {
-    let state = HostedState::new(service, iam, resources)?;
-    Ok(hosted_router(state))
+```json
+{
+  "listen": "0.0.0.0:8080",
+  "state_dir": "/var/lib/quarry",
+  "auth": {
+    "mode": "builtin",
+    "username": "admin",
+    "password_hash": "替换为生成的 Argon2id 哈希"
+  },
+  "databases": [{
+    "id": "notes",
+    "project": "demo",
+    "db": "notes",
+    "env": "production",
+    "url": "postgresql://readonly-user:替换密码@database:5432/notes",
+    "production": true,
+    "readers": ["admin"]
+  }]
 }
 ```
 
-这段代码只提供 API 路由，监听端口、HTTPS 网关、IAM 实现和网页托管仍由你的应用负责。
-路由接收 `/api/platform`、`/api/query`、`/api/schema/export` 等路径。已有后端不是 Rust
-时，也可以在网关后运行一个薄 Rust 执行服务，通过适配器向现有 IAM 逐次核验权限。
+先生成管理员密码哈希，填入配置，再启动：
 
-## 3. 接入网页会话
-
-在平台自己的 HTTPS 来源下提供工作台。独立页面不会读取平台身份；托管副本需要包含：
-
-```html
-<meta name="quarry-mode" content="platform">
+```sh
+docker run --rm -it ghcr.io/yiminspace/quarry:hosted hash-password
+docker compose up -d
 ```
 
-以 [`web/src/platform.ts`](../web/src/platform.ts) 为当前适配器，接入你的登录、续期、
-切换账号和退出行为。现有 Ylab 约定为：
+打开 `http://127.0.0.1:8080/quarry/`，使用配置的管理员账号登录。
+`username` 是登录账号；可选的 `user_id` 默认 `admin`，是稳定的权限和个人记录标识。
+资源必须有明确的 `readers`；空列表不允许任何人访问。
+数据库连接的 `production = true` 保持生产环境默认手动执行。
 
-- 会话保存在 `ylab.console.session.v1`，包含 `access_token`、`refresh_token`、
-  `expires_in` 与 `user.id`。
-- 通过 `/api/iam/auth/refresh` 续期。
-- 网页请求 `/api/db/*`，网关转发成执行服务的 `/api/*`，例如
-  `/api/db/platform` → `/api/platform`。
-- 远程请求使用 Bearer 授权，访问回环地址的本机服务必须另行配对。保留来源校验，
-  处理浏览器的本地网络访问许可流程。
+Compose 默认只绑定回环地址；对外部署时通过你的 HTTPS 反代暴露服务。
+生产部署建议固定 `QUARRY_IMAGE_TAG=sha-<完整源码SHA>`，避免漂移到不同版本。
+配置只读挂载，需可由镜像用户 UID 10001 读取；`quarry-state` 卷保留登录会话等服务状态。
+`/health` 返回服务与版本，镜像的 `check` 命令可验证配置。
+数据库连接密码、管理员密码哈希和部署私钥都不应打进镜像或提交到公开仓库。
+已有独立 workspace 配置仍可通过高级的 `config_path`、`workspaces`、`resources` 接入。
 
-只添加 meta 标记还不够。会话适配和网关路径需要配套，切换账号时必须隔离个人恢复数据
-和配对数据。平台登录不能自动授予对用户电脑的访问权。
+## 接入已有账号体系
 
-## 4. 在自己的 CLI 中加入本机服务
+镜像无需变化，把 `auth` 改为 `external`：
 
-使用 `quarry-cli::run_from` 嵌入独立命令能力，再用 `CompanionConfig`、`CompanionState`
-和 `companion_router` 提供自己的本机服务命令。指定可信平台的准确 origin、当前 IAM
-账号、SQLite 绝对路径和回环端口。CLI 自己管理账号/profile、打包、进程生命周期，以及
-需要的 keeper/Neptune 隐藏分发入口。
+```json
+{
+  "mode": "external",
+  "verify_url": "https://iam.example.com/api/authorize",
+  "response": "headers",
+  "session_key": "company.session.v1",
+  "login_url": "/login?return=/quarry/",
+  "refresh_path": "/api/auth/refresh"
+}
+```
 
-一次性配对码只在用户终端显示，网页由用户明确配对到这台电脑、平台和账号。配对后使用
-有有效期且可撤销的本机授权，不开放任意文件访问、连接凭据或通用 Docker 控制接口。
-容器、卷、端口和 Local 资源状态按平台、账号和源资源隔离。
+`verify_url` 是服务端逐次核验身份和权限的入口；`headers` 模式读取可信 IAM 返回的身份头，
+`json` 模式读取 `id`、`roles` 和 `permissions`。访问同时需要相应权限和资源 `readers` 授权。
+不能把浏览器传来的账号头当作已验证身份，也不能只解码 token 就认为会话有效。
+权限名为 `lab:db:read`、`lab:db:local`、`lab:db:schema:export`、`lab:ai:invoke`。
 
-| 数据或操作 | 保存位置与行为 |
-| --- | --- |
-| 连接凭据、资源表 | 服务端，不返回网页 |
-| 草稿、标签、查询历史、有限结果缓存、助手对话、生成 SQL、恢复点 | 电脑上的 SQLite，按平台、账号和目标隔离，网页与 CLI 共用 |
-| 本机服务断开时的编辑 | 有大小限制且按账号隔离的浏览器恢复副本；不冒充已写入 SQLite |
-| 同时修改个人记录 | 通过版本检查报告冲突，不静默覆盖另一方 |
-| Local PostgreSQL / Redis | 通过配对服务明确执行 Docker 生命周期操作 |
-| PostgreSQL 结构迁移 | 本机服务获取已授权源，导入临时库并保留旧 Local 库；不复制业务行或源密码 |
+浏览器登录、刷新及可选的 `logout_path` 都是同源路径，由平台已有服务提供，必要时通过
+反代挂载。外部会话格式为：
 
-首次成功加载且浏览器仍保留缓存时，页面可离线重新打开和编辑。远程与本机连接分别显示
-状态。已配对的本机操作在本机授权有效期内可离线使用；远程查询、模型调用和远程结构
-获取仍需要实时 IAM。重连不会自动执行 SQL、启动 Docker、导入结构或替换未保存草稿。
+```json
+{"access_token":"...","refresh_token":"...","expires_in":3600,"user":{"id":"stable-account-id"}}
+```
 
-## 5. 配置助手并验收访问边界
+网页从 `/api/hosted/config` 读取非敏感的运行时配置，然后使用配置的会话存储键和认证路径。
+YiminLab 配置 `ylab.console.session.v1`、现有 Console 登录页和 IAM 刷新接口即可，
+不再维护另一套数据库执行镜像或定制构建。
+内部私网 HTTP 身份接口需要显式 `allow_insecure_http: true`；公网接口保持 HTTPS。
 
-可通过 `AssistantOptions` 配置可信模型网关和模型。网关需要支持调用者的 IAM 授权。
-助手建议可以应用和恢复，不会自动执行。个人记录持久化在本机 SQLite；实际远程查询会
-把 SQL 发到平台，模型请求会把所需上下文发到网关。平台、数据库和模型日志的保留时间
-由你的平台策略决定。
+## 用户电脑上的个人记录
 
-开放工作台前，用真实 IAM 与网关验证：匿名、跨账号和跨资源拒绝，token scope 与撤销，
-取消操作归属，写入拦截，配对过期/撤销，错误来源，账号切换，远程与本机分别断连，
-SQLite 重启持久化与并发修改冲突。验证 PostgreSQL 迁移不含业务行、保留旧 Local 库，
-失败时可恢复；验证部署后的 HTTPS 页面能在支持的桌面浏览器中连接本机服务。
+服务器负责数据库连接、资源授权和查询；个人草稿、标签、历史、有限结果缓存、助手对话、
+生成 SQL 和恢复点保存在用户电脑的 SQLite 中，与 CLI 共用，不存进托管服务器。
 
-托管共享 SQL、云端个人历史、跨设备同步尚未实现；独立模式的本地 `.sql` 查询文件仍可
-使用。结构迁移仅支持 PostgreSQL。Neptune/openCypher 仍为实验性支持，本地空端点不
-等于图数据库。其他边界见 [兼容性](../COMPATIBILITY.md) 与
-[YiminLab 接入约定](ylab-integration.md)。
+用户运行 `ylab db connect` 后，网页自动连接本机服务并保存，不显示地址、配对码或
+数据库管理表单。独立托管使用一次性登录交接，已有平台使用现有账号确认流程。
+交接码仅通过 URL fragment 传递，网页在发请求前清除；长期 Bearer token 不进入 URL。
+本机授权仍绑定平台、账号和来源，有期限且可撤销，不开放任意文件访问。
+
+本机暂时未连接时，网页仍可查询远程数据库和编辑，使用有容量上限的浏览器恢复副本。
+恢复连接后自动重试保存；遇到版本冲突时保留当前草稿，由用户选择导出和恢复，
+不会静默覆盖另一方记录。重连不会运行 SQL、启动数据库或同步结构。
+
+网页首次成功加载并保留离线缓存后，可以断网重新打开和编辑；第一次访问仍需要加载网页。
+共享 SQL、云端个人历史和跨设备同步不在当前范围内。
+
+## 助手与验收
+
+配置 `assistant_base_url` 和 `assistant_model` 可启用 SQL 助手，两者同时省略即可禁用。
+模型网关必须接受当前用户的 Bearer 认证；建议可应用、恢复，不会自动运行。
+远程查询会把 SQL 发到服务器，助手会把必要的上下文发到模型网关；平台日志保留策略由部署者管理。
+
+发布验收分别覆盖：真实容器启动和持久卷、管理员登录与刷新/退出、外部 IAM 与资源越权拒绝、
+真实查询/写入拦截/取消、本机 SQLite 自动保存和断线恢复，以及原有本地 CLI/GUI/MCP 回归。
+GUI 模拟预览或编译成功不能代替这些验收。
+
+Rust 类库嵌入仍可作为高级接入方式使用；相关边界见 [Rust 架构](rust-preview.md)
+和 [YiminLab 接入约定](ylab-integration.md)。

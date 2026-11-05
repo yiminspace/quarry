@@ -6162,7 +6162,7 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
 
 # Hosted UI contract tests use the built bundle with explicit platform marker.
 # Network fixtures exercise browser behavior; Rust platform tests cover IAM/CAS.
-def _hosted_workbench(page, *, online=True, engine="sqlite"):
+def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False):
     state = {'online': online, 'queries': [], 'documents': {}, 'paired': False,
              'local_requests': [], 'assistant_requests': [], 'operations': [], 'refreshes': 0}
     remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
@@ -6201,6 +6201,9 @@ def _hosted_workbench(page, *, online=True, engine="sqlite"):
         account = request.headers.get('x-quarry-user-id') or request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
         if companion:
             state['local_requests'].append((path, request.headers))
+        if companion and state.get('local_offline'):
+            route.fulfill(status=503, json={'error': 'local unavailable'}, headers=headers)
+            return
         if not companion and not state['online']:
             route.fulfill(status=503, json={'error': {'message': 'remote unavailable'}}, headers=headers)
             return
@@ -6295,26 +6298,37 @@ def _hosted_workbench(page, *, online=True, engine="sqlite"):
     page.route('**/api/iam/auth/refresh', api)
     page.route('http://127.0.0.1:18766/**', api)
     origin = urlparse(page.url)
-    page.goto(f'{origin.scheme}://{origin.netloc}/quarry/', wait_until='networkidle')
-    page.locator('[data-testid="platform-status"]').wait_for()
+    # Changing the query forces a new document, as in a CLI-opened browser tab;
+    # changing only the fragment would keep the fixture's standalone document.
+    launch_path = '?cli-launch=1' + launch_fragment if launch_fragment else ''
+    page.goto(f'{origin.scheme}://{origin.netloc}/quarry/{launch_path}', wait_until='networkidle')
+    if expect_login:
+        page.get_by_role('heading', name='Sign in to Quarry', exact=True).wait_for()
+    else:
+        page.locator('[data-testid="platform-status"]').wait_for(state='attached')
     return state
 
 
+def _open_platform_status(page):
+    details = page.locator('.platform-connection')
+    if details.get_attribute('open') is None:
+        details.locator('summary').click()
+
+
 def _pair_workbench(page):
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_label('Local address', exact=True).fill('http://127.0.0.1:18766')
-    page.get_by_label('Pairing code', exact=True).fill('pair-fixture')
-    page.get_by_role('button', name='Pair', exact=True).click()
-    page.wait_for_function("document.querySelector('[data-testid=companion-status]').textContent.includes('Connected')")
-    page.get_by_role('button', name='Close', exact=True).click()
+    # The CLI opens a fresh document with a one-use local launch fragment.
+    base = page.url.split('?')[0].split('#')[0]
+    page.goto(base + '?auto-connect=1#quarry_local=http%3A%2F%2F127.0.0.1%3A18766&quarry_code=pair-fixture', wait_until='networkidle')
+    page.wait_for_function("document.querySelector('[data-testid=companion-status]')?.textContent.includes('Connected')")
+    assert not page.get_by_role('dialog').is_visible()
 
 
 def test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page, online=False)
     page.locator('#sql').fill('select 42 as offline_draft')
-    assert page.locator('[data-testid="remote-status"]').inner_text() == 'Remote: Disconnected'
-    assert page.locator('[data-testid="personal-storage-status"]').inner_text() == 'Personal changes are only in browser recovery'
+    assert page.locator('[data-testid="remote-status"]').text_content() == 'Remote: Disconnected'
+    assert page.locator('[data-testid="personal-storage-status"]').text_content() == 'Personal changes are only in browser recovery'
     page.reload(wait_until='networkidle')
     assert page.locator('#sql').input_value() == 'select 42 as offline_draft'
     assert not state['queries']
@@ -6351,28 +6365,30 @@ def test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution
     assert {entry['resourceId'] for entry in history} == {'remote-notes', 'local-notes'}
     assert all(headers.get('x-quarry-user-id') == 'alpha' for path, headers in state['local_requests'] if path != '/api/pair')
     state['online'] = False
-    page.get_by_role('button', name='Reconnect remote', exact=True).click()
+    if page.locator('.platform-connection').get_attribute('open') is None:
+        page.locator('.platform-connection summary').click()
+    page.evaluate("window.dispatchEvent(new Event('online'))")
     page.wait_for_function("document.querySelector('[data-testid=remote-status]').textContent.includes('Disconnected')")
-    assert 'Connected' in page.locator('[data-testid="companion-status"]').inner_text()
+    assert 'Connected' in page.locator('[data-testid="companion-status"]').text_content()
     assert page.locator('#sql').input_value() == 'select 11 as remote_value'
     assert len(state['queries']) == 2
 
 
-def test_platform_reconnect_and_revoke_preserve_draft_without_query_replay(page_sqlite):
+def test_platform_background_reconnect_preserves_draft_without_query_replay(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
     _pair_workbench(page)
-    page.locator('#sql').fill('select 55 as keep_after_revoke')
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_role('button', name='Reconnect local', exact=True).click()
-    page.get_by_role('button', name='Revoke pairing', exact=True).click()
+    state['local_offline'] = True
+    page.locator('#sql').fill('select 55 as keep_during_local_disconnect')
     page.wait_for_function("document.querySelector('[data-testid=companion-status]').textContent.includes('Disconnected')")
-    page.get_by_role('button', name='Close', exact=True).click()
-    assert page.locator('#sql').input_value() == 'select 55 as keep_after_revoke'
+    state['local_offline'] = False
+    # No click or reload: the periodic background retry saves the pending draft.
+    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')", timeout=15000)
+    assert page.locator('#sql').input_value() == 'select 55 as keep_during_local_disconnect'
     assert not state['queries']
-    assert not state['paired']
-    assert ('alpha', 'workbench', 'workspace') in state['documents']
+    assert not page.get_by_role('dialog').is_visible()
+    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
+    assert 'keep_during_local_disconnect' in json.dumps(document)
 
 
 def test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store(page_sqlite):
@@ -6401,28 +6417,6 @@ def test_platform_assistant_conversation_proposal_restore_stays_in_local_persona
     assert not state['queries']
 
 
-def test_platform_local_create_sync_stop_require_explicit_actions(page_sqlite):
-    page = page_sqlite
-    state = _hosted_workbench(page, engine='postgres')
-    _pair_workbench(page)
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_label('Source database', exact=True).select_option('remote-notes')
-    page.get_by_role('button', name='Create Local', exact=True).click()
-    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local database created')")
-    page.get_by_label('Local target', exact=True).select_option('local-notes')
-    page.once('dialog', lambda dialog: dialog.accept())
-    with page.expect_request(lambda request: urlparse(request.url).path == '/api/schema/import') as schema_request:
-        page.get_by_role('button', name='Sync schema to Local', exact=True).click()
-    assert schema_request.value.post_data_json == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
-    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Schema synced')")
-    page.once('dialog', lambda dialog: dialog.accept())
-    page.get_by_role('button', name='Stop Local', exact=True).click()
-    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Local service stopped')")
-    assert [path for path, _ in state['operations']] == ['/api/local/up', '/api/schema/import', '/api/local/down']
-    assert state['operations'][1][1] == {'sourceResourceId': 'remote-notes', 'resourceId': 'local-notes'}
-    assert not state['queries']
-
-
 def test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload(page_sqlite, tmp_path):
     page = page_sqlite
     state = _hosted_workbench(page)
@@ -6433,8 +6427,10 @@ def test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reloa
     stored['revision'] += 1
     page.locator('#sql').fill('select 2 as unsynced_conflict')
     page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('conflict')")
+    assert page.locator('.platform-connection summary').inner_text().strip() == 'Local save conflict'
+    assert 'err' in page.locator('.platform-connection summary').get_attribute('class').split()
     assert page.locator('#sql').input_value() == 'select 2 as unsynced_conflict'
-    page.get_by_role('button', name='Connect local', exact=True).click()
+    _open_platform_status(page)
     with page.expect_download() as download:
         page.get_by_role('button', name='Export personal recovery', exact=True).click()
     target = tmp_path / 'recovery.json'
@@ -6529,18 +6525,6 @@ def test_platform_late_cancel_ack_preserves_new_query_pending_and_result(page_sq
     assert page.locator('#sql').input_value() == 'select 2 as newer_pending_query'
 
 
-def test_platform_pairing_rejects_non_loopback_destination(page_sqlite):
-    page = page_sqlite
-    state = _hosted_workbench(page)
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_label('Local address', exact=True).fill('https://example.com')
-    page.get_by_label('Pairing code', exact=True).fill('pair-fixture')
-    page.get_by_role('button', name='Pair', exact=True).click()
-    page.get_by_text('Use a loopback address such as http://127.0.0.1:port.', exact=True).wait_for()
-    assert not state['paired']
-    assert not state['local_requests']
-
-
 def test_platform_cached_shell_reopens_with_entire_network_offline(page_sqlite, tmp_path):
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -6577,8 +6561,8 @@ def test_platform_cached_shell_reopens_with_entire_network_offline(page_sqlite, 
         page.reload(wait_until='domcontentloaded')
         page.locator('#sql').wait_for(state='visible')
         assert page.locator('#sql').input_value() == 'select 271 as edited_fully_offline'
-        assert 'Disconnected' in page.get_by_test_id('remote-status').inner_text()
-        assert 'browser recovery' in page.get_by_test_id('personal-storage-status').inner_text()
+        assert 'Disconnected' in page.get_by_test_id('remote-status').text_content()
+        assert 'browser recovery' in page.get_by_test_id('personal-storage-status').text_content()
     finally:
         page.context.set_offline(False)
         server.shutdown()
@@ -6627,10 +6611,8 @@ def test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_o
     page.locator('#runBtn').click()
     page.wait_for_function("document.querySelector('#grid').textContent.includes('22')")
     state['local_resource']['id'] = 'second-device-notes'
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_role('button', name='Reconnect local', exact=True).click()
+    page.evaluate("window.dispatchEvent(new Event('online'))")
     page.wait_for_function("!!document.querySelector('.ep[data-env=\"local:second-device-notes\"]')")
-    page.get_by_role('button', name='Close', exact=True).click()
     assert page.locator('#sql').input_value() == 'select 1 as first_device'
     page.locator('.ep[data-env="local:second-device-notes"]').click()
     assert not page.locator('#status').is_visible()
@@ -6645,27 +6627,6 @@ def test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_o
     assert any(tab['env'] == 'local:second-device-notes' and tab['sql'] == 'select 2 as second_device_draft' for tab in tabs)
     results = json.loads(recovery['values']['qy_tabres'])
     assert any(result and result['env'] == 'local:local-notes' and result['res']['rows'] == [{'value': 22}] for result in results)
-
-
-def test_platform_local_schema_action_refreshes_iam_without_changing_local_identity(page_sqlite):
-    page = page_sqlite
-    state = _hosted_workbench(page, engine='postgres')
-    _pair_workbench(page)
-    state['expired_live_iam'] = True
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    page.get_by_label('Source database', exact=True).select_option('remote-notes')
-    page.get_by_label('Local target', exact=True).select_option('local-notes')
-    page.once('dialog', lambda dialog: dialog.accept())
-    page.get_by_role('button', name='Sync schema to Local', exact=True).click()
-    page.wait_for_function("document.querySelector('[role=dialog]').textContent.includes('Schema synced')")
-    assert state['refreshes'] == 1
-    requests = [headers for path, headers in state['local_requests'] if path == '/api/schema/import']
-    assert len(requests) == 2
-    assert requests[0]['authorization'] == 'Bearer alpha-token'
-    assert requests[1]['authorization'] == 'Bearer alpha-rotated'
-    assert requests[0]['x-quarry-companion-token'] == requests[1]['x-quarry-companion-token']
-    assert requests[0]['x-quarry-user-id'] == requests[1]['x-quarry-user-id'] == 'alpha'
-    assert not state['queries']
 
 
 def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen(page_sqlite):
@@ -6727,30 +6688,21 @@ def test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql(pa
     assert not state['queries']
 
 
-@pytest.mark.parametrize('cloud_action,status', [('assistant', 403), ('schema', 503), ('assistant-refresh', 401)])
+@pytest.mark.parametrize('cloud_action,status', [('assistant', 403), ('assistant-refresh', 401)])
 def test_platform_cloud_failure_does_not_disconnect_paired_local_history(page_sqlite, cloud_action, status):
     page = page_sqlite
     state = _hosted_workbench(page, engine='postgres')
     _pair_workbench(page)
     state['cloud_failures'] = {'/api/assistant/chat' if cloud_action.startswith('assistant') else '/api/schema/import': status}
     state['refresh_error'] = cloud_action == 'assistant-refresh'
-    if cloud_action.startswith('assistant'):
-        page.locator('.dbrow[data-db="lab/notes"]').click()
-        page.locator('.ep').filter(has_text='Local').click()
-        page.locator('#sql').fill('select 1 as local_model_denied')
-        page.get_by_role('button', name='Open SQL assistant', exact=True).click()
-        page.get_by_test_id('assistant-input').fill('Generate a query')
-        page.get_by_test_id('assistant-input').press('Enter')
-        page.get_by_test_id('assistant-panel').get_by_role('alert').wait_for()
-    else:
-        page.get_by_role('button', name='Connect local', exact=True).click()
-        page.get_by_label('Source database', exact=True).select_option('remote-notes')
-        page.get_by_label('Local target', exact=True).select_option('local-notes')
-        page.once('dialog', lambda dialog: dialog.accept())
-        page.get_by_role('button', name='Sync schema to Local', exact=True).click()
-        page.get_by_text('Cloud operation unavailable', exact=True).wait_for()
-        page.get_by_role('button', name='Close', exact=True).click()
-    assert 'Connected' in page.get_by_test_id('companion-status').inner_text()
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('.ep').filter(has_text='Local').click()
+    page.locator('#sql').fill('select 1 as local_model_denied')
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    page.get_by_test_id('assistant-input').fill('Generate a query')
+    page.get_by_test_id('assistant-input').press('Enter')
+    page.get_by_test_id('assistant-panel').get_by_role('alert').wait_for()
+    assert 'Connected' in page.get_by_test_id('companion-status').text_content()
     page.locator('#sql').fill('select 55 as personal_history_still_available')
     page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
     stored = state['documents'][('alpha', 'workbench', 'workspace')]['value']
@@ -6759,20 +6711,220 @@ def test_platform_cloud_failure_does_not_disconnect_paired_local_history(page_sq
     assert not state['queries']
 
 
-def test_platform_chrome_follows_language_toggle_and_documents_real_connect_command(page_sqlite):
+def test_platform_status_follows_language_toggle_without_connection_controls(page_sqlite):
     page = page_sqlite
     _hosted_workbench(page)
-    assert page.get_by_test_id('remote-status').inner_text() == 'Remote: Connected'
-    assert page.get_by_test_id('companion-status').inner_text() == 'Local: Disconnected'
-    page.get_by_role('button', name='Connect local', exact=True).click()
-    assert 'ylab db connect' in page.get_by_role('dialog').inner_text()
-    assert 'ylab db companion' not in page.get_by_role('dialog').inner_text()
-    page.get_by_label('Local address', exact=True).wait_for()
-    page.get_by_role('button', name='Close', exact=True).click()
+    _open_platform_status(page)
+    assert page.get_by_test_id('remote-status').text_content() == 'Remote: Connected'
+    assert page.get_by_test_id('companion-status').text_content() == 'Local: Disconnected'
+    assert page.get_by_test_id('platform-status').get_by_role('button').count() == 0
     page.locator('.vg-lang-switch').click()
-    page.get_by_role('button', name='连接本机', exact=True).wait_for()
-    assert page.get_by_test_id('remote-status').inner_text() == '远程：已连接'
-    assert page.get_by_test_id('companion-status').inner_text() == '本机：未连接'
-    page.get_by_role('button', name='连接本机', exact=True).click()
-    page.get_by_label('本机地址', exact=True).wait_for()
-    assert 'ylab db connect' in page.get_by_role('dialog').inner_text()
+    page.locator('.platform-connection summary[aria-label="工作台连接状态"]').wait_for()
+    assert page.get_by_test_id('remote-status').text_content() == '远程：已连接'
+    assert page.get_by_test_id('companion-status').text_content() == '本机：未连接'
+    assert not page.get_by_role('dialog').is_visible()
+
+
+def test_platform_header_connection_badge_and_group_relative_labels(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page)
+    badge = page.locator('header .platform-connection summary')
+    assert badge.inner_text().strip() == 'Workbench: partly connected'
+    assert not page.get_by_role('button', name='Connect local', exact=True).is_visible()
+    row = page.locator('.dbrow[data-db="lab/notes"]')
+    assert row.locator('.db-name').inner_text() == 'notes'
+    assert row.locator('.db-name').get_attribute('title') == 'lab/notes'
+    badge.click()
+    assert page.get_by_test_id('remote-status').is_visible()
+    assert page.get_by_test_id('personal-storage-status').is_visible()
+    badge.click()
+    assert not page.get_by_test_id('remote-status').is_visible()
+    row.click()
+    page.locator('#sql').fill('select 42 as unchanged_identity')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid')?.textContent.includes('11')")
+    assert state['queries'][-1][1]['resourceId'] == 'remote-notes'
+
+
+@pytest.mark.parametrize('valid', [True, False])
+def test_platform_cli_launch_pairs_without_form_and_clears_fragment(page_sqlite, valid):
+    from urllib.parse import urlencode
+    page = page_sqlite
+    local = 'http://127.0.0.1:18766' if valid else 'https://example.com'
+    state = _hosted_workbench(page, launch_fragment='#' + urlencode({
+        'quarry_local': local, 'quarry_code': 'pair-fixture'}))
+    assert 'quarry_code' not in page.url
+    assert 'pair-fixture' not in page.url
+    assert not state['queries']
+    assert not page.get_by_role('dialog').is_visible()
+    _open_platform_status(page)
+    assert page.get_by_role('button', name='Connect local', exact=True).count() == 0
+    assert page.get_by_role('button', name='Local database management', exact=True).count() == 0
+    assert page.get_by_label('Pairing code', exact=True).count() == 0
+    assert page.get_by_label('Local address', exact=True).count() == 0
+    if valid:
+        assert state['paired']
+        assert page.locator('.platform-connection summary').inner_text().strip() == 'Workbench: connected'
+        page.locator('#sql').fill('select 42 as auto_connected_draft')
+        page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+        assert 'auto_connected_draft' in json.dumps(list(state['documents'].values()))
+    else:
+        assert not state['paired']
+        assert not state['local_requests']
+
+
+
+def _official_hosted_config(page, *, mode='builtin', refresh='/api/hosted/auth/refresh'):
+    auth = {'mode': mode, 'sessionKey': 'quarry.hosted.session.v1' if mode == 'builtin' else 'company.session.v1',
+            'refreshPath': refresh, 'loginUrl': '/company/login?return=/quarry/'}
+    if mode == 'builtin':
+        auth['logoutPath'] = '/api/hosted/auth/logout'
+    page.route('**/api/hosted/config', lambda route: route.fulfill(json={'auth': auth, 'apiBase': '/api/db'}))
+    return auth
+
+
+def test_platform_official_builtin_login_failure_success_and_logout(page_sqlite):
+    page = page_sqlite
+    _official_hosted_config(page)
+    calls = []
+    def authenticate(route):
+        body = route.request.post_data_json
+        calls.append((urlparse(route.request.url).path, body))
+        if route.request.url.endswith('/logout'):
+            route.fulfill(json={'revoked': True})
+        elif body.get('password') != 'correct-password':
+            route.fulfill(status=401, json={'error': 'Invalid credentials'})
+        else:
+            route.fulfill(json={'access_token': 'alpha-token', 'refresh_token': 'alpha-refresh', 'expires_in': 3600, 'user': {'id': 'alpha'}})
+    page.route('**/api/hosted/auth/**', authenticate)
+    state = _hosted_workbench(page, expect_login=True)
+    # The existing Console session must not authenticate a standalone hosted image.
+    assert page.locator('#sql').count() == 0
+    page.get_by_label('Username', exact=True).fill('admin')
+    page.get_by_label('Password', exact=True).fill('wrong-password')
+    page.get_by_role('button', name='Sign in to Quarry', exact=True).click()
+    page.get_by_role('alert').get_by_text('Sign-in failed. Check your username and password.', exact=True).wait_for()
+    assert page.get_by_label('Password', exact=True).input_value() == ''
+    page.get_by_label('Password', exact=True).fill('correct-password')
+    page.get_by_role('button', name='Sign in to Quarry', exact=True).click()
+    page.locator('#sql').wait_for()
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 11 as official_image_query')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid')?.textContent.includes('11')")
+    assert state['queries'][-1][1]['resourceId'] == 'remote-notes'
+    _open_platform_status(page)
+    page.get_by_role('button', name='Sign out', exact=True).click()
+    page.get_by_role('heading', name='Sign in to Quarry', exact=True).wait_for()
+    assert page.evaluate("localStorage.getItem('quarry.hosted.session.v1')") is None
+    assert calls[-1] == ('/api/hosted/auth/logout', {'refresh_token': 'alpha-refresh'})
+    assert 'password' not in page.url
+    assert len(state['queries']) == 1
+
+
+def test_platform_external_runtime_session_and_configured_refresh(page_sqlite):
+    page = page_sqlite
+    _official_hosted_config(page, mode='external', refresh='/api/company/refresh')
+    page.add_init_script("localStorage.setItem('company.session.v1', JSON.stringify({access_token:'alpha-token',refresh_token:'alpha-refresh',expires_in:3600,user:{id:'alpha'}}))")
+    refreshes = []
+    page.route('**/api/company/refresh', lambda route: (refreshes.append(route.request.post_data_json), route.fulfill(json={
+        'access_token': 'alpha-rotated', 'refresh_token': 'alpha-next', 'expires_in': 3600, 'user': {'id': 'alpha'}})))
+    state = _hosted_workbench(page)
+    _pair_workbench(page)
+    state['expired_live_iam'] = True
+    # The local companion's cloud-bound assistant request refreshes this runtime's
+    # session, without changing its separate local capability or account identity.
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('.ep').filter(has_text='Local').click()
+    page.get_by_role('button', name='Open SQL assistant', exact=True).click()
+    page.get_by_test_id('assistant-input').fill('Generate a query')
+    page.get_by_test_id('assistant-input').press('Enter')
+    page.wait_for_function("document.querySelector('#sql').value === 'select 99 as generated'")
+    assert refreshes == [{'refresh_token': 'alpha-refresh'}]
+    assert page.evaluate("JSON.parse(localStorage.getItem('company.session.v1')).access_token") == 'alpha-rotated'
+    assert page.evaluate("JSON.parse(localStorage.getItem('ylab.console.session.v1')).access_token") == 'alpha-token'
+    assert not state['queries']
+
+
+@pytest.mark.parametrize('valid', [True, False])
+def test_platform_builtin_cli_handoff_opens_fresh_browser_without_login_form(page_sqlite, valid):
+    from urllib.parse import urlencode
+    page = page_sqlite
+    _official_hosted_config(page)
+    requests = []
+    def consume(route):
+        requests.append(route.request.post_data_json)
+        if valid:
+            route.fulfill(json={'access_token': 'alpha-token', 'refresh_token': 'alpha-refresh', 'expires_in': 3600, 'user': {'id': 'alpha'}})
+        else:
+            route.fulfill(status=401, json={'error': 'Expired handoff'})
+    page.route('**/api/hosted/auth/handoff/consume', consume)
+    state = _hosted_workbench(page, expect_login=not valid, launch_fragment='#' + urlencode({
+        'quarry_handoff': 'one-use-handoff', 'quarry_local': 'http://127.0.0.1:18766', 'quarry_code': 'pair-fixture'}))
+    assert requests == [{'code': 'one-use-handoff'}]
+    assert not page.evaluate('location.hash')
+    assert not state['queries']
+    if valid:
+        assert page.get_by_role('heading', name='Sign in to Quarry', exact=True).count() == 0
+        assert state['paired']
+        assert page.locator('.platform-connection > summary').inner_text().strip() == 'Workbench: connected'
+        page.locator('#sql').fill('select 42 as handoff_local_document')
+        page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+        assert 'handoff_local_document' in json.dumps(list(state['documents'].values()))
+    else:
+        page.get_by_text('The automatic sign-in link expired or belongs to another account. Run ylab db connect again.', exact=True).wait_for()
+        assert not state['paired']
+        assert page.get_by_label('Pairing code', exact=True).count() == 0
+
+
+def test_platform_external_anonymous_entry_uses_configured_login_link(page_sqlite):
+    page = page_sqlite
+    _official_hosted_config(page, mode='external')
+    state = _hosted_workbench(page, expect_login=True)
+    assert page.get_by_role('link', name='Continue to sign in', exact=True).get_attribute('href') == '/company/login?return=/quarry/'
+    assert page.get_by_label('Password', exact=True).count() == 0
+    assert page.locator('#sql').count() == 0
+    assert not state['queries']
+
+
+def test_standalone_keeps_local_queries_independent_of_hosted_auth(page_sqlite):
+    page = page_sqlite
+    config_requests = []
+    page.route('**/api/hosted/config', lambda route: (config_requests.append(route.request.url), route.fulfill(status=500)))
+    page.evaluate("localStorage.setItem('quarry.hosted.session.v1', JSON.stringify({access_token:'foreign-token',refresh_token:'foreign-refresh',user:{id:'foreign-user'}}))")
+    page.reload(wait_until='networkidle')
+    _select_sqlite(page)
+    page.locator('#sql').fill('select 37 as independent_local_query')
+    page.locator('#runBtn').click()
+    page.wait_for_function("document.querySelector('#grid')?.textContent.includes('37')")
+    assert not config_requests
+    assert not page.locator('.hosted-login').is_visible()
+    assert not page.locator('.platform-connection').is_visible()
+
+
+def test_platform_rejects_cross_origin_runtime_auth_without_using_console_session(page_sqlite):
+    page = page_sqlite
+    page.route('**/api/hosted/config', lambda route: route.fulfill(json={
+        'auth': {'mode': 'builtin', 'sessionKey': 'quarry.hosted.session.v1', 'refreshPath': 'https://untrusted.invalid/refresh'},
+        'apiBase': '/api/db'}))
+    state = _hosted_workbench(page, expect_login=True)
+    page.get_by_text('The hosted service is unavailable. Try again when it is reachable.', exact=True).wait_for()
+    assert page.get_by_label('Password', exact=True).count() == 0
+    assert page.locator('#sql').count() == 0
+    assert not state['queries']
+    assert not state['local_requests']
+
+
+def test_platform_builtin_handoff_never_replaces_another_browser_account(page_sqlite):
+    page = page_sqlite
+    _official_hosted_config(page)
+    page.add_init_script("localStorage.setItem('quarry.hosted.session.v1', JSON.stringify({access_token:'beta-token',refresh_token:'beta-refresh',expires_in:3600,user:{id:'beta'}}))")
+    page.route('**/api/hosted/auth/handoff/consume', lambda route: route.fulfill(json={
+        'access_token': 'alpha-token', 'refresh_token': 'alpha-refresh', 'expires_in': 3600, 'user': {'id': 'alpha'}}))
+    state = _hosted_workbench(page, launch_fragment='#quarry_handoff=another-account-code')
+    assert not page.evaluate('location.hash')
+    saved = page.evaluate("JSON.parse(localStorage.getItem('quarry.hosted.session.v1'))")
+    assert saved['user']['id'] == 'beta'
+    assert saved['access_token'] == 'beta-token'
+    assert not state['queries']
+    assert not state['paired']

@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { prepareOfflineShell } from "./offlineShell";
-import PlatformStatus from "./PlatformStatus";
 import Header from "./Header";
 import ResultWorkbench from "./ResultWorkbench";
 import { t, tv } from "./i18n";
@@ -52,7 +51,6 @@ export default function App() {
     <div className="app-shell" data-production={isProduction}>
       <UpgradeBanner />
       <Header />
-      <PlatformStatus />
       <ResultWorkbench />
       <Toast />
     </div>
