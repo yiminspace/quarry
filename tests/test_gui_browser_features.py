@@ -7138,9 +7138,8 @@ def test_platform_builtin_handoff_never_replaces_another_browser_account(page_sq
     assert not state['local_requests']
 
 
-def _native_personal_workbench(page, *, unavailable=False, launch_code=None, saved_values=None):
-    state = {'revision': 0, 'value': None if saved_values is None else {'values': saved_values},
-             'unavailable': unavailable, 'writes': [], 'launches': []}
+def _native_personal_workbench(page, *, unavailable=False, launch_code=None):
+    state = {'revision': 0, 'value': None, 'unavailable': unavailable, 'writes': [], 'launches': []}
 
     def document(route):
         if route.request.resource_type != 'document':
@@ -7197,54 +7196,87 @@ def test_native_workbench_records_reopen_from_sqlite_without_browser_records(pag
     assert len(state['launches']) == 1
 
 
+def _large_native_personal_workbench(page, saved_key):
+    # Keep the simulated legacy document in the browser so Playwright does not
+    # transfer it over the test-control channel during the app's fetch timeout.
+    page.add_init_script("""
+      (() => {
+        const savedKey = __SAVED_KEY__;
+        const limit = 16 * 1024 * 1024;
+        const text = '界'.repeat(Math.floor(limit / 3) - 10000);
+        const legacy = JSON.stringify(savedKey === 'qy_hist' ? ['-- ' + text] : { cached_rows: text });
+        let revision = 0;
+        let value = { values: { [savedKey]: legacy, qy_tabres: '[]' } };
+        const writes = window.nativeRecordWrites = [];
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (url, options) => {
+          if (url !== '/api/personal') return originalFetch(url, options);
+          if (options?.method !== 'POST') return Response.json({ revision, value });
+          const body = JSON.parse(options.body);
+          const bytes = new TextEncoder().encode(JSON.stringify(body.value)).length;
+          const values = body.value.values;
+          const ok = bytes <= limit && body.revision === revision;
+          writes.push({
+            sql: JSON.parse(values.qy_tabs ?? '[]')[Number(values.qy_ati ?? 0)]?.sql,
+            retained: values[savedKey] === legacy,
+            hasResults: Object.hasOwn(values, 'qy_tabres') || Object.hasOwn(values, 'qy_result'),
+            revision: body.revision,
+            bytes,
+            ok,
+          });
+          if (!ok) return Response.json({}, { status: bytes > limit ? 413 : 409 });
+          value = body.value;
+          return Response.json({ revision: ++revision });
+        };
+      })();
+    """.replace("__SAVED_KEY__", json.dumps(saved_key)))
+    _native_personal_workbench(page)
+
+
+def _wait_for_large_native_save(page, sql):
+    page.wait_for_function("sql => window.nativeRecordWrites.some(w => w.sql === sql)", arg=sql)
+    return page.evaluate("sql => window.nativeRecordWrites.find(w => w.sql === sql)", sql)
+
+
 def test_native_workbench_large_save_prioritizes_drafts_over_results(page_sqlite):
     page = page_sqlite
-    # Simulate a legacy document close to the SQLite limit with multi-byte text.
-    # This result is inactive, so its removal must only affect persistence.
-    result = json.dumps({'cached_rows': '界' * (16 * 1024 * 1024 // 3 - 10_000)}, ensure_ascii=False)
-    state = _native_personal_workbench(page, saved_values={'qy_result': result, 'qy_tabres': '[]'})
+    _large_native_personal_workbench(page, 'qy_result')
     editor = page.locator('#sql')
-
-    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
-        editor.fill('select 13 as compatible_large_document')
-    assert state['value']['values']['qy_result'] == result
+    sql = 'select 13 as compatible_large_document'
+    editor.fill(sql)
+    compatible = _wait_for_large_native_save(page, sql)
+    assert compatible['ok'] and compatible['retained'] and compatible['bytes'] > 2 * 1024 * 1024
 
     sql = 'select 14 -- ' + '界' * 15_000
-    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST') as saved:
-        editor.fill(sql)
-    assert saved.value.ok
-    values = state['value']['values']
-    assert 'qy_result' not in values and 'qy_tabres' not in values
-    assert any(tab['sql'] == sql for tab in json.loads(values['qy_tabs']))
+    editor.fill(sql)
+    trimmed = _wait_for_large_native_save(page, sql)
+    assert trimmed['ok'] and not trimmed['hasResults']
     assert editor.input_value() == sql
 
 
 def test_native_workbench_oversized_draft_can_resume_saving(page_sqlite):
     page = page_sqlite
-    history = json.dumps(['-- ' + '界' * (16 * 1024 * 1024 // 3 - 10_000)], ensure_ascii=False)
-    state = _native_personal_workbench(page, saved_values={'qy_hist': history})
+    _large_native_personal_workbench(page, 'qy_hist')
     editor = page.locator('#sql')
-    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
-        editor.fill('select 15 as save_before_oversize')
-    previous_revision = state['revision']
-    previous_writes = len(state['writes'])
+    sql = 'select 15 as save_before_oversize'
+    editor.fill(sql)
+    previous = _wait_for_large_native_save(page, sql)
+    assert previous['ok'] and previous['retained']
+    previous_writes = page.evaluate("window.nativeRecordWrites.length")
 
     sql = 'select 16 -- ' + '界' * 15_000
     editor.fill(sql)
     page.get_by_test_id('native-records-status').click()
     page.get_by_text('Workbench records exceed 16 MiB. Shorten drafts or export recovery before closing.', exact=True).wait_for()
-    assert len(state['writes']) == previous_writes
-    assert state['revision'] == previous_revision
+    assert page.evaluate("window.nativeRecordWrites.length") == previous_writes
     assert editor.input_value() == sql
     assert sql in page.evaluate("sessionStorage.getItem('qy_native:native-fixture:recovery')")
 
     shorter_sql = 'select 17 as retry_after_shrinking'
-    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST') as saved:
-        editor.fill(shorter_sql)
-    assert saved.value.ok
-    assert state['revision'] == previous_revision + 1
-    assert state['value']['values']['qy_hist'] == history
-    assert any(tab['sql'] == shorter_sql for tab in json.loads(state['value']['values']['qy_tabs']))
+    editor.fill(shorter_sql)
+    retried = _wait_for_large_native_save(page, shorter_sql)
+    assert retried['ok'] and retried['retained']
+    assert retried['revision'] == previous['revision'] + 1
     page.get_by_test_id('native-records-status').wait_for(state='detached')
 
 
