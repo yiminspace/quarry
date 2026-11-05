@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-assistant"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-cli"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-core"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "base64 0.22.1",
  "bigdecimal",
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-local"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "fs2",
  "quarry-core",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-platform"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -1608,7 +1608,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-runtime"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "chrono",
  "fs2",
@@ -1627,7 +1627,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-server"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "quarry-service"
-version = "2.0.1-rc.2"
+version = "2.0.1"
 dependencies = [
  "async-trait",
  "percent-encoding",

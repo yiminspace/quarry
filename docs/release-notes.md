@@ -9,6 +9,6 @@ per-database grants, and optional desktop integration. The update also preserves
 bundled icon fonts when a cached hosted workbench is reopened offline.
 
 Deployment operators can use the image pinned in the
-[hosted release descriptor](https://github.com/yiminspace/quarry/releases/latest/download/hosted-release.json).
+[hosted release descriptor](https://github.com/yiminspace/quarry/releases/download/v2.0.1/hosted-release.json).
 See the [installation guide](https://github.com/yiminspace/quarry/blob/main/docs/install.md)
 for standalone native and Python-package upgrades.
