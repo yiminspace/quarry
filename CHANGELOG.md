@@ -9,6 +9,7 @@ pre-1.0 history followed the earlier development policy.
 
 - Show a dismissible update notice and release notes in hosted workbenches when a newer stable Docker image is available.
 - Document hosted identity, routing, and desktop integration independently of any one platform.
+- Treat PID files removed during keeper or local Neptune shutdown as stopped processes.
 
 - Keep bundled icon fonts visible when the hosted editor reopens offline, including versioned font URLs and the first visit after a cached application upgrade.
 

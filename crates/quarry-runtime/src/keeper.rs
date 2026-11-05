@@ -38,10 +38,12 @@ impl KeeperManager {
     }
     fn record(&self, workspace: &Path) -> Result<Option<KeeperRecord>> {
         let path = self.file(workspace, "pid");
-        if !path.exists() {
-            return Ok(None);
-        }
-        let record: KeeperRecord = serde_json::from_slice(&std::fs::read(path)?)?;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let record: KeeperRecord = serde_json::from_slice(&bytes)?;
         if record.workspace != workspace {
             return Ok(None);
         }

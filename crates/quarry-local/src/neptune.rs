@@ -32,10 +32,12 @@ impl LocalManager {
     }
     fn neptune_record(&self) -> Result<Option<ProcessRecord>> {
         let path = self.neptune_dir().join("pid.json");
-        if !path.exists() {
-            return Ok(None);
-        }
-        let record: ProcessRecord = serde_json::from_slice(&std::fs::read(path)?)?;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let record: ProcessRecord = serde_json::from_slice(&bytes)?;
         if process_identity(record.pid).is_ok_and(|id| id == record.identity) {
             Ok(Some(record))
         } else {
