@@ -4550,6 +4550,12 @@ class _AssistantBrowserStub:
         route.fulfill(status=200, content_type='application/x-ndjson',
                       body=''.join(json.dumps(event) + '\n' for event in events))
 
+    def wait_pending(self):
+        deadline = time.monotonic() + 5
+        while not self.pending and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        assert len(self.pending) == 1
+
 
 def _assistant_ready(page, tmp_path, monkeypatch, *, sql='SELECT id, note FROM entries LIMIT 10', configured=True):
     stub = _AssistantBrowserStub(page, tmp_path, monkeypatch, configured=configured)
@@ -5484,8 +5490,7 @@ def test_assistant_inflight_manual_edit_requires_explicit_application(page_sqlit
     stub.proposal = 'SELECT id FROM entries LIMIT 3'
     stub.hold = True
     _assistant_send(page, 'Write a short query')
-    page.wait_for_timeout(100)
-    assert len(stub.pending) == 1
+    stub.wait_pending()
     manual = 'SELECT note FROM entries WHERE id = 77'
     _set_sql(page, manual)
     stub.complete()
@@ -5507,8 +5512,7 @@ def test_assistant_late_reply_cannot_overwrite_other_context(page_sqlite, tmp_pa
     stub.proposal = 'SELECT id FROM entries LIMIT 7'
     stub.hold = True
     _assistant_send(page, 'Write seven rows')
-    page.wait_for_timeout(100)
-    assert len(stub.pending) == 1
+    stub.wait_pending()
     if navigation == 'tab':
         page.locator('#tabAdd').click()
         _set_sql(page, 'SELECT 55 AS other_tab')
