@@ -1,4 +1,9 @@
-.PHONY: test test-unit test-integration test-e2e test-browser cov seed install browser-install
+.PHONY: test test-unit test-integration test-e2e test-browser cov seed install browser-install preview-hosted
+
+# Manual hosted GUI preview with disposable demo data; no Console login needed.
+preview-hosted:
+	cd web && npm run build
+	python3 scripts/preview_hosted.py $(PREVIEW_ARGS)
 
 # Full layered run with an at-a-glance per-layer summary.
 test:

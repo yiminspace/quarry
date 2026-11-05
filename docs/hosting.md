@@ -1,170 +1,137 @@
-# Integrate Quarry into your platform
+# Host Quarry
 
 [中文](hosting.zh-CN.md) · [Standalone installation](install.md) · [Rust architecture](rust-preview.md)
 
-Quarry can run as an independent CLI, GUI and MCP server, or supply the database
-workbench inside an existing platform. The platform owns accounts, permissions,
-resource registration, secrets and deployment. Quarry supplies Rust execution
-libraries, a read-only hosted API, the workbench UI and an explicitly paired
-desktop companion.
+One official Docker image serves the workbench, sign-in, read-only database API
+and query executor. Supply database and access configuration; do not write a Rust
+adapter or rebuild the frontend. YiminLab uses the same image with its existing IAM.
 
-The hosted and companion APIs described here are available from the current
-source SDK, separately from the standalone 2.0.0 release. This is a library
-integration, not a one-command hosted edition. The public
-`quarry-platform` backend accepts a host-provided IAM adapter. The current
-browser adapter follows Ylab's session contract, so another platform must adapt
-that contract as well. Ylab's server executable and deployment configuration are
-host-owned; they are not included in the public Quarry distribution.
+Standalone Quarry remains independent: `qy`, `qy gui` and `qy mcp` need neither
+this server nor `ylab` nor platform sign-in. Existing local configuration and
+records are not forcibly migrated.
 
-## Choose the entry point
+## Start the image
 
-| Need | Entry point |
-| --- | --- |
-| A workbench on your own computer | Install `qy`, configure a workspace and run `qy gui` |
-| Database access for an agent | Launch `qy mcp` over stdio |
-| Execution inside an existing Rust application | Embed `quarry-service::QuarryService` |
-| Quarry commands inside your own CLI | Embed `quarry-cli::run_from`; supply host daemon dispatch |
-| A platform workbench with IAM and local personal records | Integrate `quarry-platform`, its hosted UI adapter and a companion in your CLI |
+Use the [Compose file](../deploy/hosted/compose.yaml) and copy
+[hosted.example.json](../deploy/hosted/hosted.example.json) into its adjacent
+`config/hosted.json`. This single file configures sign-in, databases and grants:
 
-Use a pinned Quarry source revision. The embedding crates live in this repository;
-building your host does not require an installed `qy` or a Python subprocess.
-Build `web/` before compiling a binary that embeds the GUI. See the executable
-[service example](../crates/quarry-service/examples/embedded_host.rs) and
-[build instructions](rust-preview.md).
-
-## 1. Register resources on the server
-
-Create `QuarryService` with explicit configuration, workspace and state paths.
-Keep the workspace and database credentials private to the server. Register each
-exposed target with `HostedResource`: a stable ID, project, database, environment,
-server-side connection key and explicit `readers` ACL. An ACL accepts principal
-IDs or `role:<role-name>` entries; an empty ACL grants access to nobody. Mark
-production connections explicitly with `production = true`.
-
-The browser selects a registered resource ID. It cannot supply a workspace path,
-connection URL or database password. Remote query execution stays read-only;
-metadata, cancellation and schema export are also limited to authorized targets.
-
-## 2. Connect your IAM
-
-Implement the async `Authorizer` trait. On **every invocation**, verify the bearer
-session is still valid, verify the requested permission and token scope, and
-return a stable `Principal` with its current roles. Do not trust identity headers
-from a browser or accept a decoded token without checking the session's validity.
-
-The current adapter requests these permission names. Map them to your IAM policy
-inside `Authorizer` if your platform uses different names.
-
-| Permission | Capability |
-| --- | --- |
-| `lab:db:read` | Remote read-only queries, metadata and cancellation |
-| `lab:db:schema:export` | PostgreSQL schema export; also requires read permission |
-| `lab:db:local` | Initial pairing and cloud-dependent Local operations |
-| `lab:ai:invoke` | Assistant model requests, in addition to target access |
-
-An operation needs both IAM authorization and the resource ACL. Granting an
-account a general database permission does not expose every registered resource.
-Start with one account and an explicit resource allowlist.
-
-Wire the service, your IAM implementation and registry into the public router:
-
-```rust
-use std::sync::Arc;
-use axum::Router;
-use quarry_platform::{Authorizer, HostedResource, HostedState, hosted_router};
-use quarry_service::QuarryService;
-
-fn database_api(
-    service: Arc<QuarryService>,
-    iam: Arc<dyn Authorizer>,
-    resources: Vec<HostedResource>,
-) -> quarry_platform::Result<Router> {
-    let state = HostedState::new(service, iam, resources)?;
-    Ok(hosted_router(state))
+```json
+{
+  "listen": "0.0.0.0:8080",
+  "state_dir": "/var/lib/quarry",
+  "auth": {
+    "mode": "builtin",
+    "username": "admin",
+    "password_hash": "REPLACE_WITH_GENERATED_ARGON2ID_HASH"
+  },
+  "databases": [{
+    "id": "notes",
+    "project": "demo",
+    "db": "notes",
+    "env": "production",
+    "url": "postgresql://readonly-user:REPLACE_PASSWORD@database:5432/notes",
+    "production": true,
+    "readers": ["admin"]
+  }]
 }
 ```
 
-This function supplies API routes; your application still owns the listener,
-HTTPS gateway, IAM implementation and UI serving. The router expects paths such
-as `/api/platform`, `/api/query` and `/api/schema/export`. A non-Rust platform can
-run this thin Rust executor behind its gateway and keep IAM in its existing
-service, provided the adapter verifies each operation against that authority.
+Generate the administrator password hash, place it in the file, then start:
 
-## 3. Integrate the browser session
-
-Serve the workbench under your platform's HTTPS origin. Standalone assets do not
-read platform identity unless their hosted copy includes:
-
-```html
-<meta name="quarry-mode" content="platform">
+```sh
+docker run --rm -it ghcr.io/yiminspace/quarry:hosted hash-password
+docker compose up -d
 ```
 
-Use [`web/src/platform.ts`](../web/src/platform.ts) as the current adapter,
-then implement your platform's login, refresh, account-switch and logout behavior.
-Its existing Ylab contract is:
+Open `http://127.0.0.1:8080/quarry/` and sign in with the configured administrator.
+`username` is the sign-in name; optional `user_id` defaults to `admin` and is the
+stable authorization/personal-state identity. Set explicit resource `readers`;
+an empty list grants access to nobody. Connections marked `production: true`
+default to manual execution.
 
-- Session key `ylab.console.session.v1`, containing `access_token`, `refresh_token`,
-  `expires_in` and `user.id`.
-- Token refresh at `/api/iam/auth/refresh`.
-- Workbench calls at `/api/db/*`, forwarded to the executor's `/api/*` paths
-  (for example, `/api/db/platform` → `/api/platform`).
-- Bearer authorization for remote calls and explicit companion pairing for
-  loopback calls. Preserve origin checks and handle the browser's local-network
-  permission flow.
+Compose binds only loopback by default; publish through your HTTPS reverse proxy.
+Pin `QUARRY_IMAGE_TAG=sha-<full-source-SHA>` in production. Configuration is mounted
+read-only and must be readable by image UID 10001. The `quarry-state` volume
+persists authentication state. `/health` returns service/version; the image's
+`check` command validates configuration. Never bake connection credentials,
+password hashes or deployment keys into the image or commit them publicly.
+Existing standalone workspaces remain supported through the advanced
+`config_path`, `workspaces` and `resources` configuration.
 
-Adding the meta marker alone is insufficient. Adapt session handling and gateway
-routing together, and keep personal recovery/pairing data isolated on account
-changes. An existing platform login must never silently authorize a computer.
+## Use an existing identity provider
 
-## 4. Add the desktop companion to your CLI
+Keep the same image and change `auth` to `external`:
 
-Embed `quarry-cli::run_from` for standalone command capabilities. Add your own
-companion command using `CompanionConfig`, `CompanionState` and `companion_router`.
-Configure the exact trusted platform origin, logged-in IAM user, an absolute
-SQLite state path and a loopback port. Let the host CLI own its account/profile,
-packaging, process lifecycle and any keeper/Neptune dispatch.
+```json
+{
+  "mode": "external",
+  "verify_url": "https://iam.example.com/api/authorize",
+  "response": "headers",
+  "session_key": "company.session.v1",
+  "login_url": "/login?return=/quarry/",
+  "refresh_path": "/api/auth/refresh"
+}
+```
 
-Show the one-use pairing code only in the user's terminal. The webpage pairs
-explicitly with that computer, origin and account. Pairing grants an expiring,
-revocable local capability; it does not expose a general filesystem, database
-credential or Docker control endpoint. Keep containers, volumes, ports and Local
-resource state isolated by platform, account and source resource.
+The server calls `verify_url` for live identity/permission checks. `headers` mode
+reads identity headers returned by trusted IAM; `json` mode reads `id`, `roles`
+and `permissions`. Every operation needs both the relevant permission and its
+resource `readers` grant. Browser-supplied identity headers or decoded-only tokens
+are insufficient. Permission names are `lab:db:read`, `lab:db:local`,
+`lab:db:schema:export` and `lab:ai:invoke`.
 
-| Data or operation | Location and behavior |
-| --- | --- |
-| Credentials and resource registry | Host server; not returned to the browser |
-| Drafts, tabs, history, bounded result caches, conversations, generated SQL and restore checkpoints | Computer SQLite, scoped by platform, account and target; shared with the CLI |
-| Disconnected page edits | Limited account-scoped browser recovery copy; shown separately from a successful SQLite save |
-| Concurrent personal edits | Revision checks report a conflict instead of silently overwriting another writer |
-| Local PostgreSQL / Redis | Explicit Docker lifecycle through the paired companion |
-| PostgreSQL schema transfer | Companion fetches the authorized source, imports into staging and retains the previous Local database; no business rows or source passwords |
+Browser login, refresh and optional `logout_path` are same-origin paths served
+by your existing platform, through a reverse proxy when needed. Session shape:
 
-After the first successful page load, retained cached assets allow offline
-re-entry and editing. Remote and local connection states are independent.
-Already-paired local-only operations remain available while the local capability
-is valid. Remote queries, model requests and remote schema retrieval require live
-IAM. Reconnection never replays SQL, starts Docker, imports a schema or replaces
-an unsaved draft.
+```json
+{"access_token":"...","refresh_token":"...","expires_in":3600,"user":{"id":"stable-account-id"}}
+```
 
-## 5. Configure the assistant and verify the boundary
+The frontend reads public runtime settings from `/api/hosted/config`, then uses
+that session key and authentication paths. YiminLab supplies
+`ylab.console.session.v1`, its existing Console login route and IAM refresh
+endpoint, without a separate database image or custom frontend build.
+Private-network HTTP verification requires explicit `allow_insecure_http: true`;
+public connections should use HTTPS.
 
-Optionally attach `AssistantOptions` with a trusted model gateway and model.
-The platform must support the caller's IAM authorization at that gateway.
-Assistant proposals can be applied or restored, and never execute automatically.
-Persistent personal records stay in the companion SQLite; actual remote queries
-send SQL to the host, and model requests send required context to the gateway.
-Host, database and model log retention follow your platform policy.
+## Personal records stay on the user's computer
 
-Before exposing the workbench, exercise your real IAM and gateway: denied
-anonymous/cross-account/cross-resource requests, scoped and revoked sessions,
-cancel ownership, rejected writes, expired/revoked pairing, wrong origins,
-account switching, independent disconnections, SQLite restart persistence and
-concurrent-edit conflicts. Verify PostgreSQL transfer contains no business rows,
-preserves the previous Local database and recovers from failed imports. Check the
-deployed HTTPS page can pair with the supported desktop browsers.
+The server owns connections, access grants and query execution. Drafts, tabs,
+history, bounded result caches, assistant conversations, generated SQL and restore
+points live in the user's local SQLite, shared with the CLI.
 
-Hosted shared SQL, cloud personal history and cross-device synchronization are
-not implemented. Standalone local `.sql` query files remain available. Schema
-transfer is PostgreSQL-only. Neptune/openCypher remains experimental; its local
-empty endpoint is not a graph database. See [compatibility](../COMPATIBILITY.md)
-and the [YiminLab integration contract](ylab-integration.md) for further boundaries.
+`ylab db connect` opens the workbench and connects/saves automatically, without
+address, pairing-code or database-administration forms. Standalone hosting uses
+a one-use sign-in handoff; existing platforms retain their account confirmation.
+The handoff code travels only in the URL fragment and is removed before requests;
+long-lived Bearer tokens never travel in URLs. Local capabilities remain bound
+to the platform, account and origin, with expiry and revocation and no arbitrary
+filesystem access.
+
+With the local service disconnected, remote querying and editing remain usable;
+a bounded browser recovery copy protects pending work. Reconnection retries
+saving automatically. Revision conflicts keep the current draft and require an
+explicit export/restore choice rather than overwriting another record.
+Reconnecting never executes SQL, starts a database or synchronizes schema.
+
+A previously loaded and cached shell can reopen offline; the first visit still
+needs to load the assets. Shared SQL, cloud personal history and cross-device
+synchronization are outside this release.
+
+## Assistant and acceptance
+
+Configure both `assistant_base_url` and `assistant_model` to enable the assistant,
+or omit both to disable it. The model gateway must authorize the current user's
+Bearer credential. Suggestions can be applied and restored, never auto-executed.
+Remote queries transmit SQL to the service; model requests transmit the necessary
+context to the gateway. The deployment owns its platform logging/retention policy.
+
+Release acceptance covers a real container and persistent volume, administrator
+login/refresh/logout, external IAM and resource denial, real read-only queries,
+cancellation, automatic companion SQLite writes and outage recovery, and the
+standalone CLI/GUI/MCP regression suite. Mock previews and successful builds are
+separate evidence, not substitutes.
+
+The Rust libraries remain available for advanced embedding; see
+[Rust architecture](rust-preview.md) and [YiminLab integration](ylab-integration.md).

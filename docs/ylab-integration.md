@@ -1,12 +1,17 @@
 # YiminLab hosted and local integration
 
-## Agreed product scope (2026-11-04)
+## Agreed product scope (2026-11-05)
 
-Deliver one integrated workflow: the existing Quarry workbench in YiminLab
-Console, IAM-authorized remote read-only database operations, native `ylab db`
-capabilities embedded from Quarry Rust libraries, an explicitly paired local
-companion, and PostgreSQL schema-only transfer from an authorized hosted resource
-to a local database. Standalone Quarry remains available.
+YiminLab deploys the same official Quarry hosted image as independent users,
+configured against its existing Console session, IAM authorization and resource
+ACLs. There is no separate Ylab database executable/image or custom workbench
+build for production. The image includes the GUI, authentication integration,
+read-only API and execution. Standalone hosting can use its built-in administrator.
+
+The native `ylab db` companion still embeds the Quarry Rust libraries. Running
+`ylab db connect` opens the workbench and connects/saves automatically, without
+address/code or database-administration forms. The native CLI and backend retain
+separate optional Local/schema capabilities. Standalone Quarry remains independent.
 
 Personal drafts, tabs, SQL history, result caches, assistant messages, generated
 SQL and restore checkpoints belong to a SQLite database on the user's computer.
@@ -26,8 +31,9 @@ First-time loading still requires fetching the application assets.
 
 - Quarry owns reusable execution, storage, HTTP contracts, workbench UI and local
   lifecycle. `ylab` embeds the Rust libraries, not a separately installed `qy`.
-- Ylab owns Console identity, per-request IAM verification, resource registration
-  and grants, CLI account/profile integration and release packaging.
+- Ylab owns Console identity, resource registration/grants and CLI account/profile
+  integration. The official Quarry image performs per-request checks against the
+  configured IAM endpoint; browser session paths are runtime configuration.
 - YiminLab owns AuthKit permissions, runtime secrets, private service networks and
   production deployment. Private configuration and local state never enter a
   public Quarry artifact.
@@ -39,9 +45,9 @@ First-time loading still requires fetching the application assets.
   identity and target. Cancellation cannot affect another user's execution.
 - Hosted endpoints exclude connection credential reveal, arbitrary connection
   edits, local file access, Docker lifecycle and personal-history persistence.
-- Pairing is explicit, origin/platform/account-bound, short-lived and revocable.
+- Pairing follows a user-initiated CLI launch and remains origin/platform/account-bound, short-lived and revocable.
   The loopback companion exposes only declared operations. IAM login alone does
-  not grant access to a computer. Pairing credentials never enter URL parameters.
+  not grant access to a computer. Only one-use launch codes may enter URL fragments, cleared before requests; long-lived credentials never enter URLs.
 - PostgreSQL structure export has separate permission. Local import preserves
   staging, recovery and prior-database behavior; database passwords and business
   rows are not transferred. Other engines do not claim schema-sync support.

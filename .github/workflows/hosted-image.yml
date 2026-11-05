@@ -1,0 +1,98 @@
+name: Hosted image
+on:
+  pull_request:
+    paths:
+      - 'apps/server/**'
+      - 'crates/**'
+      - 'web/**'
+      - 'Cargo.*'
+      - 'Dockerfile.hosted*'
+      - 'scripts/verify_hosted_image.py'
+      - '.github/workflows/hosted-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/server/**'
+      - 'crates/**'
+      - 'web/**'
+      - 'Cargo.*'
+      - 'Dockerfile.hosted*'
+      - 'scripts/verify_hosted_image.py'
+      - '.github/workflows/hosted-image.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hosted-image-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and test Linux image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.hosted
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: quarry-hosted:verify
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=hosted-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=hosted-${{ matrix.arch }}
+      - name: Native loader and hash command
+        run: |
+          docker run --rm quarry-hosted:verify --version
+          printf 'disposable-ci-password\n' | docker run --rm -i quarry-hosted:verify hash-password --stdin | grep '^\$argon2id\$'
+          docker run --rm --entrypoint pg_dump quarry-hosted:verify --version
+      - name: Real container acceptance
+        run: python3 scripts/verify_hosted_image.py quarry-hosted:verify --expected-version ${{ github.sha }}
+      - name: Publish checked native image
+        if: github.event_name != 'pull_request'
+        run: |
+          image="ghcr.io/${{ github.repository }}:sha-${{ github.sha }}-${{ matrix.arch }}"
+          docker tag quarry-hosted:verify "$image"
+          docker push "$image"
+  manifest:
+    if: github.event_name != 'pull_request'
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish manifest from tested native images
+        run: |
+          image="ghcr.io/${{ github.repository }}"
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            docker buildx imagetools create --tag "$image:sha-${{ github.sha }}" --tag "$image:hosted" \
+              "$image:sha-${{ github.sha }}-amd64" "$image:sha-${{ github.sha }}-arm64"
+          else
+            docker buildx imagetools create --tag "$image:sha-${{ github.sha }}" \
+              "$image:sha-${{ github.sha }}-amd64" "$image:sha-${{ github.sha }}-arm64"
+          fi

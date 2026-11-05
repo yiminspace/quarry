@@ -323,9 +323,9 @@
 
 <section id="hosting">
   <div class="wrap">
-    <div class="eyebrow">Hosted integration · source SDK</div>
+    <div class="eyebrow">Hosted workbench · one Docker image</div>
     <h2>Your IAM, your databases, the same workbench</h2>
-    <p class="lede">The current source SDK lets you embed Quarry's Rust libraries in your service and CLI. A hosted workbench uses your platform's accounts and resource grants; a separately paired desktop companion handles personal records and Local databases. These integration APIs are separate from the standalone 2.0.0 download.</p>
+    <p class="lede">Run the official Docker image with one configuration file for the GUI, sign-in, read-only API and execution. Use its built-in administrator or configure your platform's existing IAM. YiminLab uses the same image; standalone Quarry remains independent.</p>
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">▣</span> Host-controlled read-only access</h3>
@@ -333,21 +333,21 @@
       </div>
       <div class="card">
         <h3><span class="ico">⌁</span> Personal work on your computer</h3>
-        <p>Drafts, tabs, query history, bounded result caches, assistant conversations, generated SQL and restore checkpoints are saved to desktop SQLite through the companion, separated by platform, account and target. GUI and CLI share the local records. Without it, the page keeps a limited browser recovery copy and shows its save state.</p>
+        <p>Run ylab db connect to open the workbench and automatically save drafts, tabs, query history, bounded results, assistant conversations and generated SQL to computer SQLite. GUI and CLI share the account-scoped records. During a disconnect, a limited browser recovery copy protects pending work.</p>
       </div>
       <div class="card">
         <h3><span class="ico">⇄</span> Keep editing through a disconnect</h3>
         <p>After the first successful load, cached assets let the workbench reopen offline. Remote and local connections have separate states. Reconnecting never runs SQL, starts Docker, imports a schema or replaces an unsaved draft. Local operations remain available while the paired capability is valid.</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▤</span> Bring structure to Local</h3>
-        <p>Explicitly start isolated Local PostgreSQL or Redis services with Docker. For PostgreSQL, import an authorized remote schema into staging without business rows or source passwords; retain the previous local database for recovery. Schema transfer is PostgreSQL-only.</p>
+        <h3><span class="ico">▤</span> Configure once, open and query</h3>
+        <p>The image includes the workbench and query service. Set database connections, reader grants and sign-in in configuration; no Rust IAM adapter or custom frontend build is required. Local connection and personal saving work in the background, with recovery choices only when needed.</p>
       </div>
     </div>
     <p class="lede" style="margin-top:26px">Remote queries send SQL to your host; the assistant sends required context to the configured model gateway. Their retention follows host policy. Hosted shared SQL, cloud personal history and cross-device sync are not included.</p>
     <div class="cta-row" style="margin-top:26px">
-      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.md">Read the hosting integration guide</a>
-      <span class="lede">Bring your IAM adapter, resource registry and browser session integration.</span>
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.md">Deploy the hosted workbench</a>
+      <span class="lede">One image, one configuration file; built-in or existing-platform sign-in.</span>
     </div>
   </div>
 </section>

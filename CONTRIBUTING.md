@@ -34,6 +34,21 @@ remove that worktree, `qy`/`quarry` will fail to import — you'll see a
 `pip install -e ".[dev]"` from a checkout that still exists (your main clone or
 a surviving worktree) to point the install back at real source again.
 
+### Manual hosted GUI preview
+
+Run `make preview-hosted` to build the current frontend and open
+`http://127.0.0.1:18765/quarry/` in your browser. Leave the terminal running;
+press Ctrl+C to stop. Run the command again after editing the frontend.
+This preview uses demo resources and fixed query results, requires no Console
+login and does not execute SQL. It defaults to a connected demo companion,
+writing personal documents to a temporary SQLite file whose path is printed.
+The file is deleted when the preview stops. Use
+`make preview-hosted PREVIEW_ARGS='--disconnected'` to inspect browser-only
+recovery. Real pairing and Assistant acceptance require the real services.
+Use `make preview-hosted PREVIEW_ARGS='--port 18767 --no-open'` to change the
+port or skip opening a browser. It needs Node/npm and Python 3.10+, but no Rust
+build, Playwright or database.
+
 ### Running tests
 
 Unit tests run with no setup:

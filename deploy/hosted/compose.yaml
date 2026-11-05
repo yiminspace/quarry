@@ -1,0 +1,17 @@
+services:
+  quarry:
+    image: ghcr.io/yiminspace/quarry:${QUARRY_IMAGE_TAG:-hosted}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config:/etc/quarry:ro
+      - quarry-state:/var/lib/quarry
+    environment:
+      QUARRY_HOSTED_CONFIG: /etc/quarry/hosted.json
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+volumes:
+  quarry-state:

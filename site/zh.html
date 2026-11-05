@@ -323,9 +323,9 @@
 
 <section id="hosting">
   <div class="wrap">
-    <div class="eyebrow">托管集成 · 源码 SDK</div>
+    <div class="eyebrow">托管工作台 · 一个 Docker 镜像</div>
     <h2>你的 IAM、你的数据库，同一个工作台</h2>
-    <p class="lede">当前源码 SDK 可将 Quarry 的 Rust 类库嵌入自己的服务与 CLI。托管工作台沿用平台账号和资源授权；另行配对的本机服务负责个人记录与 Local 数据库。这些集成接口与独立的 2.0.0 安装包分别提供。</p>
+    <p class="lede">官方 Docker 镜像加一个配置文件，就能提供网页、登录、只读 API 和查询执行。可用内置管理员，也可配置接入已有 IAM。YiminLab 使用同一个镜像；原有 Quarry 本地模式保持独立。</p>
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">▣</span> 平台控制只读访问</h3>
@@ -333,21 +333,21 @@
       </div>
       <div class="card">
         <h3><span class="ico">⌁</span> 个人工作保存在自己电脑</h3>
-        <p>草稿、标签、查询历史、有大小限制的结果缓存、助手对话、生成的 SQL 和恢复点，通过本机服务存进 SQLite，按平台、账号和目标隔离，网页与 CLI 共用记录。未连接时，网页只保留有限的浏览器恢复副本，并明确显示保存状态。</p>
+        <p>运行 ylab db connect 后自动打开工作台，将草稿、标签、查询历史、有限结果缓存、助手对话和生成 SQL 保存到电脑上的 SQLite，网页与 CLI 共用账号隔离的记录。断开时由有限的浏览器恢复副本保护待保存内容。</p>
       </div>
       <div class="card">
         <h3><span class="ico">⇄</span> 断开连接也能继续编辑</h3>
         <p>首次成功加载后，可用缓存的页面离线重新打开工作台。远程和本机分别显示连接状态；重连不会自动执行 SQL、启动 Docker、导入结构或替换未保存草稿。有效配对授权内，本机操作可继续离线使用。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▤</span> 把结构带到 Local</h3>
-        <p>主动通过 Docker 启动隔离的 Local PostgreSQL 或 Redis。PostgreSQL 可从已授权的远程资源导入纯结构，先导入临时库，再保留旧 Local 数据库用于恢复；不复制业务行或源库密码。结构迁移目前仅支持 PostgreSQL。</p>
+        <h3><span class="ico">▤</span> 配置一次，打开就查</h3>
+        <p>镜像自带工作台和查询服务。数据库连接、访问账号和登录方式通过配置提供，不需要编写 Rust IAM 适配器或定制构建网页。本机连接和个人记录保存都在后台完成，仅在需要处理保存冲突时提供恢复选择。</p>
       </div>
     </div>
     <p class="lede" style="margin-top:26px">远程查询会把 SQL 发送到平台；助手会把所需上下文发送到配置的模型网关，日志保留遵循平台策略。托管共享 SQL、云端个人历史与跨设备同步暂未实现。</p>
     <div class="cta-row" style="margin-top:26px">
-      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.zh-CN.md">查看托管接入指南</a>
-      <span class="lede">接入自己的 IAM、资源登记与网页会话。</span>
+      <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.zh-CN.md">查看托管部署指南</a>
+      <span class="lede">一个镜像、一个配置文件；支持独立登录或已有平台账号。</span>
     </div>
   </div>
 </section>
