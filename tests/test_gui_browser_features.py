@@ -4791,7 +4791,8 @@ def test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed(page_sq
     assert markdown.locator('blockquote').inner_text().strip() == 'Read complete.'
     assert markdown.locator('ul > li').count() == 1
     assert abs(page.get_by_test_id('assistant-input').bounding_box()['y'] - composer_before['y']) <= 2
-    assert page.get_by_test_id('assistant-messages').evaluate('el => el.scrollHeight - el.scrollTop - el.clientHeight') < 10
+    page.wait_for_function('''() => { const el = document.querySelector('[data-testid="assistant-messages"]');
+      return el.scrollHeight - el.scrollTop - el.clientHeight < 10; }''')
     assert page.evaluate('window.scrollY') == 0
     assert page.locator('#sql').input_value() == ''
     assert queries == []
