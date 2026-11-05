@@ -4780,6 +4780,16 @@ def test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed(page_sq
     page.wait_for_function('''() => { const el = document.querySelector('[data-testid="assistant-messages"]');
       return el.scrollHeight > el.clientHeight && el.scrollHeight - el.scrollTop - el.clientHeight < 10; }''')
     tail = ' FROM entries;\n```\n\n> Read complete.\n\n- Keep the current editor SQL.\n'
+    page.evaluate('''() => {
+      const messages = document.querySelector('[data-testid="assistant-messages"]');
+      const observer = new MutationObserver(() => {
+        if (!messages.querySelector('blockquote')) return;
+        observer.disconnect();
+        // Deliver a scroll event queued by the previous pin after the tail grows.
+        messages.dispatchEvent(new Event('scroll'));
+      });
+      observer.observe(messages, {childList: true, subtree: true});
+    }''')
     page.evaluate('events => window.__assistantChunk(events)', [dict(ident, type='text_delta', delta=tail)])
     stream.locator('blockquote').wait_for()
     assert stream.locator('pre code').inner_text().endswith('SELECT id FROM entries;\n')

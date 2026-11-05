@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Keep the SQL assistant pinned to the latest reply when a queued scroll event arrives as the reply grows.
+
 - Show a dismissible update notice and release notes in hosted workbenches when a newer stable Docker image is available.
 - Document hosted identity, routing, and desktop integration independently of any one platform.
 - Treat PID files removed during keeper or local Neptune shutdown as stopped processes.

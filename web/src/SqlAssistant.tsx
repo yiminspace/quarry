@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { assistantStatusText, LANG, t } from "./i18n";
 import type { AssistantMessage } from "./assistantApi";
 import { shouldSubmitAssistant } from "./assistantState";
@@ -35,7 +35,8 @@ export default function SqlAssistant({ session, currentSql, onDraftChange, onSen
   const follow = useRef(true);
   const composing = useRef(false);
   const conversation = session.conversation;
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Repin before a queued scroll event can observe the new content height.
     if (follow.current && messages.current) messages.current.scrollTop = messages.current.scrollHeight;
   }, [conversation, session.stream, session.prompt, session.error, session.busy]);
 
