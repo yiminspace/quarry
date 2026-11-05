@@ -2,7 +2,7 @@
 """Exercise an actual Linux image with disposable auth/SQLite data, never user volumes."""
 import argparse
 import json
-import os
+import sys
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -44,11 +44,15 @@ def main():
         for path in [config / 'hosted.json']:
             path.chmod(0o644)
         try:
-            docker('run', '--rm', '--detach', '--name', name, '--publish', '127.0.0.1::18080',
+            docker('run', '--detach', '--name', name, '--publish', '127.0.0.1::18080',
                    '--mount', f'type=bind,src={config},dst=/etc/quarry,readonly',
                    '--mount', f'type=volume,src={volume},dst=/var/lib/quarry', args.image)
-            port = docker('port', name, '18080/tcp').rsplit(':', 1)[1]
-            base = 'http://127.0.0.1:' + port
+            def published_base():
+                # Docker may allocate a new ephemeral host port on every restart.
+                binding = docker('port', name, '18080/tcp')
+                return 'http://127.0.0.1:' + binding.rsplit(':', 1)[1]
+
+            base = published_base()
 
             def request(path, value=None, token=None):
                 headers = {'Content-Type': 'application/json'}
@@ -110,12 +114,25 @@ def main():
             assert status == 200 and browser['access_token'] != rotated['access_token']
             assert request('/api/hosted/auth/handoff/consume', {'code': handoff['code']})[0] == 401
             docker('restart', name)
+            base = published_base()
             ready()
+            docker('exec', name, 'quarry-server', 'healthcheck')
             assert request('/api/db/platform', token=browser['access_token'])[0] == 200
             assert request('/api/hosted/auth/logout', {'refresh_token': rotated['refresh_token']})[0] == 200
             assert request('/api/db/platform', token=rotated['access_token'])[0] == 401
             assert request('/api/db/platform', token=browser['access_token'])[0] == 200
             print('PASS: real Linux image loader, configured-port health, GUI, login, ACL, read-only querying, rotation, handoff, restart persistence and logout')
+        except BaseException:
+            # Collect startup/health diagnostics before deleting only this run's
+            # disposable container. Never inspect unrelated or user containers.
+            for command in (
+                ['docker', 'inspect', '--format', '{{json .State}} {{json .NetworkSettings.Ports}}', name],
+                ['docker', 'logs', '--tail', '100', name],
+            ):
+                result = subprocess.run(command, text=True, capture_output=True)
+                print('Image acceptance diagnostic:', ' '.join(command), file=sys.stderr)
+                print(result.stdout + result.stderr, file=sys.stderr)
+            raise
         finally:
             subprocess.run(['docker', 'rm', '--force', name], capture_output=True)
             subprocess.run(['docker', 'volume', 'rm', volume], capture_output=True)
