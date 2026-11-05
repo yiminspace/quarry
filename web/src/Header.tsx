@@ -4,7 +4,7 @@ import { VoyageToolbar } from "@yiminlab/voyage/react";
 import { useEffect, useRef, useState } from "react";
 import { fetchHealth, keepAliveDown, keepAliveUp } from "./api";
 import { t, LANG, toggleLang } from "./i18n";
-import { useConnStore } from "./store/connStore";
+import { defaultEnvFor, useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 import UpdatePanel from "./UpdatePanel";
 import WhatsNewPanel from "./WhatsNewPanel";
@@ -36,6 +36,7 @@ export default function Header() {
   const groups = useConnStore((s) => s.groups);
   const checking = useConnStore((s) => s.checking);
   const keepAlive = useConnStore((s) => s.keepAlive);
+  const cloudStatus = useConnStore((s) => s.cloudStatus);
   const updateInfo = useUiStore((s) => s.updateInfo);
   const whatsNew = useUiStore((s) => s.whatsNew);
   const setWhatsNew = useUiStore((s) => s.setWhatsNew);
@@ -63,7 +64,7 @@ export default function Header() {
       const worker = async (): Promise<void> => {
         while (i < items.length) {
           const it = items[i++];
-          const env = it.envs.find((e) => e.env === "dev")?.env ?? it.envs[0]?.env ?? "";
+          const env = defaultEnvFor(it);
           try {
             const d = await fetchHealth(it.db, env, { fresh: true });
             setHealth(it.db, !!d.ok, d.error);
@@ -105,6 +106,9 @@ export default function Header() {
       </button>
       <span className="vg-sp sp" />
       <PlatformStatus />
+      {cloudStatus && <span className={`vg-badge badge ${cloudStatus === "connected" ? "ok" : "err"}`} data-testid="cloud-status" role="status">
+        {t(`cloud_${cloudStatus}`)}
+      </span>}
       <button
         className={`vg-badge badge keeper-control ${kaState === "up" ? "ok" : kaState === "down" ? "err" : ""}`}
         style={{ display: PLATFORM_MODE ? "none" : undefined }}

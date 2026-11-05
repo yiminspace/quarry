@@ -1,4 +1,5 @@
 //! Local HTTP workbench. The library facade is separate from transport DTOs.
+mod native;
 use crate::service::{Failure, Host, Result};
 use axum::{
     Json, Router,
@@ -11,6 +12,9 @@ use axum::{
     },
     routing::any,
 };
+pub(crate) use native::NativeWorkbench;
+use native::cloud_id;
+pub use native::{CloudBackend, NativeHistory};
 use quarry_core::QueryRequest;
 use quarry_runtime::QueryStore;
 use serde_json::{Value, json};
@@ -31,6 +35,7 @@ pub struct WebState {
     pub assistant: Arc<quarry_assistant::AssistantService>,
     pub port: u16,
     pub shutdown: quarry_core::CancellationToken,
+    pub(crate) native: Option<Arc<NativeWorkbench>>,
 }
 trait FailureResponse {
     fn into_response(self) -> Response;
@@ -100,7 +105,48 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
     let uri = req.uri().clone();
     let path = uri.path();
     if method == axum::http::Method::GET && !path.starts_with("/api/") {
-        return static_file(path);
+        return static_file(path, state.native.as_deref());
+    }
+    if let Some(native) = &state.native {
+        if req
+            .headers()
+            .get("sec-fetch-site")
+            .is_some_and(|site| site == "same-site")
+        {
+            return native::session_required().into_response();
+        }
+        if path == "/api/workbench/session" && method == axum::http::Method::POST {
+            let code = match to_bytes(req.into_body(), 256).await {
+                Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
+                Err(_) => None,
+            };
+            return match code
+                .as_ref()
+                .and_then(|value| value["code"].as_str())
+                .ok_or_else(native::session_required)
+                .and_then(|code| native.establish(code, state.port))
+            {
+                Ok(cookie) => (
+                    StatusCode::NO_CONTENT,
+                    [
+                        (header::SET_COOKIE, cookie),
+                        (header::CACHE_CONTROL, "no-store".into()),
+                    ],
+                )
+                    .into_response(),
+                Err(error) => error.into_response(),
+            };
+        }
+        if !native.authorized(req.headers(), state.port) {
+            return native::session_required().into_response();
+        }
+        if path == "/api/workbench/session" && method == axum::http::Method::GET {
+            return (
+                StatusCode::NO_CONTENT,
+                [(header::CACHE_CONTROL, "no-store")],
+            )
+                .into_response();
+        }
     }
     let query: BTreeMap<String, String> =
         url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
@@ -110,7 +156,13 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
         return events(state);
     }
     let body = if method == axum::http::Method::POST {
-        match to_bytes(req.into_body(), 262_144).await {
+        let limit = if state.native.is_some() && path == "/api/personal" {
+            // Allow the full SQLite document plus the value/revision envelope.
+            quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES + 128
+        } else {
+            262_144
+        };
+        match to_bytes(req.into_body(), limit).await {
             Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
                 Ok(value) if value.is_object() => value,
                 Ok(_) => return Failure::invalid("Request must be an object").into_response(),
@@ -161,7 +213,7 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
         Err(error) => error.into_response(),
     }
 }
-fn static_file(path: &str) -> Response {
+fn static_file(path: &str, native: Option<&NativeWorkbench>) -> Response {
     if path == "/" || path == "/index.html" || path == "/quarry" {
         return (
             StatusCode::TEMPORARY_REDIRECT,
@@ -185,6 +237,18 @@ fn static_file(path: &str) -> Response {
         decoded.as_ref()
     };
     match UI.get_file(relative) {
+        Some(file) if native.is_some() && relative == "index.html" => {
+            let scope = native.unwrap().storage_scope();
+            let html = String::from_utf8_lossy(file.contents())
+                .replacen("<head>", &format!("<head><meta name=\"quarry-mode\" content=\"native\"><meta name=\"quarry-workbench-scope\" content=\"{scope}\">"), 1);
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CACHE_CONTROL, "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("X-Frame-Options", "DENY")
+                .body(Body::from(html))
+                .unwrap()
+        }
         Some(file) => Response::builder()
             .header(
                 header::CONTENT_TYPE,
@@ -294,11 +358,26 @@ async fn get(state: &WebState, path: &str, q: &BTreeMap<String, String>) -> Resu
     let host = &state.host;
     match path {
         "/api/version" => Ok(json!({"name":"Quarry","version":env!("CARGO_PKG_VERSION")})),
-        "/api/connections" => host.connections().await,
+        "/api/connections" => {
+            let local = host.connections().await?;
+            match &state.native {
+                Some(native) => Ok(native.connections(local).await),
+                None => Ok(local),
+            }
+        }
+        "/api/history" if state.native.is_some() => {
+            state.native.as_ref().unwrap().history.read().await
+        }
+        "/api/personal" if state.native.is_some() => {
+            state.native.as_ref().unwrap().history.workbench(None).await
+        }
         "/api/workspaces" => host.workspaces(),
         "/api/queries" => queries(host),
         "/api/tables" | "/api/columns" | "/api/health" | "/api/conninfo" | "/api/inspect" => {
             let db = arg(q, "db").ok_or_else(|| Failure::invalid("Missing database"))?;
+            if let (Some(native), Some(id)) = (&state.native, cloud_id(arg(q, "env"))) {
+                return native.get(path, id, q).await;
+            }
             let record = host.resolve(db, arg(q, "env"), arg(q, "workspace").map(Path::new))?;
             if path == "/api/conninfo" {
                 return host.info(&record, arg(q, "reveal") == Some("1"));
@@ -369,15 +448,36 @@ async fn update_info(host: &Host) -> Result<Value> {
 async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
     let host = &state.host;
     match path {
+        "/api/personal" if state.native.is_some() => {
+            state
+                .native
+                .as_ref()
+                .unwrap()
+                .history
+                .workbench(Some(body))
+                .await
+        }
         "/api/query" => {
-            let record = host.resolve(
-                req(&body, "db")?,
-                body["env"].as_str(),
-                body["workspace"].as_str().map(Path::new),
-            )?;
-            let mut request = QueryRequest::new(req(&body, "sql")?);
+            let db = req(&body, "db")?;
+            let env = body["env"].as_str();
+            let sql = req(&body, "sql")?;
+            let request_id = body["requestId"].as_str();
+            if let (Some(native), Some(id)) = (&state.native, cloud_id(env)) {
+                let result = native.post(path, id, body.clone()).await?;
+                native
+                    .history
+                    .record(db, env, sql, result["requestId"].as_str().or(request_id))
+                    .await;
+                return Ok(result);
+            }
+            let record = host.resolve(db, env, body["workspace"].as_str().map(Path::new))?;
+            let mut request = QueryRequest::new(sql);
             pagination(&body, &mut request)?;
-            Ok(host.execute(&record, request).await?.to_legacy_json())
+            let result = host.execute(&record, request).await?.to_legacy_json();
+            if let Some(native) = &state.native {
+                native.history.record(db, env, sql, request_id).await;
+            }
+            Ok(result)
         }
         "/api/run" => {
             let store = QueryStore::new(host.catalog()?);
@@ -393,7 +493,7 @@ async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
                     body["workspace"].as_str().map(Path::new),
                 )?
             };
-            let record = host.resolve_related(&query.db, body["env"].as_str(), &query.workspace)?;
+            let env = body["env"].as_str();
             let params: BTreeMap<String, String> = body["params"]
                 .as_object()
                 .map(|v| {
@@ -409,15 +509,55 @@ async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let params = query.parameters(&params)?;
+            if let (Some(native), Some(id)) = (&state.native, cloud_id(env)) {
+                let resource = native.resource(id)?;
+                let sql = resource.saved_sql(&query.db, &query.sql, &params)?;
+                let mut out = native.post("/api/query", id, json!({"sql":sql,"maxRows":body["maxRows"],"offset":body["offset"],"requestId":body["requestId"]})).await?;
+                native
+                    .history
+                    .record(&query.db, env, &query.sql, out["requestId"].as_str())
+                    .await;
+                // Match local execution's parameter privacy at browser persistence boundaries.
+                if !params.is_empty() {
+                    out["sql"] = json!(query.sql);
+                }
+                out["db"] = json!(query.db);
+                out["env"] = json!(env);
+                return Ok(out);
+            }
+            let record = host.resolve_related(&query.db, env, &query.workspace)?;
             let mut request = QueryRequest::new(&query.sql);
-            request.parameters = query.parameters(&params)?;
+            request.parameters = params;
             pagination(&body, &mut request)?;
             let mut out = host.execute(&record, request).await?.to_legacy_json();
             out["db"] = json!(record.logical_db());
             out["env"] = json!(record.display_env());
+            if let Some(native) = &state.native {
+                native
+                    .history
+                    .record(
+                        record.logical_db(),
+                        record.display_env(),
+                        out["sql"].as_str().unwrap_or(&query.sql),
+                        body["requestId"].as_str(),
+                    )
+                    .await;
+            }
             Ok(out)
         }
+        "/api/cancel" if state.native.is_some() => {
+            let native = state.native.as_ref().unwrap();
+            let id = cloud_id(body["env"].as_str())
+                .ok_or_else(|| Failure::invalid("Missing cloud query target"))?
+                .to_owned();
+            req(&body, "requestId")?;
+            native.post(path, &id, body).await
+        }
         "/api/record-link" => {
+            if let (Some(native), Some(id)) = (&state.native, cloud_id(body["env"].as_str())) {
+                return native.post(path, id, body.clone()).await;
+            }
             let record = host.resolve(req(&body, "db")?, body["env"].as_str(), None)?;
             Ok(host
                 .metadata(
@@ -705,6 +845,7 @@ mod native_http_tests {
                 assistant,
                 port: 8765,
                 shutdown: quarry_core::CancellationToken::new(),
+                native: None,
             },
         )
     }
@@ -758,6 +899,130 @@ mod native_http_tests {
         assert_eq!(result.0, 200);
         assert_eq!(result.1["rowCount"], 3);
         assert_eq!(result.1["env"], Value::Null);
+    }
+    #[tokio::test]
+    async fn cloud_saved_query_sends_parameters_but_keeps_them_out_of_personal_sql() {
+        struct TestCloud;
+        #[async_trait::async_trait]
+        impl CloudBackend for TestCloud {
+            async fn request(
+                &self,
+                _method: &str,
+                path: &str,
+                _pairs: &[(&str, String)],
+                body: Option<Value>,
+            ) -> Result<Value> {
+                match path {
+                    "/api/platform" => Ok(json!({"resources":[
+                        {"id":"notes-dev","project":"demo","db":"notes","env":"dev","engine":"sqlite","production":true}
+                    ]})),
+                    "/api/query" => {
+                        let body = body.unwrap();
+                        assert_eq!(body["resourceId"], "notes-dev");
+                        assert_eq!(body["sql"], "SELECT 'private-value'");
+                        Ok(json!({"sql":body["sql"],"requestId":"saved-run"}))
+                    }
+                    _ => panic!("Unexpected cloud path"),
+                }
+            }
+        }
+        let (dir, mut state) = fixture();
+        let native = NativeWorkbench::new(
+            Arc::new(TestCloud),
+            NativeHistory::new(
+                dir.path().join("personal.sqlite3"),
+                "cloud".into(),
+                "owner".into(),
+            ),
+        );
+        native
+            .connections(state.host.connections().await.unwrap())
+            .await;
+        state.native = Some(native.clone());
+        std::fs::create_dir_all(dir.path().join("queries")).unwrap();
+        std::fs::write(
+            dir.path().join("queries/private.sql"),
+            "-- @name: private\n-- @db: notes\n-- @param: key (text)\nSELECT :'key'\n",
+        )
+        .unwrap();
+        let output = post(
+            &state,
+            "/api/run",
+            json!({
+                "name":"private","env":"cloud:notes-dev","params":{"key":"private-value"}
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output["sql"], "SELECT :'key'");
+        let history = native.history.read().await.unwrap();
+        assert_eq!(history["history"][0]["sql"], "SELECT :'key'");
+    }
+    #[tokio::test]
+    async fn native_personal_http_preserves_sqlite_document_budget_and_revision() {
+        struct UnusedCloud;
+        #[async_trait::async_trait]
+        impl CloudBackend for UnusedCloud {
+            async fn request(
+                &self,
+                _method: &str,
+                _path: &str,
+                _pairs: &[(&str, String)],
+                _body: Option<Value>,
+            ) -> Result<Value> {
+                panic!("Personal storage must work offline");
+            }
+        }
+
+        let (dir, mut state) = fixture();
+        let native = NativeWorkbench::new(
+            Arc::new(UnusedCloud),
+            NativeHistory::new(
+                dir.path().join("personal.sqlite3"),
+                "local".into(),
+                "owner".into(),
+            ),
+        );
+        let launch = native.launch_url("http://localhost:8765/quarry/");
+        let code = launch.split_once("#quarry_workbench=").unwrap().1;
+        let session = native.establish(code, state.port).unwrap();
+        let cookie = session.split_once(';').unwrap().0;
+        state.native = Some(native);
+        let app = router(state);
+        let save = |revision: u64, value: Value| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/personal")
+                    .header("host", "localhost:8765")
+                    .header("cookie", cookie)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"value":value,"revision":revision}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+        };
+        let budget = quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES;
+        let overhead = json!({"values":{"draft":""}}).to_string().len();
+        let limit = budget - overhead;
+        let document = |size| json!({"values":{"draft":"x".repeat(size)}});
+
+        assert_eq!(
+            save(0, document(limit)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let oversized = save(1, document(limit + 1)).await.unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = oversized.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["code"],
+            "too_large"
+        );
+        assert_eq!(
+            save(1, document(32)).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
     async fn send(
         state: &WebState,

@@ -104,30 +104,19 @@ to the platform endpoints that handle them.
 Private-network HTTP verification requires explicit `allow_insecure_http: true`;
 public connections should use HTTPS.
 
-## Personal records stay on the user's computer
+## Hosted and local workbenches
 
-The server owns connections, access grants and query execution. Drafts, tabs,
-history, bounded result caches, assistant conversations, generated SQL and restore
-points live in the user's local SQLite, shared with the CLI.
+The hosted web workbench shows the cloud connections authorized for the signed-in
+account. Drafts and SQL history stay in that account's browser storage. Query
+results remain in the current page. A previously cached shell can reopen for
+editing when the network is unavailable.
 
-An optional desktop client starts a loopback companion and opens the paired
-workbench. See the [desktop integration example](ylab-integration.md), or use
-the Rust SDK to provide a companion for your own platform. Bind it to the hosted
-origin, current account, and local SQLite path, and pair with a one-use code.
-The handoff code travels only in the URL fragment and is removed before requests;
-long-lived Bearer tokens never travel in URLs. Local capabilities remain bound
-to the platform, account and origin, with expiry and revocation and no arbitrary
-filesystem access.
-
-With the local service disconnected, remote querying and editing remain usable;
-a bounded browser recovery copy protects pending work. Reconnection retries
-saving automatically. Revision conflicts keep the current draft and require an
-explicit export/restore choice rather than overwriting another record.
-Reconnecting never executes SQL, starts a database or synchronizes schema.
-
-A previously loaded and cached shell can reopen offline; the first visit still
-needs to load the assets. Shared SQL, cloud personal history and cross-device
-synchronization are outside this release.
+An embedding client can open the complete workbench on localhost. It combines
+local workspaces with the cloud catalog, runs locally configured connections as
+usual, and forwards cloud operations to the hosted service. Drafts and execution
+history are stored in local SQLite. See the [YLab integration](ylab-integration.md).
+The hosted server keeps the managed connection configuration and verifies
+authorization for every cloud operation.
 
 ## Assistant and acceptance
 
@@ -139,7 +128,7 @@ context to the gateway. The deployment owns its platform logging/retention polic
 
 Release acceptance covers a real container and persistent volume, administrator
 login/refresh/logout, external IAM and resource denial, real read-only queries,
-cancellation, automatic companion SQLite writes and outage recovery, and the
+cancellation, local SQLite persistence and offline restart, and the
 standalone CLI/GUI/MCP regression suite. Mock previews and successful builds are
 separate evidence, not substitutes.
 

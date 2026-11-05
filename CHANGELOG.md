@@ -7,6 +7,10 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Open the full local Quarry workbench from YLab with managed cloud connections alongside existing workspaces. Cloud connections are labeled by source and keep their credentials on the server.
+- Use the hosted workbench directly with cloud-only connections and account-scoped browser drafts and SQL history.
+- Keep the native workbench's full SQLite save budget and prioritize drafts when cached query results would exceed it.
+
 ## [2.0.1] - 2026-11-05
 
 - Keep the SQL assistant pinned to the latest reply when a queued scroll event arrives as the reply grows.

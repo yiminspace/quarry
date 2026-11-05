@@ -15,6 +15,7 @@ quarry-core = { path = "../../crates/quarry-core" }
 quarry-runtime = { path = "../../crates/quarry-runtime" }
 quarry-local = { path = "../../crates/quarry-local" }
 quarry-assistant = { path = "../../crates/quarry-assistant" }
+quarry-platform = { path = "../../crates/quarry-platform" }
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

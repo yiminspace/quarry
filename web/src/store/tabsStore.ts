@@ -1,8 +1,8 @@
-import { PLATFORM_MODE, displayEnvironment, personalStorage } from "../platform";
+import { PLATFORM_MODE, personalStorage } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
-import { useConnStore } from "./connStore";
+import { displayConnectionEnvironment, useConnStore } from "./connStore";
 
 export type TabId = string;
 
@@ -278,7 +278,7 @@ export function tabTitle(tab: Tab): string {
   if (tab.title) return tab.title;
   const sql = tab.sql.trim();
   if (sql) return parseMainTable(sql) ?? sql.split(/\s+/).slice(0, 2).join(" ");
-  if (tab.db) return tab.db + (tab.env ? `@${displayEnvironment(tab.db, tab.env)}` : "");
+  if (tab.db) return tab.db + (tab.env ? `@${displayConnectionEnvironment(tab.db, tab.env)}` : "");
   return t("new_query");
 }
 

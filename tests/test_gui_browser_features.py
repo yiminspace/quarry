@@ -4125,6 +4125,160 @@ def _select_sqlite(page):
     page.locator('#tbl-panel [data-t="entries"]').wait_for()
 
 
+def _route_native_cloud_catalog(page, cloud_status, *, configured_dev=True):
+    def catalog(route):
+        data = route.fetch().json()
+        data["cloudStatus"] = cloud_status["value"]
+        notes = next(item for group in data["groups"] for item in group["items"] if item["db"] == "notes")
+        if not configured_dev:
+            notes["envs"] = [env for env in notes["envs"] if env["env"] != "dev"]
+        if cloud_status["value"] == "connected":
+            notes["envs"].append({
+                "env": "cloud:notes-dev", "display_env": "dev", "source": "cloud",
+                "key": "cloud:notes-dev", "resourceId": "notes-dev", "engine": "sqlite",
+                "region": None, "ssh": False, "proxied": False, "production": True,
+            })
+        route.fulfill(json=data)
+
+    page.route("**/api/connections", catalog)
+
+
+def test_native_cloud_source_separates_same_name_targets_and_cancel(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    _route_native_cloud_catalog(page, {"value": "connected"})
+    queries = []
+    held_queries = []
+    cancellations = []
+
+    def query(route):
+        body = route.request.post_data_json
+        queries.append(body)
+        if body["env"] != "cloud:notes-dev":
+            route.continue_()
+        elif "hold_query" in body["sql"]:
+            held_queries.append(route)
+        else:
+            route.fulfill(json={
+                "columns": [{"name": "note", "type": None}], "rows": [{"note": "cloud reply"}],
+                "rowCount": 1, "truncated": False, "elapsedMs": 1, "engine": "sqlite",
+                "sql": body["sql"], "downloadBytes": 32, "sizeIsEstimated": False,
+            })
+
+    def cancel(route):
+        cancellations.append(route.request.post_data_json)
+        route.fulfill(json={"cancelled": True})
+
+    def tables(route):
+        if parse_qs(urlparse(route.request.url).query).get("env") == ["cloud:notes-dev"]:
+            route.fulfill(json={"engine": "sqlite", "tables": ["cloud_entries"], "capped": False})
+        else:
+            route.continue_()
+
+    def conninfo(route):
+        if parse_qs(urlparse(route.request.url).query).get("env") == ["cloud:notes-dev"]:
+            route.fulfill(json={"engine": "sqlite"})
+        else:
+            route.continue_()
+
+    def health(route):
+        if parse_qs(urlparse(route.request.url).query).get("env") == ["cloud:notes-dev"]:
+            route.fulfill(json={"ok": True})
+        else:
+            route.continue_()
+
+    page.route("**/api/query", query)
+    page.route("**/api/cancel", cancel)
+    page.route("**/api/tables?*", tables)
+    page.route("**/api/conninfo?*", conninfo)
+    page.route("**/api/health?*", health)
+    page.reload(wait_until="networkidle")
+    _select_sqlite(page)
+    local = page.locator('#esw [data-env="dev"]')
+    cloud = page.locator('#esw [data-env="cloud:notes-dev"]')
+    expect(local).to_have_text("dev")
+    expect(cloud.locator(".cloud-source-badge")).to_have_text("Cloud")
+    expect(page.locator("#wsBtn")).to_be_visible()
+    expect(page.locator("#kaBadge")).to_be_visible()
+    expect(page.get_by_test_id("cloud-status")).to_have_text("Cloud: connected")
+    expect(page.get_by_test_id("assistant-open")).to_be_enabled()
+    _run_sql(page, "select note from entries where id = 1")
+    expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
+
+    cloud.click()
+    expect(page.get_by_test_id("assistant-open")).to_be_disabled()
+    expect(page.get_by_test_id("assistant-open")).to_have_attribute(
+        "title", "The local SQL assistant is available for locally configured connections.")
+    expect(page.locator('#tbl-panel [data-t="cloud_entries"]')).to_be_visible()
+    expect(page.locator("#runModeBtn")).to_have_attribute("data-auto", "false")
+    assert len(queries) == 1
+    _run_sql(page, "select 'cloud reply' as note")
+    expect(page.locator('#grid td[data-v="cloud reply"]')).to_be_visible()
+    expect(page.locator("#statusTarget")).to_contain_text("@dev · Cloud")
+    page.locator("#ciBtn").click()
+    expect(page.locator("#cibody")).to_contain_text("This connection is managed on the server.")
+    expect(page.locator("#ciEye, #ciCopy, #ciUp, #ciSync")).to_have_count(0)
+    page.keyboard.press("Escape")
+
+    _set_sql(page, "select 'hold_query' as note")
+    page.locator("#runBtn").click()
+    cancel_button = page.get_by_test_id("cancel-platform-query")
+    expect(cancel_button).to_be_visible()
+    cancel_button.click()
+    expect(cancel_button).to_have_count(0)
+    assert [body["env"] for body in queries] == ["dev", "cloud:notes-dev", "cloud:notes-dev"]
+    assert cancellations == [{"db": "notes", "env": "cloud:notes-dev", "requestId": queries[-1]["requestId"]}]
+    held_queries[0].fulfill(json={
+        "columns": [{"name": "note", "type": None}], "rows": [{"note": "cancelled response"}],
+        "rowCount": 1, "truncated": False, "elapsedMs": 1, "engine": "sqlite",
+        "sql": queries[-1]["sql"], "downloadBytes": 32, "sizeIsEstimated": False,
+    })
+    expect(page.locator('#grid td[data-v="cloud reply"]')).to_be_visible()
+    local.click()
+    expect(page.locator("#sql")).to_have_value("select note from entries where id = 1")
+    expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
+    assert len(queries) == 3
+
+
+def test_native_cloud_outage_preserves_drafts_and_local_queries(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    cloud_status = {"value": "connected"}
+    _route_native_cloud_catalog(page, cloud_status, configured_dev=False)
+    queries = []
+    page.on("request", lambda request: queries.append(request.post_data_json)
+            if request.method == "POST" and request.url.endswith("/api/query") else None)
+    page.route("**/api/tables?*cloud%3Anotes-dev*", lambda route: route.fulfill(
+        json={"engine": "sqlite", "tables": ["cloud_entries"], "capped": False}))
+    page.reload(wait_until="networkidle")
+    _select_sqlite(page)
+    expect(page.locator('#esw .ep.on')).to_have_attribute("data-env", "local")
+    cloud = page.locator('#esw [data-env="cloud:notes-dev"]')
+    cloud.click()
+    expect(page.locator('#tbl-panel [data-t="cloud_entries"]')).to_be_visible()
+    _set_sql(page, "select 'keep cloud draft' as note")
+
+    cloud_status["value"] = "unavailable"
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(page.get_by_test_id("cloud-status")).to_have_text("Cloud: unavailable")
+    expect(cloud).to_have_count(0)
+    expect(page.locator("#sql")).to_have_value("select 'keep cloud draft' as note")
+    assert not queries
+
+    _select_sqlite(page)
+    _run_sql(page, "select note from entries where id = 1")
+    expect(page.locator('#grid td[data-v="local note 1"]')).to_be_visible()
+    assert [request["env"] for request in queries] == ["local"]
+    cloud_status["value"] = "connected"
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(cloud).to_be_visible()
+    cloud.click()
+    expect(page.locator("#sql")).to_have_value("select 'keep cloud draft' as note")
+    assert len(queries) == 1
+
+
 def test_sqlite_browse_structure_quoted_tables_and_file_info(page_sqlite, tmp_path):
     page = page_sqlite
     _select_sqlite(page)
@@ -6175,16 +6329,13 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
             ctx.close()
 
 
-# Hosted UI contract tests use the built bundle with explicit platform marker.
-# Network fixtures exercise browser behavior; Rust platform tests cover IAM/CAS.
+# Hosted UI contract tests use the built bundle with the platform marker.
+# Network fixtures exercise browser behavior; Rust platform tests cover IAM and ACLs.
 def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False):
-    state = {'online': online, 'queries': [], 'documents': {}, 'paired': False,
-             'local_requests': [], 'assistant_requests': [], 'operations': [], 'refreshes': 0}
+    state = {'online': online, 'queries': [], 'local_requests': [],
+             'assistant_requests': [], 'operations': [], 'refreshes': 0}
     remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
                   engine=engine, production=True)
-    local = dict(id='local-notes', project='lab', db='notes', env='local',
-                 engine=engine, production=False, sourceResourceId='remote-notes')
-    state['local_resource'] = local
     page.add_init_script("""(() => {
       // Route-backed platform fixtures do not cover worker fetches. The genuine
       // offline-shell test below runs a real service worker against static HTML.
@@ -6204,62 +6355,32 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
     def api(route):
         request = route.request
         parsed = urlparse(request.url)
-        companion = parsed.port == 18766
         path = parsed.path.replace('/api/db/', '/api/', 1)
-        headers = {'Access-Control-Allow-Origin': urlparse(page.url).scheme + '://' + urlparse(page.url).netloc,
-                   'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Quarry-Companion-Token,X-Quarry-User-Id',
-                   'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'}
-        if request.method == 'OPTIONS':
-            route.fulfill(status=204, headers=headers)
-            return
         body = request.post_data_json if request.method == 'POST' else {}
-        account = request.headers.get('x-quarry-user-id') or request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
-        if companion:
-            state['local_requests'].append((path, request.headers))
-        if companion and state.get('local_offline'):
-            route.fulfill(status=503, json={'error': 'local unavailable'}, headers=headers)
+        account = request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
+        if path in ('/api/pair', '/api/unpair', '/api/personal') or path.startswith('/api/local/'):
+            state['local_requests'].append(request.url)
+            route.abort()
             return
-        if not companion and not state['online']:
-            route.fulfill(status=503, json={'error': {'message': 'remote unavailable'}}, headers=headers)
+        if not state['online']:
+            route.fulfill(status=503, json={'error': {'message': 'remote unavailable'}})
             return
         if path == '/api/iam/auth/refresh':
             if state.get('refresh_error'):
-                route.fulfill(status=503, json={'error': {'code': 'unavailable', 'message': 'Cloud authentication unavailable'}}, headers=headers)
+                route.fulfill(status=503, json={'error': {'code': 'unavailable', 'message': 'Cloud authentication unavailable'}})
                 return
             state['refreshes'] += 1
             value = {'access_token': 'alpha-rotated', 'refresh_token': 'alpha-next-refresh', 'expires_in': 3600, 'user': {'id': 'alpha'}}
-        elif companion and path in state.get('cloud_failures', {}):
+        elif path in state.get('cloud_failures', {}):
             status = state['cloud_failures'][path]
-            route.fulfill(status=status, json={'error': {'code': 'forbidden' if status == 403 else 'unavailable', 'message': 'Cloud operation unavailable'}}, headers=headers)
+            route.fulfill(status=status, json={'error': {'code': 'forbidden' if status == 403 else 'unavailable', 'message': 'Cloud operation unavailable'}})
             return
-        elif companion and state.get('expired_live_iam') and path in ('/api/schema/import', '/api/assistant/chat', '/api/pair') and request.headers.get('authorization') == 'Bearer alpha-token':
-            route.fulfill(status=401, json={'error': 'IAM token expired'}, headers=headers)
+        elif state.get('expired_live_iam') and path == '/api/assistant/chat' and request.headers.get('authorization') == 'Bearer alpha-token':
+            route.fulfill(status=401, json={'error': 'IAM token expired'})
             return
         elif path == '/api/platform':
-            value = {'mode': 'companion' if companion else 'hosted', 'principal': {'id': account},
-                     'capabilities': {'assistant': True}, 'resources': [local if companion else remote], 'personalStorage': 'companion'}
-        elif path == '/api/pair':
-            assert body['code'] == 'pair-fixture'
-            state['paired'] = True
-            value = {'token': 'local-capability'}
-        elif path == '/api/unpair':
-            state['paired'] = False
-            value = {'revoked': True}
-        elif path == '/api/personal':
-            if request.method == 'GET':
-                args = parse_qs(parsed.query)
-                kind, key = args['kind'][0], args['key'][0]
-            else:
-                kind, key = body['kind'], body['key']
-            identity = (account, kind, key)
-            stored = state['documents'].get(identity, {'value': None, 'revision': 0})
-            if request.method == 'POST':
-                if body['revision'] != stored['revision']:
-                    route.fulfill(status=409, json={'error': 'revision conflict'}, headers=headers)
-                    return
-                stored = {'value': body['value'], 'revision': stored['revision'] + 1}
-                state['documents'][identity] = stored
-            value = stored
+            value = {'mode': 'hosted', 'principal': {'id': account},
+                     'capabilities': {'assistant': True}, 'resources': [remote]}
         elif path == '/api/tables':
             value = {'engine': 'sqlite', 'tables': ['entries'], 'capped': False}
         elif path == '/api/columns':
@@ -6267,16 +6388,16 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
         elif path == '/api/health':
             value = {'ok': True}
         elif path == '/api/query':
-            state['queries'].append((companion, body))
+            state['queries'].append(body)
             if state.get('hold_query'):
                 state['held_query'] = route
                 return
-            value = {'columns': [{'name': 'value', 'type': 'INTEGER'}], 'rows': [{'value': 22 if companion else 11}],
+            value = {'columns': [{'name': 'value', 'type': 'INTEGER'}], 'rows': [{'value': 11}],
                      'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite', 'sql': body['sql'],
                      'downloadBytes': 12, 'sizeIsEstimated': True}
             if state.get('large_result'):
-                value['rows'] = [{'value': 'x' * 220000}]
-                value['downloadBytes'] = 220000
+                value['rows'] = [{'value': 'x' * 600000}]
+                value['downloadBytes'] = 600000
         elif path == '/api/assistant/config':
             value = {'configured': True, 'model': 'fixture'}
         elif path == '/api/assistant/chat':
@@ -6290,28 +6411,23 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
                       dict(type='done', conversation=conversation)]
             stream = '\n'.join(json.dumps(dict(event, requestId=body['requestId'], conversationId=conversation['id'])) for event in events) + '\n'
             if state.get('hold_assistant'):
-                state['held_assistant'] = (route, headers, stream)
+                state['held_assistant'] = (route, stream)
                 return
-            route.fulfill(content_type='application/x-ndjson', headers=headers, body=stream)
+            route.fulfill(content_type='application/x-ndjson', body=stream)
             return
-        elif path == '/api/schema/import':
-            state['operations'].append((path, body))
-            # The real companion resolves its target through resourceId before
-            # checking the source binding; accepting an alias masks a broken UI.
-            if body.get('resourceId') != local['id'] or body.get('sourceResourceId') != remote['id']:
-                route.fulfill(status=400, json={'error': 'Explicit matching source and Local resource required'}, headers=headers)
-                return
-            value = {'ok': True}
-        elif path in ('/api/local/up', '/api/local/down', '/api/cancel'):
+        elif path == '/api/cancel':
             state['operations'].append((path, body))
             value = {'ok': True}
         else:
-            route.fulfill(status=404, json={'error': f'unsupported fixture route {path}'}, headers=headers)
+            route.fulfill(status=404, json={'error': f'unsupported fixture route {path}'})
             return
-        route.fulfill(json=value, headers=headers)
+        route.fulfill(json=value)
     page.route('**/api/db/**', api)
     page.route('**/api/iam/auth/refresh', api)
-    page.route('http://127.0.0.1:18766/**', api)
+    def unexpected_loopback(route):
+        state['local_requests'].append(route.request.url)
+        route.abort()
+    page.route('http://127.0.0.1:18766/**', unexpected_loopback)
     origin = urlparse(page.url)
     # Changing the query forces a new document, as in a CLI-opened browser tab;
     # changing only the fragment would keep the fixture's standalone document.
@@ -6406,12 +6522,11 @@ def test_hosted_update_check_failure_leaves_workbench_usable(page_sqlite):
     expect(page.locator('#sql')).to_have_value('select 22 as update_unavailable')
 
 
-def _pair_workbench(page):
-    # The CLI opens a fresh document with a one-use local launch fragment.
-    base = page.url.split('?')[0].split('#')[0]
-    page.goto(base + '?auto-connect=1#quarry_local=http%3A%2F%2F127.0.0.1%3A18766&quarry_code=pair-fixture', wait_until='networkidle')
-    page.wait_for_function("document.querySelector('[data-testid=companion-status]')?.textContent.includes('Connected')")
-    assert not page.get_by_role('dialog').is_visible()
+def _browser_records(page):
+    return page.evaluate('''() => {
+      const key = 'qy_platform:' + JSON.stringify([location.origin, 'alpha']) + ':recovery';
+      return JSON.parse(localStorage.getItem(key))?.values || {};
+    }''')
 
 
 def test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries(page_sqlite):
@@ -6419,7 +6534,7 @@ def test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries
     state = _hosted_workbench(page, online=False)
     page.locator('#sql').fill('select 42 as offline_draft')
     assert page.locator('[data-testid="remote-status"]').text_content() == 'Remote: Disconnected'
-    assert page.locator('[data-testid="personal-storage-status"]').text_content() == 'Personal changes are only in browser recovery'
+    assert page.locator('[data-testid="personal-storage-status"]').text_content() == 'History and drafts stay in this browser'
     page.reload(wait_until='networkidle')
     assert page.locator('#sql').input_value() == 'select 42 as offline_draft'
     assert not state['queries']
@@ -6432,60 +6547,49 @@ def test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries
     assert not state['queries']
 
 
-def test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution(page_sqlite):
+def test_platform_cloud_query_history_stays_in_browser(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
     page.locator('.dbrow[data-db="lab/notes"]').click()
     page.locator('#sql').fill('select 11 as remote_value')
     page.locator('#runBtn').click()
     page.wait_for_function("document.querySelector('#grid').textContent.includes('11')")
-    _pair_workbench(page)
-    assert state['paired']
-    page.locator('.ep').filter(has_text='Local').click()
-    page.locator('#sql').fill('select 22 as local_value')
-    page.locator('#runBtn').click()
-    page.wait_for_function("document.querySelector('#grid').textContent.includes('22')")
-    assert state['queries'][-1][0] is True
-    assert state['queries'][-1][1]['resourceId'] == 'local-notes'
-    page.locator('.ep').filter(has_text='prod').click()
-    page.wait_for_function("document.querySelector('#grid').textContent.includes('11')")
+    page.reload(wait_until='networkidle')
+    page.locator('#histBtn').click()
+    assert page.locator('#hlist').get_by_text('select 11 as remote_value', exact=True).is_visible()
+    page.keyboard.press('Escape')
     assert page.locator('#sql').input_value() == 'select 11 as remote_value'
-    assert len(state['queries']) == 2
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    history = state['documents'][('alpha', 'query-history', 'entries')]['value']
-    assert {entry['resourceId'] for entry in history} == {'remote-notes', 'local-notes'}
-    assert all(headers.get('x-quarry-user-id') == 'alpha' for path, headers in state['local_requests'] if path != '/api/pair')
-    state['online'] = False
-    if page.locator('.platform-connection').get_attribute('open') is None:
-        page.locator('.platform-connection summary').click()
-    page.evaluate("window.dispatchEvent(new Event('online'))")
-    page.wait_for_function("document.querySelector('[data-testid=remote-status]').textContent.includes('Disconnected')")
-    assert 'Connected' in page.locator('[data-testid="companion-status"]').text_content()
-    assert page.locator('#sql').input_value() == 'select 11 as remote_value'
-    assert len(state['queries']) == 2
+    assert state['queries'][0]['resourceId'] == 'remote-notes'
+    assert 'qy_tabres' not in _browser_records(page)
+    assert len(state['queries']) == 1
+    assert not state['local_requests']
+
+    # Clearing browser records does not fetch any durable history from the server.
+    page.evaluate("Object.keys(localStorage).filter(key => key.startsWith('qy_platform:')).forEach(key => localStorage.removeItem(key))")
+    page.reload(wait_until='networkidle')
+    page.locator('#histBtn').click()
+    assert page.locator('#hlist').get_by_text('select 11 as remote_value', exact=True).count() == 0
+    assert not state['local_requests']
+    assert len(state['queries']) == 1
 
 
 def test_platform_background_reconnect_preserves_draft_without_query_replay(page_sqlite):
     page = page_sqlite
-    state = _hosted_workbench(page)
-    _pair_workbench(page)
-    state['local_offline'] = True
-    page.locator('#sql').fill('select 55 as keep_during_local_disconnect')
-    page.wait_for_function("document.querySelector('[data-testid=companion-status]').textContent.includes('Disconnected')")
-    state['local_offline'] = False
-    # No click or reload: the periodic background retry saves the pending draft.
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')", timeout=15000)
-    assert page.locator('#sql').input_value() == 'select 55 as keep_during_local_disconnect'
+    state = _hosted_workbench(page, online=False)
+    page.locator('#sql').fill('select 55 as keep_during_cloud_disconnect')
+    assert page.get_by_test_id('remote-status').text_content() == 'Remote: Disconnected'
+    state['online'] = True
+    # No click or reload: the periodic retry refreshes the authorized directory.
+    page.wait_for_function("document.querySelector('[data-testid=remote-status]').textContent === 'Remote: Connected'", timeout=15000)
+    assert page.locator('#sql').input_value() == 'select 55 as keep_during_cloud_disconnect'
     assert not state['queries']
-    assert not page.get_by_role('dialog').is_visible()
-    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
-    assert 'keep_during_local_disconnect' in json.dumps(document)
+    assert not state['local_requests']
+    assert 'keep_during_cloud_disconnect' in json.dumps(_browser_records(page))
 
 
-def test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store(page_sqlite):
+def test_platform_assistant_conversation_proposal_restore_stays_in_browser(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
-    _pair_workbench(page)
     page.locator('.dbrow[data-db="lab/notes"]').click()
     page.locator('#sql').fill('select 7 as original')
     page.get_by_role('button', name='Open SQL assistant', exact=True).click()
@@ -6495,9 +6599,7 @@ def test_platform_assistant_conversation_proposal_restore_stays_in_local_persona
     assert not state['queries']
     page.get_by_test_id('assistant-restore').click()
     page.wait_for_function("document.querySelector('#sql').value === 'select 7 as original'")
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
-    conversations = json.loads(document['values']['qy_assistant_conversations'])
+    conversations = json.loads(_browser_records(page)['qy_assistant_conversations'])
     assert next(iter(conversations.values()))['sql'] == 'select 7 as original'
     assert len(next(iter(conversations.values()))['checkpoints']) == 1
     assert state['assistant_requests'][0]['resourceId'] == 'remote-notes'
@@ -6508,44 +6610,30 @@ def test_platform_assistant_conversation_proposal_restore_stays_in_local_persona
     assert not state['queries']
 
 
-def test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload(page_sqlite, tmp_path):
+def test_platform_browser_storage_failure_preserves_and_exports_draft(page_sqlite, tmp_path):
     page = page_sqlite
     state = _hosted_workbench(page)
-    _pair_workbench(page)
-    page.locator('#sql').fill('select 1 as first_saved')
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    stored = state['documents'][('alpha', 'workbench', 'workspace')]
-    stored['revision'] += 1
-    page.locator('#sql').fill('select 2 as unsynced_conflict')
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('conflict')")
-    assert page.locator('.platform-connection summary').inner_text().strip() == 'Local save conflict'
-    assert 'err' in page.locator('.platform-connection summary').get_attribute('class').split()
-    assert page.locator('#sql').input_value() == 'select 2 as unsynced_conflict'
+    page.evaluate('''() => {
+      const write = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith('qy_platform:')) throw new DOMException('Full', 'QuotaExceededError');
+        return write.call(this, key, value);
+      };
+    }''')
+    page.locator('#sql').fill('select 2 as unsaved_browser_draft')
     _open_platform_status(page)
+    page.get_by_text('Browser storage is unavailable. Keep this page open or export recovery.').wait_for()
+    assert page.locator('#sql').input_value() == 'select 2 as unsaved_browser_draft'
     with page.expect_download() as download:
         page.get_by_role('button', name='Export personal recovery', exact=True).click()
     target = tmp_path / 'recovery.json'
     download.value.save_as(target)
     recovery = json.loads(target.read_text())
-    assert any(tab['sql'] == 'select 2 as unsynced_conflict' for tab in json.loads(recovery['values']['qy_tabs']))
-    page.once('dialog', lambda dialog: dialog.accept())
-    page.get_by_role('button', name='Load local personal records', exact=True).click()
-    page.wait_for_function("document.querySelector('#sql')?.value === 'select 1 as first_saved'")
+    assert any(tab['sql'] == 'select 2 as unsaved_browser_draft' for tab in json.loads(recovery['values']['qy_tabs']))
     assert not state['queries']
+    assert not state['local_requests']
 
 
-def test_platform_cli_history_is_loaded_from_same_local_document(page_sqlite):
-    page = page_sqlite
-    state = _hosted_workbench(page)
-    _pair_workbench(page)
-    state['documents'][('alpha', 'query-history', 'entries')] = {'revision': 1, 'value': [
-        {'id': 'cli-run', 'resourceId': 'remote-notes', 'sql': 'select 123 as from_cli', 'createdAt': int(time.time() * 1000),
-         'target': {'project': 'lab', 'db': 'notes', 'env': 'prod', 'placement': 'remote'}}]}
-    page.reload(wait_until='networkidle')
-    page.locator('#histBtn').click()
-    page.get_by_text('select 123 as from_cli', exact=True).click()
-    assert page.locator('#sql').input_value() == 'select 123 as from_cli'
-    assert not state['queries']
 
 
 def test_platform_cancel_query_never_repaints_grid_from_late_response(page_sqlite):
@@ -6559,7 +6647,7 @@ def test_platform_cancel_query_never_repaints_grid_from_late_response(page_sqlit
     page.get_by_test_id('cancel-platform-query').click()
     page.get_by_test_id('cancel-platform-query').wait_for(state='hidden')
     assert state['operations'][-1][0] == '/api/cancel'
-    assert state['operations'][-1][1]['requestId'] == state['queries'][0][1]['requestId']
+    assert state['operations'][-1][1]['requestId'] == state['queries'][0]['requestId']
     state['held_query'].fulfill(json={'columns': [{'name': 'late', 'type': 'INTEGER'}], 'rows': [{'late': 999}],
         'rowCount': 1, 'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite', 'sql': 'select 1 as slow_result',
         'downloadBytes': 12, 'sizeIsEstimated': True})
@@ -6653,7 +6741,7 @@ def test_platform_cached_shell_reopens_with_entire_network_offline(page_sqlite, 
         page.locator('#sql').wait_for(state='visible')
         assert page.locator('#sql').input_value() == 'select 271 as edited_fully_offline'
         assert 'Disconnected' in page.get_by_test_id('remote-status').text_content()
-        assert 'browser recovery' in page.get_by_test_id('personal-storage-status').text_content()
+        assert page.get_by_test_id('personal-storage-status').text_content() == 'History and drafts stay in this browser'
     finally:
         page.context.set_offline(False)
         server.shutdown()
@@ -6746,69 +6834,32 @@ def test_platform_offline_icon_font_keeps_version_query_and_rejects_other_querie
         thread.join(timeout=5)
 
 
-def test_platform_offline_result_queue_is_bounded_and_reconnect_saves_all_sql(page_sqlite):
+def test_platform_browser_storage_keeps_sql_without_oversize_results(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
     state['large_result'] = True
     page.locator('.dbrow[data-db="lab/notes"]').click()
-    for index in range(10):
+    for index in range(3):
         page.locator('#sql').fill(f'select {index} as large_result')
-        page.locator('#runBtn').click()
-        page.wait_for_function("""expected => {
-          const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
-          const value = key && JSON.parse(localStorage.getItem(key));
-          return value?.values?.qy_pending_query_history && JSON.parse(value.values.qy_pending_query_history).length === expected;
-        }""", arg=index + 1)
+        with page.expect_response('**/api/db/query'):
+            page.locator('#runBtn').click()
     page.locator('#sql').fill('select 77 as latest_protected_draft')
-    recovery = page.evaluate("""() => {
-      const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
-      return JSON.parse(localStorage.getItem(key));
-    }""")
-    pending = json.loads(recovery['values']['qy_pending_query_history'])
-    assert len(pending) == 10
-    assert sum(len(json.dumps(entry.get('result'))) for entry in pending) <= 1_500_000
-    assert all(entry['sql'] == f'select {index} as large_result' for index, entry in enumerate(pending))
-    _pair_workbench(page)
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    records = _browser_records(page)
+    history = json.loads(records['qy_hist'])
+    assert {entry['sql'] for entry in history} >= {f'select {index} as large_result' for index in range(3)}
+    assert len(json.dumps(records)) < 2_000_000
+    assert 'qy_tabres' not in records
+    page.reload(wait_until='networkidle')
     assert page.locator('#sql').input_value() == 'select 77 as latest_protected_draft'
-    history = state['documents'][('alpha', 'query-history', 'entries')]['value']
-    assert len(history) == 10
-    assert len(json.dumps(state['documents'][('alpha', 'workbench', 'workspace')]['value'])) < 16 * 1024 * 1024
-    assert len(state['queries']) == 10
+    assert len(state['queries']) == 3
+    assert not state['local_requests']
 
 
-def test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_old_device(page_sqlite):
-    page = page_sqlite
-    state = _hosted_workbench(page)
-    _pair_workbench(page)
-    page.locator('.dbrow[data-db="lab/notes"]').click()
-    page.locator('.ep').filter(has_text='Local').click()
-    page.locator('#sql').fill('select 1 as first_device')
-    page.locator('#runBtn').click()
-    page.wait_for_function("document.querySelector('#grid').textContent.includes('22')")
-    state['local_resource']['id'] = 'second-device-notes'
-    page.evaluate("window.dispatchEvent(new Event('online'))")
-    page.wait_for_function("!!document.querySelector('.ep[data-env=\"local:second-device-notes\"]')")
-    assert page.locator('#sql').input_value() == 'select 1 as first_device'
-    page.locator('.ep[data-env="local:second-device-notes"]').click()
-    assert not page.locator('#status').is_visible()
-    assert len(state['queries']) == 1
-    page.locator('#sql').fill('select 2 as second_device_draft')
-    recovery = page.evaluate("""() => {
-      const key = Object.keys(localStorage).find(key => key.startsWith('qy_platform:') && key.endsWith(':recovery'));
-      return JSON.parse(localStorage.getItem(key));
-    }""")
-    tabs = json.loads(recovery['values']['qy_tabs'])
-    assert any(tab['env'] == 'local:local-notes' and tab['sql'] == 'select 1 as first_device' for tab in tabs)
-    assert any(tab['env'] == 'local:second-device-notes' and tab['sql'] == 'select 2 as second_device_draft' for tab in tabs)
-    results = json.loads(recovery['values']['qy_tabres'])
-    assert any(result and result['env'] == 'local:local-notes' and result['res']['rows'] == [{'value': 22}] for result in results)
 
 
 def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
-    _pair_workbench(page)
     page.locator('.dbrow[data-db="lab/notes"]').click()
     page.locator('#sql').fill('select 1 as initial_before_stream')
     state['hold_assistant'] = True
@@ -6818,9 +6869,8 @@ def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen
     page.get_by_test_id('assistant-stream').wait_for()
     page.locator('#sql').fill('select 88 as manual_during_stream')
     page.get_by_role('button', name='Hide SQL assistant', exact=True).click()
-    route, headers, stream = state['held_assistant']
-    route.fulfill(content_type='application/x-ndjson', headers=headers, body=stream)
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
+    route, stream = state['held_assistant']
+    route.fulfill(content_type='application/x-ndjson', body=stream)
     assert page.locator('#sql').input_value() == 'select 88 as manual_during_stream'
     page.locator('#tabs [aria-selected="true"] .x').click()
     page.locator('#histBtn').click()
@@ -6833,9 +6883,7 @@ def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen
     page.get_by_test_id('assistant-restore').click()
     page.wait_for_function("document.querySelector('#sql').value === 'select 88 as manual_during_stream'")
     page.get_by_test_id('assistant-restored').wait_for()
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    document = state['documents'][('alpha', 'workbench', 'workspace')]['value']
-    conversation = next(iter(json.loads(document['values']['qy_assistant_conversations']).values()))
+    conversation = next(iter(json.loads(_browser_records(page)['qy_assistant_conversations']).values()))
     assert conversation['sql'] == 'select 88 as manual_during_stream'
     assert len(conversation['checkpoints']) == 1
     assert not state['queries']
@@ -6844,7 +6892,6 @@ def test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen
 def test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql(page_sqlite):
     page = page_sqlite
     state = _hosted_workbench(page)
-    _pair_workbench(page)
     page.locator('.dbrow[data-db="lab/notes"]').click()
     page.locator('#sql').fill('select 1 as before_cancelled_stream')
     state['hold_assistant'] = True
@@ -6854,7 +6901,6 @@ def test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql(pa
     page.get_by_test_id('assistant-stream').wait_for()
     page.locator('#sql').fill('select 66 as manual_before_tab_close')
     page.locator('#tabs [aria-selected="true"] .x').click()
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
     if page.locator('#emptyNewTab').is_visible():
         page.locator('#emptyNewTab').click()
     page.locator('#histBtn').click()
@@ -6865,25 +6911,21 @@ def test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql(pa
 
 
 @pytest.mark.parametrize('cloud_action,status', [('assistant', 403), ('assistant-refresh', 401)])
-def test_platform_cloud_failure_does_not_disconnect_paired_local_history(page_sqlite, cloud_action, status):
+def test_platform_cloud_failure_does_not_lose_browser_history(page_sqlite, cloud_action, status):
     page = page_sqlite
     state = _hosted_workbench(page, engine='postgres')
-    _pair_workbench(page)
-    state['cloud_failures'] = {'/api/assistant/chat' if cloud_action.startswith('assistant') else '/api/schema/import': status}
+    state['cloud_failures'] = {'/api/assistant/chat': status}
     state['refresh_error'] = cloud_action == 'assistant-refresh'
     page.locator('.dbrow[data-db="lab/notes"]').click()
-    page.locator('.ep').filter(has_text='Local').click()
-    page.locator('#sql').fill('select 1 as local_model_denied')
+    page.locator('#sql').fill('select 1 as cloud_model_denied')
     page.get_by_role('button', name='Open SQL assistant', exact=True).click()
     page.get_by_test_id('assistant-input').fill('Generate a query')
     page.get_by_test_id('assistant-input').press('Enter')
     page.get_by_test_id('assistant-panel').get_by_role('alert').wait_for()
-    assert 'Connected' in page.get_by_test_id('companion-status').text_content()
     page.locator('#sql').fill('select 55 as personal_history_still_available')
-    page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-    stored = state['documents'][('alpha', 'workbench', 'workspace')]['value']
-    assert any(tab['sql'] == 'select 55 as personal_history_still_available' for tab in json.loads(stored['values']['qy_tabs']))
-    assert state['paired']
+    assert any(tab['sql'] == 'select 55 as personal_history_still_available'
+               for tab in json.loads(_browser_records(page)['qy_tabs']))
+    assert not state['local_requests']
     assert not state['queries']
 
 
@@ -6892,12 +6934,13 @@ def test_platform_status_follows_language_toggle_without_connection_controls(pag
     _hosted_workbench(page)
     _open_platform_status(page)
     assert page.get_by_test_id('remote-status').text_content() == 'Remote: Connected'
-    assert page.get_by_test_id('companion-status').text_content() == 'Local: Disconnected'
+    assert page.get_by_test_id('companion-status').count() == 0
+    assert page.get_by_test_id('personal-storage-status').text_content() == 'History and drafts stay in this browser'
     assert page.get_by_test_id('platform-status').get_by_role('button').count() == 0
     page.locator('.vg-lang-switch').click()
     page.locator('.platform-connection summary[aria-label="工作台连接状态"]').wait_for()
     assert page.get_by_test_id('remote-status').text_content() == '远程：已连接'
-    assert page.get_by_test_id('companion-status').text_content() == '本机：未连接'
+    assert page.get_by_test_id('personal-storage-status').text_content() == '历史和草稿仅保留在当前浏览器'
     assert not page.get_by_role('dialog').is_visible()
 
 
@@ -6905,7 +6948,7 @@ def test_platform_header_connection_badge_and_group_relative_labels(page_sqlite)
     page = page_sqlite
     state = _hosted_workbench(page)
     badge = page.locator('header .platform-connection summary')
-    assert badge.inner_text().strip() == 'Workbench: partly connected'
+    assert badge.inner_text().strip() == 'Workbench: connected'
     assert not page.get_by_role('button', name='Connect local', exact=True).is_visible()
     row = page.locator('.dbrow[data-db="lab/notes"]')
     assert row.locator('.db-name').inner_text() == 'notes'
@@ -6919,35 +6962,28 @@ def test_platform_header_connection_badge_and_group_relative_labels(page_sqlite)
     page.locator('#sql').fill('select 42 as unchanged_identity')
     page.locator('#runBtn').click()
     page.wait_for_function("document.querySelector('#grid')?.textContent.includes('11')")
-    assert state['queries'][-1][1]['resourceId'] == 'remote-notes'
+    assert state['queries'][-1]['resourceId'] == 'remote-notes'
 
 
-@pytest.mark.parametrize('valid', [True, False])
-def test_platform_cli_launch_pairs_without_form_and_clears_fragment(page_sqlite, valid):
-    from urllib.parse import urlencode
+def test_platform_cloud_only_discards_legacy_companion_launch_and_saved_pairing(page_sqlite):
     page = page_sqlite
-    local = 'http://127.0.0.1:18766' if valid else 'https://example.com'
-    state = _hosted_workbench(page, launch_fragment='#' + urlencode({
-        'quarry_local': local, 'quarry_code': 'pair-fixture'}))
-    assert 'quarry_code' not in page.url
-    assert 'pair-fixture' not in page.url
+    page.evaluate('''() => {
+      const key = 'qy_platform:' + JSON.stringify([location.origin, 'alpha']) + ':pairing';
+      localStorage.setItem(key, JSON.stringify({url: 'http://127.0.0.1:18766', token: 'old-token'}));
+    }''')
+    state = _hosted_workbench(page, launch_fragment='#quarry_local=http%3A%2F%2F127.0.0.1%3A18766&quarry_code=old-code')
+    assert not page.evaluate('location.hash')
+    assert not page.evaluate("Object.keys(localStorage).some(key => key.endsWith(':pairing'))")
     assert not state['queries']
-    assert not page.get_by_role('dialog').is_visible()
+    assert not state['local_requests']
     _open_platform_status(page)
-    assert page.get_by_role('button', name='Connect local', exact=True).count() == 0
+    assert page.get_by_test_id('companion-status').count() == 0
     assert page.get_by_role('button', name='Local database management', exact=True).count() == 0
     assert page.get_by_label('Pairing code', exact=True).count() == 0
     assert page.get_by_label('Local address', exact=True).count() == 0
-    if valid:
-        assert state['paired']
-        assert page.locator('.platform-connection summary').inner_text().strip() == 'Workbench: connected'
-        page.locator('#sql').fill('select 42 as auto_connected_draft')
-        page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-        assert 'auto_connected_draft' in json.dumps(list(state['documents'].values()))
-    else:
-        assert not state['paired']
-        assert not state['local_requests']
-
+    page.locator('#sql').fill('select 42 as browser_only_draft')
+    assert 'browser_only_draft' in json.dumps(_browser_records(page))
+    assert not state['local_requests']
 
 
 def _official_hosted_config(page, *, mode='builtin', refresh='/api/hosted/auth/refresh'):
@@ -6988,7 +7024,7 @@ def test_platform_official_builtin_login_failure_success_and_logout(page_sqlite)
     page.locator('#sql').fill('select 11 as official_image_query')
     page.locator('#runBtn').click()
     page.wait_for_function("document.querySelector('#grid')?.textContent.includes('11')")
-    assert state['queries'][-1][1]['resourceId'] == 'remote-notes'
+    assert state['queries'][-1]['resourceId'] == 'remote-notes'
     _open_platform_status(page)
     page.get_by_role('button', name='Sign out', exact=True).click()
     page.get_by_role('heading', name='Sign in to Quarry', exact=True).wait_for()
@@ -7006,12 +7042,9 @@ def test_platform_external_runtime_session_and_configured_refresh(page_sqlite):
     page.route('**/api/company/refresh', lambda route: (refreshes.append(route.request.post_data_json), route.fulfill(json={
         'access_token': 'alpha-rotated', 'refresh_token': 'alpha-next', 'expires_in': 3600, 'user': {'id': 'alpha'}})))
     state = _hosted_workbench(page)
-    _pair_workbench(page)
     state['expired_live_iam'] = True
-    # The local companion's cloud-bound assistant request refreshes this runtime's
-    # session, without changing its separate local capability or account identity.
+    # A cloud request refreshes the configured session without touching the Console session.
     page.locator('.dbrow[data-db="lab/notes"]').click()
-    page.locator('.ep').filter(has_text='Local').click()
     page.get_by_role('button', name='Open SQL assistant', exact=True).click()
     page.get_by_test_id('assistant-input').fill('Generate a query')
     page.get_by_test_id('assistant-input').press('Enter')
@@ -7042,14 +7075,13 @@ def test_platform_builtin_cli_handoff_opens_fresh_browser_without_login_form(pag
     assert not state['queries']
     if valid:
         assert page.get_by_role('heading', name='Sign in to Quarry', exact=True).count() == 0
-        assert state['paired']
         assert page.locator('.platform-connection > summary').inner_text().strip() == 'Workbench: connected'
-        page.locator('#sql').fill('select 42 as handoff_local_document')
-        page.wait_for_function("document.querySelector('[data-testid=personal-storage-status]').textContent.includes('saved locally')")
-        assert 'handoff_local_document' in json.dumps(list(state['documents'].values()))
+        page.locator('#sql').fill('select 42 as handoff_browser_document')
+        assert not state['local_requests']
+        assert 'handoff_browser_document' in json.dumps(_browser_records(page))
     else:
         page.get_by_text('The automatic sign-in link expired or belongs to another account. Run ylab db connect again.', exact=True).wait_for()
-        assert not state['paired']
+        assert not state['local_requests']
         assert page.get_by_label('Pairing code', exact=True).count() == 0
 
 
@@ -7103,4 +7135,201 @@ def test_platform_builtin_handoff_never_replaces_another_browser_account(page_sq
     assert saved['user']['id'] == 'beta'
     assert saved['access_token'] == 'beta-token'
     assert not state['queries']
-    assert not state['paired']
+    assert not state['local_requests']
+
+
+def _native_personal_workbench(page, *, unavailable=False, launch_code=None):
+    state = {'revision': 0, 'value': None, 'unavailable': unavailable, 'writes': [], 'launches': []}
+
+    def document(route):
+        if route.request.resource_type != 'document':
+            route.continue_()
+            return
+        response = route.fetch()
+        route.fulfill(response=response, body=response.text().replace(
+            '<head>', '<head><meta name="quarry-mode" content="native">'
+            '<meta name="quarry-workbench-scope" content="native-fixture">', 1))
+
+    def personal(route):
+        if route.request.method == 'GET' and state['unavailable']:
+            route.fulfill(status=503, json={'error': 'Storage unavailable'})
+            return
+        if route.request.method == 'POST':
+            body = route.request.post_data_json
+            state['writes'].append(body)
+            if body['revision'] != state['revision']:
+                route.fulfill(status=409, json={'error': 'Revision conflict'})
+                return
+            state['revision'] += 1
+            state['value'] = body['value']
+        route.fulfill(json={'revision': state['revision'], 'value': state['value']})
+
+    def session(route):
+        if route.request.method == 'POST':
+            state['launches'].append(route.request.post_data_json)
+        route.fulfill(status=204)
+
+    page.route('**/quarry/**', document)
+    page.route('**/api/workbench/session', session)
+    page.route('**/api/personal', personal)
+    if launch_code:
+        page.evaluate("code => location.hash = 'quarry_workbench=' + code", launch_code)
+    page.reload(wait_until='domcontentloaded')
+    _select_sqlite(page)
+    return state
+
+
+def test_native_workbench_records_reopen_from_sqlite_without_browser_records(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page, launch_code='one-use-fixture')
+    assert state['launches'] == [{'code': 'one-use-fixture'}]
+    assert '#quarry_workbench=' not in page.url
+    sql = 'select 12 as saved_native_draft'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(sql)
+    assert any(tab['sql'] == sql for tab in json.loads(state['value']['values']['qy_tabs']))
+    page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    assert not page.get_by_test_id('native-records-status').count()
+    page.evaluate("localStorage.clear(); sessionStorage.clear();")
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=sql)
+    assert len(state['launches']) == 1
+
+
+def _large_native_personal_workbench(page, saved_key):
+    # Keep the simulated legacy document in the browser so Playwright does not
+    # transfer it over the test-control channel during the app's fetch timeout.
+    page.add_init_script("""
+      (() => {
+        const savedKey = __SAVED_KEY__;
+        const limit = 16 * 1024 * 1024;
+        const text = '界'.repeat(Math.floor(limit / 3) - 10000);
+        const legacy = JSON.stringify(savedKey === 'qy_hist' ? ['-- ' + text] : { cached_rows: text });
+        let revision = 0;
+        let value = { values: { [savedKey]: legacy, qy_tabres: '[]' } };
+        const writes = window.nativeRecordWrites = [];
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (url, options) => {
+          if (url !== '/api/personal') return originalFetch(url, options);
+          if (options?.method !== 'POST') return Response.json({ revision, value });
+          const body = JSON.parse(options.body);
+          const bytes = new TextEncoder().encode(JSON.stringify(body.value)).length;
+          const values = body.value.values;
+          const ok = bytes <= limit && body.revision === revision;
+          writes.push({
+            sql: JSON.parse(values.qy_tabs ?? '[]')[Number(values.qy_ati ?? 0)]?.sql,
+            retained: values[savedKey] === legacy,
+            hasResults: Object.hasOwn(values, 'qy_tabres') || Object.hasOwn(values, 'qy_result'),
+            revision: body.revision,
+            bytes,
+            ok,
+          });
+          if (!ok) return Response.json({}, { status: bytes > limit ? 413 : 409 });
+          value = body.value;
+          return Response.json({ revision: ++revision });
+        };
+      })();
+    """.replace("__SAVED_KEY__", json.dumps(saved_key)))
+    _native_personal_workbench(page)
+
+
+def _wait_for_large_native_save(page, sql):
+    page.wait_for_function("sql => window.nativeRecordWrites.some(w => w.sql === sql)", arg=sql)
+    return page.evaluate("sql => window.nativeRecordWrites.find(w => w.sql === sql)", sql)
+
+
+def test_native_workbench_large_save_prioritizes_drafts_over_results(page_sqlite):
+    page = page_sqlite
+    _large_native_personal_workbench(page, 'qy_result')
+    editor = page.locator('#sql')
+    sql = 'select 13 as compatible_large_document'
+    editor.fill(sql)
+    compatible = _wait_for_large_native_save(page, sql)
+    assert compatible['ok'] and compatible['retained'] and compatible['bytes'] > 2 * 1024 * 1024
+
+    sql = 'select 14 -- ' + '界' * 15_000
+    editor.fill(sql)
+    trimmed = _wait_for_large_native_save(page, sql)
+    assert trimmed['ok'] and not trimmed['hasResults']
+    assert editor.input_value() == sql
+
+
+def test_native_workbench_oversized_draft_can_resume_saving(page_sqlite):
+    page = page_sqlite
+    _large_native_personal_workbench(page, 'qy_hist')
+    editor = page.locator('#sql')
+    sql = 'select 15 as save_before_oversize'
+    editor.fill(sql)
+    previous = _wait_for_large_native_save(page, sql)
+    assert previous['ok'] and previous['retained']
+    previous_writes = page.evaluate("window.nativeRecordWrites.length")
+
+    sql = 'select 16 -- ' + '界' * 15_000
+    editor.fill(sql)
+    page.get_by_test_id('native-records-status').click()
+    page.get_by_text('Workbench records exceed 16 MiB. Shorten drafts or export recovery before closing.', exact=True).wait_for()
+    assert page.evaluate("window.nativeRecordWrites.length") == previous_writes
+    assert editor.input_value() == sql
+    assert sql in page.evaluate("sessionStorage.getItem('qy_native:native-fixture:recovery')")
+
+    shorter_sql = 'select 17 as retry_after_shrinking'
+    editor.fill(shorter_sql)
+    retried = _wait_for_large_native_save(page, shorter_sql)
+    assert retried['ok'] and retried['retained']
+    assert retried['revision'] == previous['revision'] + 1
+    page.get_by_test_id('native-records-status').wait_for(state='detached')
+
+
+def test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page, unavailable=True)
+    sql = 'select 19 as retained_after_failed_read'
+    page.locator('#sql').fill(sql)
+    page.get_by_test_id('native-records-status').click()
+    page.get_by_text('Cannot access saved workbench records. Your changes are held for recovery.', exact=True).wait_for()
+    assert sql in page.evaluate("localStorage.getItem('qy_native:native-fixture:recovery')")
+    assert not state['writes']
+    state['unavailable'] = False
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.reload(wait_until='domcontentloaded')
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=sql)
+    assert any(sql in body['value']['values']['qy_tabs'] for body in state['writes'])
+
+
+def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    saved_sql = 'select 20 as saved_elsewhere'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(saved_sql)
+    page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
+
+    state['revision'] += 1
+    unsaved_sql = 'select 21 as current_draft'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.status == 409):
+        page.locator('#sql').fill(unsaved_sql)
+    page.get_by_test_id('native-records-status').click()
+    page.get_by_text('Another window saved newer records. Your changes are held for recovery.', exact=True).wait_for()
+    assert page.locator('#sql').input_value() == unsaved_sql
+
+    # Another window writes its own recovery to the shared browser slot.
+    other = page.evaluate("""() => {
+      const key = 'qy_native:native-fixture:recovery';
+      const saved = JSON.parse(sessionStorage.getItem(key));
+      saved.values.qy_tabs = saved.values.qy_tabs.replace('current_draft', 'other_window_draft');
+      const serialized = JSON.stringify(saved);
+      localStorage.setItem(key, serialized);
+      return serialized;
+    }""")
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=unsaved_sql)
+    page.get_by_test_id('native-records-status').click()
+    with page.expect_download() as download:
+        page.get_by_role('button', name='Export personal recovery', exact=True).click()
+    assert unsaved_sql in download.value.path().read_text()
+    page.once('dialog', lambda dialog: dialog.accept())
+    page.get_by_role('button', name='Load saved workbench', exact=True).click()
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=saved_sql)
+    assert not page.get_by_test_id('native-records-status').count()
+    assert page.evaluate("localStorage.getItem('qy_native:native-fixture:recovery')") == other
+    assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))

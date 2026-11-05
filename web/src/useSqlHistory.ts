@@ -1,5 +1,5 @@
 import { personalStorage } from "./platform";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type HistEntry = { sql: string; db: string | null; env: string | null; ts: number };
 
@@ -64,7 +64,36 @@ function unshift(prev: HistEntry[], sql: string, db: string | null, env: string 
  * become silently unreachable the moment `hiRef` resets.
  */
 export function useSqlHistory() {
-  const [history, setHistory] = useState<HistEntry[]>(() => readHistory());
+  const [browserHistory, setHistory] = useState<HistEntry[]>(() => readHistory());
+  const [executionHistory, setExecutionHistory] = useState<HistEntry[]>([]);
+  useEffect(() => {
+    if (document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") !== "native") return;
+    const controller = new AbortController();
+    async function reload() {
+      try {
+        const response = await fetch("/api/history", { cache: "no-store", signal: controller.signal });
+        if (!response.ok) return;
+        const entries: unknown = (await response.json()).history;
+        if (Array.isArray(entries)) setExecutionHistory(entries.map(normalizeEntry).filter((entry): entry is HistEntry => entry !== null));
+      } catch { /* Local browser drafts remain available. */ }
+    }
+    void reload();
+    window.addEventListener("focus", reload);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", reload);
+    };
+  }, []);
+  const history = useMemo(() => {
+    if (!executionHistory.length) return browserHistory;
+    const seen = new Set<string>();
+    return [...browserHistory, ...executionHistory].sort((a, b) => b.ts - a.ts).filter((entry) => {
+      const key = JSON.stringify([entry.db, entry.env, entry.sql]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, MAX_ENTRIES);
+  }, [browserHistory, executionHistory]);
   const hiRef = useRef(-1);
   const draftRef = useRef("");
   const draftMetaRef = useRef<{ db: string | null; env: string | null }>({ db: null, env: null });

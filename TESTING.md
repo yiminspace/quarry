@@ -290,9 +290,11 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 125 | assistant/saved queries | changing an immutable saved-query template creates an editable draft and leaves the source template intact, without executing either query | F:test_assistant_saved_query_edit_creates_draft_preserves_template | ✅ |
 | 126 | assistant/Markdown | assistant replies render headings, emphasis, lists, inline/fenced code, tables and blockquotes in streams and recovered history; user/system messages stay literal; code examples cannot apply or run SQL; raw HTML, executable/local URLs and remote image requests are blocked; external links open separately; code/tables scroll within a narrow panel; headings use the theme accent and SQL keywords/strings/numbers/comments use distinct theme tokens | F:test_assistant_markdown_formats_reply_and_reopened_history_without_sql_changes, F:test_assistant_markdown_blocks_html_unsafe_urls_and_remote_images, F:test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed, F:test_assistant_markdown_wide_code_and_tables_scroll_inside_narrow_panel, V:test_assistant_markdown_chrome_tracks_theme_tokens | ✅ |
 | 127 | assistant/language | no reply-language controls appear on hover or keyboard focus; the GUI reads the CLI-owned preference and backend-resolved system language, independently of interface language and obsolete localStorage; reopening/focus/visibility/reload reads CLI updates without changing drafts/SQL/history or sending model/query requests; the preference affects GUI replies only | F:test_assistant_has_no_reply_language_settings_on_hover_or_focus, F:test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state, F:test_assistant_reply_language_rereads_cli_and_system_changes, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
+| 128 | native connection sources | a merged cloud environment keeps its human label and Cloud badge even when a configured connection has the same environment name. Workspace settings and Tunnel Keeper remain available. Metadata, execution and cancellation use the distinct cloud route ID; cloud connection info shows no credentials or local administration actions; the local SQL assistant stays available for locally configured connections; each environment restores its own SQL and result | F:test_native_cloud_source_separates_same_name_targets_and_cancel, V:test_native_cloud_badge_uses_theme_tokens | ✅ |
+| 129 | native cloud availability | adding a cloud dev environment preserves the original configured default; focus refresh updates the cloud catalog and status; a temporarily missing cloud target retains its draft and binding without falling back to a local connection; local queries work through the outage and reconnect never replays SQL | F:test_native_cloud_outage_preserves_drafts_and_local_queries | ✅ |
 
 
-### Hosted and companion workbench matrix
+### Hosted workbench matrix
 
 The following rows cover the platform-marked built bundle. Standalone rows above
 continue to apply to standalone mode; hosted mode deliberately excludes workspace
@@ -300,19 +302,19 @@ administration, credential reveal and shared saved-query management.
 
 | # | Area | Feature | Covered by | ✓ |
 |---|------|---------|------------|---|
-| H1 | offline/editor | editor opens with cloud and companion disconnected; drafts use account/origin-scoped recovery and never migrate to another account | F:test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries | ✅ |
-| H2 | targets/results | hosted and paired Local targets use stable resource/placement identity; grid and exports retain active-tab ownership | F:test_platform_remote_and_local_targets_share_ui_but_not_results_or_execution; F:test_platform_switching_companion_device_keeps_old_local_snapshot_bound_to_old_device | ✅ |
-| H3 | connections | background retry restores local saving after an outage without clicks, SQL replay or lost drafts | F:test_platform_background_reconnect_preserves_draft_without_query_replay | ✅ |
-| H4 | assistant | request-scoped remote generation; proposals/apply/restore/reload use companion personal documents, never cloud history or automatic execution | F:test_platform_assistant_conversation_proposal_restore_stays_in_local_personal_store; F:test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen; F:test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql | ✅ |
-| H5 | Local/schema administration | create/stop/schema administration was removed from the hosted GUI; native CLI and backend retain their separate capabilities | native CLI / crates/quarry-platform and quarry-local backend tests; no GUI coverage claimed | ❌ |
-| H6 | personal SQLite | revision conflicts retain the current draft, offer export and explicit reload, and never overwrite another document silently | F:test_platform_personal_cas_conflict_preserves_draft_and_exports_before_reload | ✅ |
-| H7 | shared local history | native CLI and GUI canonical query-history document feeds SQL recall; shared platform SQL remains unavailable | F:test_platform_cli_history_is_loaded_from_same_local_document; F:test_platform_offline_result_queue_is_bounded_and_reconnect_saves_all_sql; ylab native test_database.py | ✅ |
+| H1 | offline/editor | editor reopens with cloud disconnected; browser records use origin/account scope and never load into another account | F:test_platform_disconnected_editor_keeps_account_scoped_draft_without_queries | ✅ |
+| H2 | targets/results | authorized cloud resources use stable IDs; a cloud query and its current result use the hosted API, and the query is recalled from the same browser after reload | F:test_platform_cloud_query_history_stays_in_browser | ✅ |
+| H3 | connections | background retry restores the authorized cloud directory without clicks, SQL replay or lost drafts | F:test_platform_background_reconnect_preserves_draft_without_query_replay | ✅ |
+| H4 | assistant | request-scoped cloud generation; proposals/apply/restore/reload use browser conversation history without automatic execution | F:test_platform_assistant_conversation_proposal_restore_stays_in_browser; F:test_platform_late_assistant_reply_preserves_manual_sql_after_history_reopen; F:test_platform_closing_tab_during_assistant_stream_keeps_latest_manual_sql | ✅ |
+| H5 | Local/schema administration | hosted workbench exposes only cloud resources and no Local administration, pairing, or companion access | F:test_platform_cloud_only_discards_legacy_companion_launch_and_saved_pairing; platform backend tests | ✅ |
+| H6 | browser storage failure | failed browser writes retain current drafts in memory, disclose the failure, and offer explicit recovery export | F:test_platform_browser_storage_failure_preserves_and_exports_draft | ✅ |
+| H7 | browser history | history and drafts stay in this browser, while query rows stay in the open page. Clearing browser storage removes access to those records. Query results do not evict query SQL or the current draft | F:test_platform_cloud_query_history_stays_in_browser; F:test_platform_browser_storage_keeps_sql_without_oversize_results | ✅ |
 | H8 | cancellation | request-ID cancellation and latest-wins suppress a response after cancellation; a delayed cancellation acknowledgement cannot clear a newer query's pending state or discard its result on the same tab | F:test_platform_cancel_query_never_repaints_grid_from_late_response; F:test_platform_late_cancel_ack_preserves_new_query_pending_and_result | ✅ |
-| H9 | status | header keeper-position badge expands status only; no connection or administration dialog; both themes and languages remain covered | V:test_platform_status_chrome_uses_theme_tokens; F:test_platform_status_follows_language_toggle_without_connection_controls | ✅ |
+| H9 | status | header badge shows cloud connection and browser storage only, with no connection or administration dialog. Both themes and languages are covered | V:test_platform_status_chrome_uses_theme_tokens; F:test_platform_status_follows_language_toggle_without_connection_controls | ✅ |
 | H10 | offline assets | previously loaded static shell and versioned bundled icon fonts reopen with the entire network offline, including an existing worker upgrade; actual font responses come from the service worker with HTTP cache disabled; arbitrary asset queries, API and personal responses remain outside CacheStorage | F:test_platform_cached_shell_reopens_with_entire_network_offline; F:test_platform_offline_icon_font_keeps_version_query_and_rejects_other_queries (fresh + existing worker) | ✅ |
-| H11 | IAM refresh | assistant cloud failures and refresh failures keep paired local history usable; native backend tests cover pairing/schema scope and refresh | F:test_platform_cloud_failure_does_not_disconnect_paired_local_history; native platform tests | ✅ |
+| H11 | IAM refresh | assistant cloud denial and refresh failure preserve browser drafts. External refresh uses the configured account session | F:test_platform_cloud_failure_does_not_lose_browser_history; F:test_platform_external_runtime_session_and_configured_refresh | ✅ |
 | H12 | hosted labels | database rows omit the current project prefix, retain full identity in tooltips and dispatch queries to the original resource; connection details are collapsed by default in the header | F:test_platform_header_connection_badge_and_group_relative_labels | ✅ |
-| H13 | automatic connection | CLI launch pairs without forms or dialogs, removes the launch fragment before network calls, rejects non-loopback URLs and never runs SQL; status exposes no connection/admin controls | F:test_platform_cli_launch_pairs_without_form_and_clears_fragment | ✅ |
+| H13 | legacy launch | existing pairing keys and legacy companion fragments are discarded without fetching localhost, displaying pairing UI, or executing SQL | F:test_platform_cloud_only_discards_legacy_companion_launch_and_saved_pairing | ✅ |
 | H14 | hosted sign-in | the image's built-in sign-in handles failed credentials, successful query access and logout; anonymous external mode offers the configured platform login without querying resources | F:test_platform_official_builtin_login_failure_success_and_logout; F:test_platform_external_anonymous_entry_uses_configured_login_link; V:test_platform_builtin_login_chrome_uses_theme_tokens | ✅ |
 | H15 | runtime identity | hosted session keys and refresh paths come from validated same-origin runtime configuration; invalid cross-origin paths fail closed rather than using the Console session | F:test_platform_external_runtime_session_and_configured_refresh; F:test_platform_rejects_cross_origin_runtime_auth_without_using_console_session | ✅ |
 | H16 | browser handoff | fresh built-in CLI handoff enters the connected workbench without credentials in URL requests or a sign-in form; expired handoff stays on sign-in; a different browser account is never replaced | F:test_platform_builtin_cli_handoff_opens_fresh_browser_without_login_form; F:test_platform_builtin_handoff_never_replaces_another_browser_account | ✅ |
@@ -440,8 +442,9 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 
 | Region | Missing capability | Decision |
 |--------|--------------------|----------|
-| platform | shared SQL library and cloud/cross-device personal history sync | explicitly excluded; personal SQLite is on the paired computer |
-| platform/offline | first visit with no cached application assets | application must be downloaded once; cached static shell supports later offline visits |
+| platform | shared SQL library and cloud/cross-device personal history sync | explicitly excluded; hosted records stay in the browser and the native workbench uses local SQLite |
+| hosted/offline | first visit with no cached application assets | application must be downloaded once; cached static shell supports later offline visits |
+| native cloud targets | connection details cannot reveal cloud credentials or configure the remote database; the local schema-sync button and local SQL assistant require a locally configured connection | cloud connections expose provider and reachability. Hosted SQL assistant availability follows the hosted server configuration |
 | SQLite | create/import databases, remote file access, attached databases, schema editing and GUI connection configuration | first release opens configured existing local files; connections remain CLI/TOML managed |
 | editor | autocomplete does not quote reserved/special table names or parse quoted column qualifiers | backlog; table-click previews are dialect-quoted, while these autocomplete cases need manual quoting |
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
@@ -1230,16 +1233,17 @@ upgrade path in addition to pipx. Shared-state: no new store or writer.
 
 For manual inspection, run `make preview-hosted` and open the printed loopback
 URL. It builds the latest assets and serves demo hosted resources without IAM
-credentials. This is UI preview evidence only: SQL returns a fixed demo row;
-the connected demo writes personal documents to disposable SQLite. Add
-`PREVIEW_ARGS='--disconnected'` for browser-only recovery. Real pairing,
-Assistant and backend authorization require separate acceptance.
+credentials. SQL returns a fixed demo row and browser storage retains drafts.
+Add `PREVIEW_ARGS='--disconnected'` to preview cloud unavailability. Assistant
+and backend authorization require separate acceptance.
 
 - Existence: the header connection badge expands remote/local/save status only; covered by F:test_platform_header_connection_badge_and_group_relative_labels and the existing H3/H9 tests. Hosted rows show group-relative labels with full identity in the title.
 - Capability: connection status reuses the standalone keeper position; details remain available without a second full-width toolbar. Existing standalone keeper behavior is unchanged.
 - Shared state: no store keys or state writers changed. Only labels are shortened; selection, query dispatch, result ownership, history and search continue using full database IDs. The browser interaction checks dispatch to the original resource after selecting a shortened label. Theme coverage remains V:test_platform_status_chrome_uses_theme_tokens.
 
-### Automatic local connection and persistence (2026-11-05)
+### Automatic local connection and persistence (2026-11-05, superseded)
+
+This section describes the former cloud-origin companion. See the cloud-only and native workbench audits for the current behavior.
 
 - Existence: one-use `quarry_local`/`quarry_code` launch fragment parameters enter the existing pairing path and are removed before any await (H13). Connection/address/code forms, reconnect/revoke/save-now controls and the combined local administration dialog have been removed. H9 covers the remaining read-only status. Recovery export appears only on errors/conflicts, and explicit reload only on conflicts (H6). H5 honestly records the removed GUI administration capability; backend and CLI capabilities remain separate.
 - Capability: launching from `ylab db connect` connects and saves without a setup interface. A five-second background retry and the browser online event restore failed connections. Remote querying and browser draft recovery remain available without a companion. Connection retry never creates databases, synchronizes schema or executes SQL. Native scope/revocation checks remain enforced.
@@ -1269,3 +1273,87 @@ Assistant and backend authorization require separate acceptance.
 - Existence: the existing scroll and submit handlers and the pin after rendering are covered by rows 121 and 126.
 - Capability: the assistant follows a growing reply from the bottom and leaves the scroll position to a reader who has moved upward. The browser tests exercise both behaviors.
 - Shared state and write sites: the scroll handler and prompt submission write the component's follow flag. The layout effect reads it and writes the message list's scroll position.
+
+### Cloud-only hosted workbench audit
+
+- Existence. The status toggle reports the cloud connection and browser storage
+  (H9). The conditional recovery export is exercised by H6, while sign-in and
+  sign-out still use H14–H16. The existing account/origin-scoped
+  `qy_platform:…:recovery` document stores browser records (H1, H6, H7).
+  Initialization strips the obsolete launch fragment and discards the scoped
+  pairing key (H13). The periodic retry and browser online event only refresh
+  `/api/db/platform` (H3). Hosted resource metadata, queries, cancellation and
+  assistant requests all use the discovered cloud API base (H2, H4, H8, H12).
+- Capability. The hosted sidebar lists authorized cloud resources and the header
+  describes cloud availability. Editor tabs, history, and assistant conversations
+  use browser storage. Active-tab result/export behavior and request identity
+  remain shared with the standalone workbench. The hosted-only limitations for
+  offline first load, local resource access and shared history are in H5, H10 and
+  Design gaps.
+- Shared state. `hydrateBrowserRecords` initializes the hosted document before
+  loading the workbench stores. Every later browser-record change passes through
+  `personalStorage.setItem` or `removeItem`, then `saveBrowserRecords` checks the
+  current account. Tabs, history, assistant conversations and preferences still
+  read the same facade. H1 checks account isolation, H6 checks recovery under a
+  failed write, H7 checks page-only results alongside live drafts, and H4
+  checks assistant checkpoint restoration with manual edits. Only cloud bootstrap
+  replaces the authorized catalog. Reconnection updates status and the sidebar
+  without replaying SQL or changing the editor (H3).
+
+### Native cloud sources audit
+
+- Existence. Rows 128–129 cover the extra environment badge, catalog
+  `cloudStatus` field and native focus listener, source-sensitive connection
+  info, and the new same-origin `/api/cancel` binding. Connection selection,
+  SQL execution, metadata and optional connection fields use the existing
+  `/api/connections`, `/api/query`, `/api/tables`, `/api/conninfo` and health
+  operations. The assistant rail uses the same source field to disable the local assistant for cloud targets without changing tab or conversation state. Deep links and saved runs now carry the request ID through the
+  same execution contract. The source badge does not introduce a storage key.
+- Capability. The native header keeps workspace settings and Tunnel Keeper
+  while reporting cloud status. The environment switcher shows the cloud
+  source even for a database with one environment. Search, history, tabs,
+  the browser title and result status show its display name; the URL carries
+  its route identity. Local configuration remains available in connection
+  info; cloud credential and schema-sync limits are in Design gaps.
+- Shared state. Initial/workspace catalog load and focus refresh are the
+  catalog and cloud-status writers. Only a changed catalog revalidates
+  the selected target. Environment selection, deep links, tab restore and
+  tab switching keep the route ID in connection, tab and result state, and
+  clear the active connection while preserving drafts for missing cloud
+  routes. Run, navigation, metadata, health, assistant context and exports
+  still use that identity; formatting labels never changes it. The same-name
+  browser test checks execution, metadata, separate results and drafts,
+  and a late result after cancellation. The outage test checks that catalog
+  refresh does not replay or retarget the retained draft.
+
+### Native workbench personal records audit
+
+| # | Area | Feature | Covered by | ✓ |
+|---|------|---------|------------|---|
+| NP1 | editor/tabs | Native launch hydrates the account's SQLite workbench document before constructing the editor. Drafts survive reload without browser records. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records | ✅ |
+| NP2 | persistence/recovery | Failed hydration makes no SQLite writes. Browser recovery remains available until the persisted revision can be checked. A concurrent write preserves the current draft and offers recovery export and confirmed reload. | F:test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite; F:test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly | ✅ |
+| NP3 | launch and history | Native launch clears the one-use fragment, exchanges it for a loopback session, and reopens with that session. Query history stays in the existing account's SQLite document and loads independently of cloud access. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust native history test; YLab native process tests | ✅ |
+| NP4 | large workbench documents | Saves use the existing 16 MiB SQLite budget in UTF-8 bytes. Optional result snapshots are omitted first. A larger draft stays available for editing and recovery, and shortening it resumes saving at the same revision. | F:test_native_workbench_large_save_prioritizes_drafts_over_results; F:test_native_workbench_oversized_draft_can_resume_saving; Rust `native_personal_http_preserves_sqlite_document_budget_and_revision` | ✅ |
+
+- Existence. Native startup reads `/api/personal` after validating the loopback
+  session via `/api/workbench/session`. SQL recall reads `/api/history` at startup
+  and on focus. The save path sends only a revisioned workbench document. The
+  scoped `qy_native:…:recovery` key keeps the current window copy in session
+  storage and a browser backup when the shared slot is available. Updating or
+  clearing this window's recovery preserves a different window's backup. The save warning, export and confirmed load action
+  are exercised in NP2 and NP4. NP4 adds a size-specific status to the same
+  recovery control, with no new endpoint or storage key.
+- Capability. Drafts, tabs, bounded tab results and editor preferences reopen
+  with the native account without a cloud connection. The warning makes failed
+  saves recoverable. Multiple windows can recover or explicitly load a newer
+  revision. Legacy SQLite documents retain their 16 MiB budget. Larger
+  documents keep draft SQL in the editor and can resume saving after an edit
+  reduces their size. Automatic merging of conflicting drafts is deferred.
+- Shared state. `initializeNativeRecords` loads the saved document before
+  tab/history/preferences readers initialize. The storage facade's two write
+  sites update the in-memory document and browser recovery. `flushNativeRecords`
+  clears recovery only for the revision it saved, and retains edits made while
+  saving. The save body can omit result snapshots without changing active-tab
+  state or dropping draft SQL. A size refusal leaves the pending revision and
+  recovery intact. The explicit confirmed load is the only user action that discards
+  recovery. Separate query-history entries are outside this CAS document.
