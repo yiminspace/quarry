@@ -1,10 +1,10 @@
 import { PLATFORM_MODE } from "./platform";
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchColumns, type ColumnsResponse, type ConnItem, type RedisKeyMeta, type SavedQuery } from "./api";
+import { fetchColumns, type ColumnsResponse, type RedisKeyMeta, type SavedQuery } from "./api";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
 import { groupKey, groupQueriesByDb, groupsWithQueries, itemsInEngineOrder, queryObjects } from "./sidebarLayout";
-import { useConnStore } from "./store/connStore";
+import { displayConnectionEnvironment, useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 import { useTabsStore } from "./store/tabsStore";
 import HostedUpdateNotice from "./HostedUpdateNotice";
@@ -59,10 +59,6 @@ function QueryDisclosure({ open, queries, onOpenSaved }: {
       <QueryItem key={query.queryId ?? query.name} query={query}
         onOpen={() => onOpenSaved(query.queryId ?? query.name, true)} />)}</div>}
   </div>;
-}
-
-export function defaultEnvFor(item: ConnItem): string | null {
-  return item.envs.find((e) => e.env === "dev")?.env ?? item.envs[0]?.env ?? null;
 }
 
 /* ---- redis key tree (`:`-hierarchy, fold, count/type/ttl badges) ---- */
@@ -434,7 +430,7 @@ export default function Sidebar(props: SidebarProps) {
             {result.objects.map(object => <button className="search-object" key={object.env + ':' + object.name}
               onClick={() => props.onOpenSearchObject(result.db, object.env, object.name, object.redis)}>
               <i className={'ti ' + (object.redis ? 'ti-key' : 'ti-table')} /> {object.name}
-              <small>{object.env}</small>
+              <small>{object.env && displayConnectionEnvironment(result.db, object.env)}</small>
             </button>)}
             {result.queries.map(query => <QueryItem key={query.queryId ?? query.name} query={query}
               onOpen={() => onOpenSaved(query.queryId ?? query.name, true)} />)}

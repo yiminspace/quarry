@@ -5,6 +5,7 @@ import { cellPreview, cellText, MODAL_TEXT_CHUNK_CHARS } from "./cellValue";
 import { copy } from "./clip";
 import { assistantStatusText, LANG, t } from "./i18n";
 import { useModalEscape } from "./modalStack";
+import { displayConnectionEnvironment } from "./store/connStore";
 import type { HistEntry } from "./useSqlHistory";
 import { listConversations, type ConversationSummary } from "./assistantApi";
 
@@ -252,7 +253,7 @@ export function ExplainModal({
     <Modal onClose={onClose} boxStyle={{ minWidth: "min(760px, 85vw)" }}>
       <div className="vg-mh mh">
         <i className="ti ti-route" /> EXPLAIN · {db}
-        {env ? `@${env}` : ""}
+        {db && env ? `@${displayConnectionEnvironment(db, env)}` : ""}
       </div>
       <pre>{plan}</pre>
     </Modal>
@@ -326,7 +327,7 @@ export function HistoryModal({
       {section === "queries" ? <div id="hlist">
         {shown.length === 0 && <div className="vg-empty empty">{t("no_match")}</div>}
         {shown.map((h, i) => {
-          const meta = [h.db ? h.db + (h.env ? `@${h.env}` : "") : "", fmtAgo(h.ts)]
+          const meta = [h.db ? h.db + (h.env ? `@${displayConnectionEnvironment(h.db, h.env)}` : "") : "", fmtAgo(h.ts)]
             .filter(Boolean)
             .join(" · ");
           return (
@@ -360,7 +361,7 @@ export function HistoryModal({
           <button type="button" className="conversation-item" data-testid="conversation-item" key={item.id}
             onClick={() => { setError(""); void onConversation(item.id).catch((failure) => setError(assistantStatusText(String(failure.message)))); }}>
             <span>{!item.title || item.title === "SQL conversation" ? t("assistant_conversation_title") : item.title}</span>
-            <small>{[item.db, item.env].filter(Boolean).join(" / ")} <time dateTime={new Date(item.updatedAt).toISOString()}>{new Date(item.updatedAt).toLocaleString(LANG === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></small>
+            <small>{[item.db, item.db && item.env ? displayConnectionEnvironment(item.db, item.env) : item.env].filter(Boolean).join(" / ")} <time dateTime={new Date(item.updatedAt).toISOString()}>{new Date(item.updatedAt).toLocaleString(LANG === "zh" ? "zh-CN" : "en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></small>
           </button>)}
       </div>}
     </Modal>

@@ -120,7 +120,7 @@ export async function chatAssistant(
   const init = {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(PLATFORM_MODE ? { ...request, resourceId: resource?.id, conversation: localConversation } : request), signal,
   };
-  const response = PLATFORM_MODE ? await platformFetch(base + "/chat", init, resource?.placement === "local") : await fetch(base + "/chat", {
+  const response = PLATFORM_MODE ? await platformFetch(base + "/chat", init) : await fetch(base + "/chat", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request), signal,
   });
   if (!response.ok) {

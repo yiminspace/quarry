@@ -321,6 +321,23 @@ def _token_bg(page, name: str) -> str:
     )
 
 
+def test_native_cloud_badge_uses_theme_tokens(page_sqlite):
+    from test_gui_browser_features import _route_native_cloud_catalog, _select_sqlite
+
+    page = page_sqlite
+    _route_native_cloud_catalog(page, {"value": "connected"})
+    page.reload(wait_until="networkidle")
+    _select_sqlite(page)
+    selector = '#esw [data-env="cloud:notes-dev"] .cloud-source-badge'
+    for mode in ("dark", "light"):
+        if page.evaluate("document.documentElement.dataset.mode") != mode:
+            page.locator(".vg-switcher-mode").click()
+        assert _style(page, selector, "color") == _token_color(page, "--fg2")
+        assert _style(page, selector, "backgroundColor") == _token_bg(page, "--bg3")
+    page.locator(".vg-lang-switch").click()
+    assert page.locator(selector).inner_text() == "云端"
+
+
 @pytest.mark.parametrize('theme', ['slate', 'signal'])
 @pytest.mark.parametrize('mode', ['dark', 'light'])
 @pytest.mark.parametrize('lang', ['en', 'zh'])
@@ -932,8 +949,8 @@ def test_platform_status_chrome_uses_theme_tokens(page_sqlite):
             page.locator('.vg-switcher-mode').click()
         _open_platform_status(page)
         for selector, prop, token in (
-            ('.platform-connection > summary', 'backgroundColor', '--bg1'),
-            ('.platform-connection > summary', 'color', '--fg2'),
+            ('.platform-connection > summary', 'backgroundColor', '--ok-bg'),
+            ('.platform-connection > summary', 'color', '--ok'),
             ('.platform-status', 'backgroundColor', '--surf-1'),
             ('.platform-status', 'color', '--fg2'),
         ):

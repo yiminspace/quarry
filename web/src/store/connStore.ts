@@ -1,5 +1,7 @@
 import { create } from "zustand";
-import type { ConnGroup, KeepAliveResponse, TablesResponse } from "../api";
+import type { ConnectionsResponse, ConnEnv, ConnGroup, ConnItem, KeepAliveResponse, TablesResponse } from "../api";
+import { t } from "../i18n";
+import { displayEnvironment } from "../platform";
 
 export type CurrentConn = {
   db: string;
@@ -7,6 +9,7 @@ export type CurrentConn = {
   engine: string;
   isRedis: boolean;
   production?: boolean;
+  source?: ConnEnv["source"];
 } | null;
 
 export type HealthState = { ok: boolean; error?: string };
@@ -32,7 +35,9 @@ type ConnState = {
    * manager after add/remove) needs `/api/connections` reloaded. */
   reloadToken: number;
   keepAlive: KeepAliveResponse | null;
-  setConnMeta: (workspace: string, workspaces: string[], groups: ConnGroup[]) => void;
+  cloudStatus: ConnectionsResponse["cloudStatus"];
+  setConnMeta: (workspace: string, workspaces: string[], groups: ConnGroup[], cloudStatus?: ConnectionsResponse["cloudStatus"]) => void;
+  setCloudStatus: (status: ConnectionsResponse["cloudStatus"]) => void;
   setCurrent: (current: CurrentConn) => void;
   setCurrentTable: (table: string | null) => void;
   setHealth: (db: string, ok: boolean, error?: string) => void;
@@ -58,8 +63,10 @@ export const useConnStore = create<ConnState>((set) => ({
   tcache: {},
   reloadToken: 0,
   keepAlive: null,
-  setConnMeta: (workspace, workspaces, groups) =>
-    set((s) => ({ workspace, workspaces, groups, loaded: true, loadSeq: s.loadSeq + 1 })),
+  cloudStatus: undefined,
+  setConnMeta: (workspace, workspaces, groups, cloudStatus) =>
+    set((s) => ({ workspace, workspaces, groups, cloudStatus, loaded: true, loadSeq: s.loadSeq + 1 })),
+  setCloudStatus: (cloudStatus) => set({ cloudStatus }),
   setCurrent: (current) => set({ current }),
   setCurrentTable: (currentTable) => set({ currentTable }),
   setHealth: (db, ok, error) =>
@@ -75,3 +82,27 @@ export const useConnStore = create<ConnState>((set) => ({
   requestReload: () => set((s) => ({ reloadToken: s.reloadToken + 1 })),
   setKeepAlive: (keepAlive) => set({ keepAlive }),
 }));
+
+export function connectionEnvLabel(env: ConnEnv): string {
+  return env.label || (env.source === "cloud" ? env.display_env || t("platform_default") : env.env || "default");
+}
+
+export function defaultEnvFor(item: ConnItem): string | null {
+  const configured = item.envs.filter((entry) => entry.source !== "cloud");
+  const candidates = configured.length ? configured : item.envs;
+  const preferred = candidates.find((entry) =>
+    (entry.source === "cloud" ? entry.display_env : entry.env) === "dev");
+  return (preferred ?? candidates[0])?.env ?? null;
+}
+
+/** Keep route IDs in tab/request state and show the environment name to users. */
+export function displayConnectionEnvironment(db: string, env: string | null): string {
+  if (env?.startsWith("cloud:")) {
+    const state = useConnStore.getState();
+    const entry = state.groups.flatMap((group) => group.items)
+      .find((item) => item.db === db)?.envs.find((entry) => entry.env === env);
+    if (entry?.source === "cloud") return `${connectionEnvLabel(entry)} · ${t("cloud_source")}`;
+    if (!entry && state.cloudStatus) return t("cloud_target_unavailable");
+  }
+  return displayEnvironment(db, env);
+}

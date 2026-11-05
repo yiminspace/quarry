@@ -1,4 +1,4 @@
-mod http;
+pub mod http;
 mod mcp;
 mod service;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -399,6 +399,24 @@ struct AiConfigureOptions {
 /// name. `launcher_prefix` dispatches hidden daemon commands back into that host
 /// (for example `["db", "local"]`), without a separately installed qy binary.
 pub async fn run_from(args: Vec<std::ffi::OsString>, launcher_prefix: Vec<String>) -> Result<()> {
+    run_embedded(args, launcher_prefix, None).await
+}
+
+/// Launch the complete desktop workbench with an additional hosted connection source.
+pub async fn run_gui_from(
+    args: Vec<std::ffi::OsString>,
+    launcher_prefix: Vec<String>,
+    cloud: Arc<dyn http::CloudBackend>,
+    history: Option<http::NativeHistory>,
+) -> Result<()> {
+    run_embedded(args, launcher_prefix, Some((cloud, history))).await
+}
+
+async fn run_embedded(
+    args: Vec<std::ffi::OsString>,
+    launcher_prefix: Vec<String>,
+    native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
+) -> Result<()> {
     let program = args
         .first()
         .and_then(|a| a.to_str())
@@ -421,7 +439,12 @@ pub async fn run_from(args: Vec<std::ffi::OsString>, launcher_prefix: Vec<String
             return Err(Failure::invalid(error.to_string()));
         }
     };
-    run_with_prefix(cli, launcher_prefix).await
+    if native.is_some() && !matches!(cli.command, Command::Gui { .. }) {
+        return Err(Failure::invalid(
+            "Cloud workbench integration requires the GUI command",
+        ));
+    }
+    run_with_prefix(cli, launcher_prefix, native).await
 }
 
 fn home() -> Result<PathBuf> {
@@ -702,7 +725,11 @@ fn assistant(host: &Host) -> Result<Arc<quarry_assistant::AssistantService>> {
         Arc::new(host.clone()),
     )))
 }
-async fn run_with_prefix(cli: Cli, launcher_prefix: Vec<String>) -> Result<()> {
+async fn run_with_prefix(
+    cli: Cli,
+    launcher_prefix: Vec<String>,
+    native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
+) -> Result<()> {
     let config_path = match cli.config {
         Some(path) => path,
         None => home()?.join(".config/quarry/config.toml"),
@@ -1007,14 +1034,34 @@ async fn run_with_prefix(cli: Cli, launcher_prefix: Vec<String>) -> Result<()> {
             let bound = listener.local_addr()?;
             let port = bound.port();
             let url = format!("http://{bound}/quarry/");
-            eprintln!("Quarry GUI → {url}");
+            let native = native.map(|(cloud, history)| {
+                http::NativeWorkbench::new(
+                    cloud,
+                    history.unwrap_or_else(|| {
+                        http::NativeHistory::new(
+                            host.state_dir.join("personal.sqlite3"),
+                            "local".into(),
+                            "local".into(),
+                        )
+                    }),
+                )
+            });
+            let launch_url = native.as_ref().map(|workbench| workbench.launch_url(&url));
+            eprintln!(
+                "Quarry GUI → {}",
+                if no_browser {
+                    launch_url.as_deref().unwrap_or(&url)
+                } else {
+                    &url
+                }
+            );
             if !no_browser {
                 let _ = std::process::Command::new(if cfg!(target_os = "macos") {
                     "open"
                 } else {
                     "xdg-open"
                 })
-                .arg(&url)
+                .arg(launch_url.as_deref().unwrap_or(&url))
                 .spawn();
             }
             let a = assistant(&host)?;
@@ -1024,6 +1071,7 @@ async fn run_with_prefix(cli: Cli, launcher_prefix: Vec<String>) -> Result<()> {
                 assistant: a.clone(),
                 port,
                 shutdown: http_shutdown.clone(),
+                native,
             };
             let shutdown = a.clone();
             let served = axum::serve(listener, http::router(state))

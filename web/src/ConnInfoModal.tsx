@@ -3,12 +3,13 @@ import { fetchConnInfo, fetchHealth, localSync, localUp, type ConnInfo } from ".
 import { copy } from "./clip";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
-import { useConnStore } from "./store/connStore";
+import { displayConnectionEnvironment, useConnStore } from "./store/connStore";
 import { toast } from "./store/toastStore";
 
 type Props = {
   db: string;
   env: string | null;
+  cloud: boolean;
   onClose: () => void;
   /** After `POST /api/local/up` succeeds: reload connections and select the
    * fresh local env (the legacy `loadSide(); selectDb(db,'local')`). */
@@ -26,8 +27,9 @@ type Props = {
  * The URL defaults to masked (see `_mask_url` in gui.py) and is only ever
  * fetched in the clear via an explicit reveal/copy click — this must never
  * regress into eagerly fetching the plaintext URL. */
-export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfterSync }: Props) {
+export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp, onAfterSync }: Props) {
   const groups = useConnStore((s) => s.groups);
+  const cloudStatus = useConnStore((s) => s.cloudStatus);
   const setHealth = useConnStore((s) => s.setHealth);
   const [info, setInfo] = useState<ConnInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
       .then((d) => {
         if (cancelled) return;
         setInfo(d);
-        setDisplayUrl(d.url);
+        if (!cloud) setDisplayUrl(d.url);
       })
       .catch((e) => !cancelled && setError(String((e as Error).message ?? e)));
     fetchHealth(db, env, { fresh: true })
@@ -59,16 +61,17 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
     return () => {
       cancelled = true;
     };
-  }, [db, env, setHealth]);
+  }, [db, env, cloud, setHealth]);
 
   const item = groups.flatMap((g) => g.items).find((it) => it.db === db);
-  const envs = item?.envs ?? [];
+  const envs = item?.envs.filter((entry) => entry.source !== "cloud") ?? [];
   const hasLocal = envs.some((e) => e.env === "local");
   const isLocal = (info?.env ?? "").toLowerCase() === "local";
-  const srcEnv =
+  const configuredSource =
     envs.find((e) => e.env === "dev")?.env ??
-    envs.find((e) => e.env && e.env !== "local")?.env ??
-    "dev";
+    envs.find((e) => e.env && e.env !== "local")?.env;
+  const srcEnv = configuredSource ?? "dev";
+  const canSync = !!configuredSource || !cloudStatus;
 
   const toggleReveal = async (): Promise<void> => {
     const next = !revealed;
@@ -129,7 +132,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
       <div className="vg-box box" id="cibox" style={{ width: "min(560px, 85%)" }}>
         <div className="vg-mh mh">
           <i className="ti ti-info-circle" /> {t("conn_info")} · {db}
-          {env ? ` @ ${env}` : ""}
+          {env ? ` @ ${cloud ? displayConnectionEnvironment(db, env) : env}` : ""}
         </div>
         <div id="cibody">
           {error && <div style={{ color: "var(--red-fg)", fontSize: "12.5px" }}>{error}</div>}
@@ -140,46 +143,50 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
           )}
           {info && (
             <>
-              {row("key", info.key)}
+              {!cloud && row("key", info.key)}
               {row("engine", info.engine)}
-              {row("env", info.env)}
-              {row("host", info.host)}
-              {row("port", info.port)}
-              {row("database", info.database)}
-              {row(t("ci_database_path"), info.databasePath)}
-              <div className="vg-cirow cirow">
-                <span className="vg-cik cik">url</span>
-                <span className="vg-civ civ" id="ciurl">
-                  {displayUrl}
-                </span>
-                <span className="vg-ciact ciact">
-                  <button
-                    className="vg-iconbtn iconbtn"
-                    id="ciEye"
-                    title={revealed ? t("ci_hide") : t("ci_reveal")}
-                    onClick={() => void toggleReveal()}
-                  >
-                    <i className={`ti ${revealed ? "ti-eye-off" : "ti-eye"}`} />
-                  </button>
-                  <button
-                    className="vg-iconbtn iconbtn"
-                    id="ciCopy"
-                    title={t("copy")}
-                    onClick={() => void copyUrl()}
-                  >
-                    <i className="ti ti-copy" />
-                  </button>
-                </span>
-              </div>
-              {info.tunnel &&
-                row(
-                  t("ci_tunnel"),
-                  `${info.tunnel.user || "root"}@${info.tunnel.host}:${info.tunnel.port}` +
-                    (info.tunnel.key ? ` · ${info.tunnel.key}` : ""),
-                )}
-              {row("group", info.group)}
-              {row("notes", info.notes)}
-              {row(t("ci_file"), info.file)}
+              {cloud ? <p>{t("cloud_managed_connection")}</p> : (
+                <>
+                  {row("env", info.env)}
+                  {row("host", info.host)}
+                  {row("port", info.port)}
+                  {row("database", info.database)}
+                  {row(t("ci_database_path"), info.databasePath)}
+                  <div className="vg-cirow cirow">
+                    <span className="vg-cik cik">url</span>
+                    <span className="vg-civ civ" id="ciurl">
+                      {displayUrl}
+                    </span>
+                    <span className="vg-ciact ciact">
+                      <button
+                        className="vg-iconbtn iconbtn"
+                        id="ciEye"
+                        title={revealed ? t("ci_hide") : t("ci_reveal")}
+                        onClick={() => void toggleReveal()}
+                      >
+                        <i className={`ti ${revealed ? "ti-eye-off" : "ti-eye"}`} />
+                      </button>
+                      <button
+                        className="vg-iconbtn iconbtn"
+                        id="ciCopy"
+                        title={t("copy")}
+                        onClick={() => void copyUrl()}
+                      >
+                        <i className="ti ti-copy" />
+                      </button>
+                    </span>
+                  </div>
+                  {info.tunnel &&
+                    row(
+                      t("ci_tunnel"),
+                      `${info.tunnel.user || "root"}@${info.tunnel.host}:${info.tunnel.port}` +
+                        (info.tunnel.key ? ` · ${info.tunnel.key}` : ""),
+                    )}
+                  {row("group", info.group)}
+                  {row("notes", info.notes)}
+                  {row(t("ci_file"), info.file)}
+                </>
+              )}
               <div
                 className={`vg-cihealth cihealth${probe.ok === true ? " ok" : probe.ok === false ? " down" : ""}`}
                 id="cihealth"
@@ -199,7 +206,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
                   </>
                 )}
               </div>
-              {!hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
+              {!cloud && !hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
@@ -212,7 +219,7 @@ export default function ConnInfoModal({ db, env, onClose, onAfterLocalUp, onAfte
                   </button>
                 </div>
               )}
-              {hasLocal && isLocal && info.engine === "postgres" && (
+              {!cloud && hasLocal && isLocal && canSync && info.engine === "postgres" && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"

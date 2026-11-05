@@ -1,4 +1,4 @@
-import { PLATFORM_MODE, platformSnapshot, platformDb, platformEnv, platformJSON, resourceFor, resourceLabel, platformFetch, recordPlatformQuery } from "./platform";
+import { PLATFORM_MODE, platformSnapshot, platformDb, platformEnv, platformJSON, resourceFor, resourceLabel, platformFetch } from "./platform";
 export type ConnEnv = {
   env: string | null;
   key: string;
@@ -7,6 +7,8 @@ export type ConnEnv = {
   ssh: boolean;
   proxied: boolean;
   production?: boolean;
+  source?: "cloud";
+  display_env?: string | null;
   label?: string;
   resourceId?: string;
   placement?: "remote" | "local";
@@ -31,6 +33,7 @@ export type ConnectionsResponse = {
   groups: ConnGroup[];
   workspace: string;
   workspaces: string[];
+  cloudStatus?: "connected" | "unavailable" | "signed_out" | "forbidden";
 };
 
 export type RedisKeyMeta = {
@@ -177,7 +180,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     const source = body as Record<string, unknown>;
     if (typeof source.db !== "string") throw new Error("此操作在托管工作台中不可用。");
     const resource = resourceFor(source.db, typeof source.env === "string" ? source.env : null);
-    return platformJSON<T>(path, { ...source, db: undefined, env: undefined, resourceId: resource.id, requestId: source.requestId || crypto.randomUUID() }, resource.placement === "local");
+    return platformJSON<T>(path, { ...source, db: undefined, env: undefined, resourceId: resource.id, requestId: source.requestId || crypto.randomUUID() });
   }
   const res = await fetch(path, {
     method: "POST",
@@ -223,13 +226,15 @@ export async function runQuery(req: QueryRequest): Promise<QueryResult> {
   const request = PLATFORM_MODE ? { ...req, requestId: req.requestId || crypto.randomUUID() } : req;
   const result = await postJSON<QueryResult>("/api/query", request);
   if (PLATFORM_MODE && request.requestId && cancelledPlatformRequests.delete(request.requestId)) throw new Error("查询已取消。");
-  if (PLATFORM_MODE) recordPlatformQuery(resourceFor(req.db, req.env), req.sql, result, request.requestId!);
   return result;
 }
 export async function cancelPlatformQuery(db: string, env: string | null, requestId: string): Promise<void> {
-  const resource = resourceFor(db, env);
-  await platformJSON("/api/cancel", { requestId }, resource.placement === "local");
-  cancelledPlatformRequests.add(requestId);
+  if (PLATFORM_MODE) {
+    await platformJSON("/api/cancel", { requestId });
+    cancelledPlatformRequests.add(requestId);
+  } else {
+    await postJSON("/api/cancel", { db, env, requestId });
+  }
 }
 
 export function fetchHealth(
@@ -258,8 +263,9 @@ export function runSaved(
   params: Record<string, string>,
   maxRows: number,
   queryId?: string,
+  requestId?: string,
 ): Promise<QueryResult & { db: string; env: string | null }> {
-  return postJSON("/api/run", { name, env, params, maxRows, queryId });
+  return postJSON("/api/run", { name, env, params, maxRows, queryId, requestId });
 }
 
 export function fetchConnInfo(
@@ -337,7 +343,7 @@ async function platformGet<T>(path: string): Promise<T> {
   if (!db) throw new Error("此操作在托管工作台中不可用。");
   const resource = resourceFor(db, url.searchParams.get("env"));
   url.searchParams.delete("db"); url.searchParams.delete("env"); url.searchParams.set("resourceId", resource.id);
-  const response = await platformFetch(url.pathname + url.search, {}, resource.placement === "local");
+  const response = await platformFetch(url.pathname + url.search, {});
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(typeof payload.error === "string" ? payload.error : payload.error?.message || `请求失败 (${response.status})`);

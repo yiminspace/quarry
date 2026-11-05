@@ -275,7 +275,7 @@ fn resource_json(r: &HostedResource, c: &ConnectionRecord) -> Value {
     json!({"id":r.id,"resourceId":r.id,"project":r.project,"db":r.db,"env":r.env,"engine":c.spec().map(|s|s.engine.as_str()).unwrap_or("unknown"),"production":c.production})
 }
 fn platform(mode: &str, p: &Principal, resources: &[Value]) -> Value {
-    json!({"mode":mode,"principal":p,"resources":resources,"personalStorage":"companion","authMode":if mode=="companion"{"paired-local"}else{"iam"},"capabilities":{"query":true,"schema":true,"export":true,"assistant":false,"sharedQueries":false,"local":mode=="companion","personalStorage":mode=="companion"}})
+    json!({"mode":mode,"principal":p,"resources":resources,"personalStorage":if mode=="companion"{"companion"}else{"browser"},"authMode":if mode=="companion"{"paired-local"}else{"iam"},"capabilities":{"query":true,"schema":true,"export":true,"assistant":false,"sharedQueries":false,"local":mode=="companion","personalStorage":mode=="companion"}})
 }
 fn catalog(resources: &[Value]) -> Value {
     let mut groups: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();

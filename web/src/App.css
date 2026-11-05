@@ -119,6 +119,7 @@
 
 /* ---- 代理徽标 (issue #101) — env pill 内, 标记该隧道正经 HTTP(S) 代理转发 ---- */
 .proxy-badge{margin-left:4px;font-size:10px;color:var(--acc)}
+.cloud-source-badge{margin-inline-start:5px;padding:0 4px;border-radius:4px;background:var(--bg3);color:var(--fg2);font-size:10px;line-height:16px;white-space:nowrap}
 
 /* ---- workspace 管理弹窗: 每行的代理开关状态 (issue #101) ---- */
 .wsproxy{color:var(--fg3);font-size:11px;flex:none}

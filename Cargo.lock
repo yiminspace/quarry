@@ -1507,6 +1507,7 @@ dependencies = [
  "quarry-assistant",
  "quarry-core",
  "quarry-local",
+ "quarry-platform",
  "quarry-runtime",
  "quarry-service",
  "regex",

@@ -1,114 +1,59 @@
 # YiminLab hosted and local integration
 
-## Agreed product scope (2026-11-05)
+YiminLab deploys the official Quarry image with its existing IAM verification
+and resource ACLs. The same React workbench also ships inside the Rust `ylab`
+binary.
 
-YiminLab deploys the same official Quarry hosted image as independent users,
-configured against its existing Console session, IAM authorization and resource
-ACLs. There is no separate Ylab database executable/image or custom workbench
-build for production. The image includes the GUI, authentication integration,
-read-only API and execution. Standalone hosting can use its built-in administrator.
+| Entry | Connections | Personal records |
+| --- | --- | --- |
+| YLab `/quarry/` or `ylab db open` | Authorized cloud connections | Drafts and SQL history in account-scoped browser storage |
+| `ylab db connect` | Existing Quarry workspaces plus authorized cloud connections | Workbench state and execution history in local SQLite |
 
-The native `ylab db` companion still embeds the Quarry Rust libraries. Running
-`ylab db connect` opens the workbench and connects/saves automatically, without
-address/code or database-administration forms. The native CLI and backend retain
-separate optional Local/schema capabilities. Standalone Quarry remains independent.
+## Local workbench
 
-Personal drafts, tabs, SQL history, result caches, assistant messages, generated
-SQL and restore checkpoints belong to a SQLite database on the user's computer.
-They are separated by platform, IAM account and execution target. The companion
-and CLI share that implementation. Hosted execution must not create a durable
-personal history database. Results have a bounded cache budget. No shared SQL
-library, platform personal-history persistence or cross-device synchronization
-is included.
+`ylab db connect` serves the complete Quarry GUI on loopback. Workspace
+configuration, environment switching, saved queries, tunnels and local database
+tools use the normal Quarry service. Cloud environments have an explicit source
+label. Their resource IDs remain distinct from local environment names.
 
-The GUI is usable when either connection is unavailable. Hosted and companion
-connectivity are independent. Existing cached assets and recovery buffers allow
-continued editing; unavailable capabilities show their state. Reconnection never
-replays SQL, starts Docker, imports a schema or overwrites an unsaved draft.
-First-time loading still requires fetching the application assets.
+The native host implements `quarry_cli::http::CloudBackend` and supplies it to
+`quarry_cli::run_gui_from`. The desktop router accepts a short-lived, one-use
+launch code from the URL fragment and exchanges it for a local browser session.
+The fragment is cleared before the exchange. The host's cloud bearer remains in
+the native process. YLab loads and refreshes credentials only when forwarding
+cloud operations, using the account selected when the workbench started.
 
-## Ownership and trust
+Users can start the local workbench before signing in. To add cloud access, run
+`ylab auth login` and restart `ylab db connect`. Previously signed-in users can
+restart offline with their local workspaces and personal SQLite. A cloud
+connection always requires live server authorization. Reconnecting refreshes
+the catalog without replaying SQL.
 
-- Quarry owns reusable execution, storage, HTTP contracts, workbench UI and local
-  lifecycle. `ylab` embeds the Rust libraries, not a separately installed `qy`.
-- Ylab owns Console identity, resource registration/grants and CLI account/profile
-  integration. The official Quarry image performs per-request checks against the
-  configured IAM endpoint; browser session paths are runtime configuration.
-- YiminLab owns AuthKit permissions, runtime secrets, private service networks and
-  production deployment. Private configuration and local state never enter a
-  public Quarry artifact.
-- Hosted resources have stable IDs, project/database/environment identity,
-  server-owned connection keys and an explicit principal/role ACL. Every target
-  operation checks both live IAM permission/scope and resource access. Client
-  paths/URLs cannot choose filesystem resources or database credentials.
-- All query, metadata, cancellation and assistant operations bind to a specific
-  identity and target. Cancellation cannot affect another user's execution.
-- Hosted endpoints exclude connection credential reveal, arbitrary connection
-  edits, local file access, Docker lifecycle and personal-history persistence.
-- Pairing follows a user-initiated CLI launch and remains origin/platform/account-bound, short-lived and revocable.
-  The loopback companion exposes only declared operations. IAM login alone does
-  not grant access to a computer. Only one-use launch codes may enter URL fragments, cleared before requests; long-lived credentials never enter URLs.
-- PostgreSQL structure export has separate permission. Local import preserves
-  staging, recovery and prior-database behavior; database passwords and business
-  rows are not transferred. Other engines do not claim schema-sync support.
+`--config` and `--workspace` select existing local configuration explicitly.
+For upgrades, YLab can reuse a legacy account workspace when the standard
+Quarry configuration is absent. Personal SQLite continues to use the existing
+account namespace and document keys. Browser recovery protects edits when
+local storage fails or a saved document has a revision conflict.
 
-## Permission contract
+## Hosted boundary and rollout
 
-`lab:db:read` permits the hosted read-only workbench, subject to resource ACLs.
-`lab:db:schema:export` additionally permits downloading PostgreSQL structure.
-`lab:db:local` permits establishing the account-bound local companion pairing.
-Assistant inference also requires `lab:ai:invoke`. Ordinary registration does
-not grant these permissions; roles and resource ACLs must be assigned explicitly.
+Hosted endpoints use the existing `lab:db:read` permission and per-resource ACLs.
+Cloud operations use stable resource IDs and a fixed YLab origin. The server
+holds connection secrets and performs read-only execution. Browser storage,
+local files and personal SQLite belong to their respective clients.
 
-## Acceptance
+Release the new native client against the current hosted API before switching
+the hosted GUI to browser-only storage. Older clients launch the old hosted
+pairing flow and should be upgraded before that cutover. Existing database
+connection files are selected for migration separately from the client upgrade.
 
-Use disposable configuration, SQLite files and local engine fixtures. Preserve
-installed Quarry, existing connection/query files, assistant histories, Docker
-containers, volumes and custom ports. Required checks include denied cross-user
-and cross-resource access, scoped credential restrictions, expired/revoked
-pairing, origin rejection, independent disconnections, account-switch isolation,
-SQLite persistence across browser/companion restarts, bounded result caching,
-assistant generation/apply/restore without SQL execution, schema-only transfer
-and failure recovery. Build the frontend before native browser verification;
-update TESTING.md and run existence, capability and shared-state audits.
+Verify the built browser bundle and the native CLI against disposable local and
+hosted databases. Cover localhost startup, independent target identities,
+history and draft restoration, offline restart, account isolation and denial of
+a cloud query after revocation. Preserve existing workspaces and volumes during
+testing.
 
-## Implemented transports
-
-The host CLI embeds `quarry-cli::run_from` and supplies its own daemon dispatch
-prefix; no `qy` subprocess is used. `quarry-platform` exports `hosted_router` and
-`companion_router`, a host-provided per-operation `Authorizer`, a resource
-registry and a compare-and-swap `PersonalStore`. Platform adapters deliberately
-exclude shared saved queries and standalone secret/configuration management.
-The independently distributed workbench stays in standalone mode unless its
-hosted copy has a `quarry-mode=platform` meta marker.
-
-Personal SQLite keys include the configured platform origin and IAM user ID.
-Workbench state and bounded execution history use separate documents so a CLI
-query does not overwrite an active GUI draft. History remains readable offline
-from the same host CLI account. Browser recovery content is separately scoped to
-that account and never silently reported as saved to SQLite while disconnected.
-
-Initial pairing checks the live IAM identity, exact origin and one-use code.
-After pairing, local-only operations use the expiring companion capability and
-owner binding; they do not depend on cloud availability. Local revocation and
-expiry stop them. Remote execution, model calls and schema retrieval always
-check live IAM again. Thus revoking a cloud session stops cloud access; it does
-not retroactively turn a separately granted local offline capability into a
-network-dependent credential.
-
-Companion-managed Docker containers, volumes, ports and runtime configuration
-are isolated by platform, account and source resource. Lifecycle operations
-resolve an owned Local resource before touching Docker; they never fall back to
-the standalone Quarry engine containers or share Redis DB 0 across sources.
-
-The companion obtains schema directly from its fixed authorized platform origin
-using the current IAM credential and source resource ID. It rejects arbitrary
-browser-supplied schema text. `LocalManager::import_schema` is a trusted-host API,
-not a general untrusted SQL sandbox; PostgreSQL structures can include executable
-functions/extensions. The companion must verify the actual authorized source,
-not treat client text as a trusted dump.
-
-## Local acceptance (2026-11-04)
+## Historical acceptance of the paired workbench (2026-11-04)
 
 - Actual AuthKit sessions, database roles and scope intersection ran against
   disposable PostgreSQL/Redis. Its library suite passed 115 tests; four legacy
