@@ -8,9 +8,26 @@ export async function prepareOfflineShell(): Promise<void> {
   try {
     const probe = await fetch(`/quarry/quarry-offline.js?build=${encodeURIComponent(build)}`, { cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(2500) });
     if (!probe.ok || !probe.headers.get("content-type")?.includes("javascript")) return;
-    await navigator.serviceWorker.register(`/quarry/quarry-offline.js?build=${encodeURIComponent(build)}`, { scope: "/quarry/" });
-    const registration = await navigator.serviceWorker.ready;
+    const registration = await navigator.serviceWorker.register(`/quarry/quarry-offline.js?build=${encodeURIComponent(build)}`, { scope: "/quarry/" });
+    const worker = registration.installing || registration.waiting || registration.active;
+    if (!worker) return;
+    // ready can still name the old active worker during an application upgrade.
+    // Warm the worker we just registered after its new cache policy activates.
+    if (worker.state !== "activated") await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timeout);
+        worker.removeEventListener("statechange", changed);
+        if (error) reject(error); else resolve();
+      };
+      const changed = () => {
+        if (worker.state === "activated") finish();
+        else if (worker.state === "redundant") finish(new Error("Offline worker replaced"));
+      };
+      const timeout = setTimeout(() => finish(new Error("Offline worker activation timed out")), 5000);
+      worker.addEventListener("statechange", changed);
+      changed();
+    });
     await document.fonts.ready;
-    registration.active?.postMessage({ type: "quarry-warm-shell", assets: performance.getEntriesByType("resource").map((entry) => entry.name) });
+    worker.postMessage({ type: "quarry-warm-shell", assets: performance.getEntriesByType("resource").map((entry) => entry.name) });
   } catch { /* The editor and browser recovery remain usable if the browser denies offline caching. */ }
 }

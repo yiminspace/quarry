@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Keep bundled icon fonts visible when the hosted editor reopens offline, including versioned font URLs and the first visit after a cached application upgrade.
+
 - Serve built-in administrator sign-in and configurable platform sessions from the official hosted image, including one-use CLI browser handoff; standalone CLI/GUI/MCP remain independent.
 
 - Connect and retry automatically from `ylab`; remove the connection/pairing/administration dialog and manual connection controls. Keep only compact status and recovery choices when a save needs attention. Hosted preview now includes connected and disconnected states with disposable personal SQLite.

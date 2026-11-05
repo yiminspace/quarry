@@ -4,7 +4,12 @@ const version = new URL(self.location.href).searchParams.get('build') || 'develo
 const cacheName = prefix + version;
 const shell = '/quarry/';
 function publicAsset(url) {
-  return url.origin === self.location.origin && /^\/quarry\/assets\/[A-Za-z0-9_.-]+$/.test(url.pathname) && !url.search;
+  // Bundled Tabler font URLs retain their CSS version suffix after Vite hashing.
+  // Keep arbitrary queries (including credentials) outside the public cache.
+  const fontVersion = /\.(?:woff2?|ttf)$/.test(url.pathname)
+    && /^\?v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(url.search);
+  return url.origin === self.location.origin && /^\/quarry\/assets\/[A-Za-z0-9_.-]+$/.test(url.pathname)
+    && (!url.search || fontVersion);
 }
 async function rememberShell(response) {
   if (response.ok && response.headers.get('content-type')?.includes('text/html')) {

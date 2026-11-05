@@ -4550,6 +4550,12 @@ class _AssistantBrowserStub:
         route.fulfill(status=200, content_type='application/x-ndjson',
                       body=''.join(json.dumps(event) + '\n' for event in events))
 
+    def wait_pending(self):
+        deadline = time.monotonic() + 5
+        while not self.pending and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        assert len(self.pending) == 1
+
 
 def _assistant_ready(page, tmp_path, monkeypatch, *, sql='SELECT id, note FROM entries LIMIT 10', configured=True):
     stub = _AssistantBrowserStub(page, tmp_path, monkeypatch, configured=configured)
@@ -5484,8 +5490,7 @@ def test_assistant_inflight_manual_edit_requires_explicit_application(page_sqlit
     stub.proposal = 'SELECT id FROM entries LIMIT 3'
     stub.hold = True
     _assistant_send(page, 'Write a short query')
-    page.wait_for_timeout(100)
-    assert len(stub.pending) == 1
+    stub.wait_pending()
     manual = 'SELECT note FROM entries WHERE id = 77'
     _set_sql(page, manual)
     stub.complete()
@@ -5507,8 +5512,7 @@ def test_assistant_late_reply_cannot_overwrite_other_context(page_sqlite, tmp_pa
     stub.proposal = 'SELECT id FROM entries LIMIT 7'
     stub.hold = True
     _assistant_send(page, 'Write seven rows')
-    page.wait_for_timeout(100)
-    assert len(stub.pending) == 1
+    stub.wait_pending()
     if navigation == 'tab':
         page.locator('#tabAdd').click()
         _set_sql(page, 'SELECT 55 AS other_tab')
@@ -6565,6 +6569,91 @@ def test_platform_cached_shell_reopens_with_entire_network_offline(page_sqlite, 
         assert 'browser recovery' in page.get_by_test_id('personal-storage-status').text_content()
     finally:
         page.context.set_offline(False)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.mark.parametrize('upgrade_existing_worker', [False, True])
+def test_platform_offline_icon_font_keeps_version_query_and_rejects_other_queries(page_sqlite, tmp_path, upgrade_existing_worker):
+    import base64
+    from functools import partial
+    import hashlib
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    import threading
+    from urllib.parse import urljoin
+
+    assets = Path(__file__).resolve().parents[1] / 'src/quarry/web_dist'
+    hosted = tmp_path / 'offline-font-site' / 'quarry'
+    shutil.copytree(assets, hosted)
+    index = hosted / 'index.html'
+    index.write_text(index.read_text().replace('<head>', '<head><meta name="quarry-mode" content="platform">', 1))
+    bootstrap = re.search(r'<script>(.*?)</script>', index.read_text(), re.S).group(1)
+    bootstrap_hash = base64.b64encode(hashlib.sha256(bootstrap.encode()).digest()).decode()
+    (hosted / 'upgrade.html').write_text('<!doctype html><title>Previous editor worker</title>')
+    (hosted / 'legacy-worker.js').write_text("self.addEventListener('install',event=>event.waitUntil(self.skipWaiting()));self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));")
+
+    class Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if upgrade_existing_worker and self.path == '/quarry/' and self.headers.get('Sec-Fetch-Dest') == 'empty':
+                # Keep the previous worker active while the new worker installs.
+                # Its warm messages do not know the new font cache policy.
+                time.sleep(0.2)
+            super().do_GET()
+
+        def end_headers(self):
+            # The test must exercise CacheStorage, never an HTTP/font disk-cache hit.
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Content-Security-Policy', f"default-src 'self'; script-src 'self' 'sha256-{bootstrap_hash}'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self'")
+            super().end_headers()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(hosted.parent)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    page = page_sqlite
+    page.add_init_script("localStorage.setItem('ylab.console.session.v1', JSON.stringify({access_token:'font-test',refresh_token:'font-refresh',expires_in:3600,user:{id:'font-user'}}));")
+    cdp = page.context.new_cdp_session(page)
+    cdp.send('Network.enable')
+    cdp.send('Network.setCacheDisabled', {'cacheDisabled': True})
+    font_responses = []
+    page.on('response', lambda response: font_responses.append((response.status, response.from_service_worker))
+            if '/tabler-icons-' in response.url and '.woff2?' in response.url else None)
+    try:
+        origin = f'http://127.0.0.1:{server.server_port}'
+        if upgrade_existing_worker:
+            page.goto(origin + '/quarry/upgrade.html')
+            page.evaluate("async () => { await navigator.serviceWorker.register('/quarry/legacy-worker.js', {scope:'/quarry/'}); await navigator.serviceWorker.ready; }")
+            page.wait_for_function("() => navigator.serviceWorker.controller?.scriptURL.endsWith('/legacy-worker.js')")
+        page.goto(origin + '/quarry/', wait_until='networkidle')
+        page.locator('#sql').wait_for()
+        page.wait_for_function(r"""async () => {
+          const font = performance.getEntriesByType('resource').find(entry => /\/tabler-icons-[^/]+\.woff2\?v\d+\.\d+\.\d+$/.test(entry.name));
+          if (!font || !navigator.serviceWorker.controller || !document.fonts.check('12px tabler-icons')) return false;
+          for (const name of await caches.keys()) {
+            if (name.startsWith('quarry-platform-shell-') && await (await caches.open(name)).match(font.name)) return true;
+          }
+          return false;
+        }""")
+        font = page.evaluate("() => performance.getEntriesByType('resource').find(entry => entry.name.includes('/tabler-icons-') && entry.name.includes('.woff2?')).name")
+        module = urljoin(page.url, page.locator('script[type="module"][src]').get_attribute('src'))
+        private_requests = [font + '&token=cache-guard', module + '?token=cache-guard']
+        for url in private_requests:
+            assert page.evaluate('url => fetch(url).then(response => response.status)', url) == 200
+        cached = page.evaluate("async () => (await Promise.all((await caches.keys()).map(async name => (await (await caches.open(name)).keys()).map(request => request.url)))).flat()")
+        assert all(url not in cached for url in private_requests)
+        assert not any('/api/' in url for url in cached)
+        page.context.set_offline(True)
+        for _ in range(2):
+            font_responses.clear()
+            page.reload(wait_until='networkidle')
+            page.locator('#sql').wait_for()
+            page.wait_for_function("() => document.fonts.check('12px tabler-icons') && [...document.fonts].some(face => face.family === 'tabler-icons' && face.status === 'loaded')")
+            assert (200, True) in font_responses
+            assert page.locator('.ti').first.evaluate("icon => getComputedStyle(icon, '::before').content") not in ('none', 'normal', '""')
+    finally:
+        page.context.set_offline(False)
+        cdp.detach()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
