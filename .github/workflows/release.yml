@@ -16,6 +16,8 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
     permissions:
       contents: read
       actions: read
@@ -28,17 +30,58 @@ jobs:
           python-version: '3.12'
       - run: python scripts/validate_release.py '${{ inputs.tag || github.ref_name }}'
       - name: Require successful CI for the exact main commit
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           source_sha=$(git rev-parse HEAD)
           for attempt in $(seq 1 90); do
             result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$source_sha" --limit 1 --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
-            if [[ "$result" == $'completed\tsuccess' ]]; then exit 0; fi
+            if [[ "$result" == $'completed\tsuccess' ]]; then
+              printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             if [[ "$result" == completed* ]]; then echo "Exact-commit CI did not pass: $result"; exit 1; fi
             sleep 20
           done
           echo 'Timed out waiting for exact-commit CI'; exit 1
+
+  hosted-plan:
+    needs: validate
+    if: ${{ !contains(inputs.tag || github.ref_name, '-rc.') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - name: Reuse the exact main image build when available
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          for attempt in $(seq 1 45); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow hosted-image.yml --branch main --event push --commit "$SOURCE_SHA" --limit 1 --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
+            case "$result" in
+              $'completed\tsuccess') echo 'build=false' >> "$GITHUB_OUTPUT"; exit 0 ;;
+              ''|$'\t'|$'completed\tcancelled') echo 'build=true' >> "$GITHUB_OUTPUT"; exit 0 ;;
+              completed*) echo "Exact-commit Hosted image CI did not pass: $result"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo 'Timed out waiting for exact-commit Hosted image CI'; exit 1
+
+  hosted-image:
+    needs: [validate, hosted-plan]
+    if: needs.hosted-plan.outputs.build == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/hosted-image.yml
+    with:
+      source_sha: ${{ needs.validate.outputs.source_sha }}
+
   build:
     needs: validate
     strategy:
@@ -119,6 +162,47 @@ jobs:
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
           gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+
+  publish-hosted-release:
+    needs: [validate, hosted-plan, hosted-image, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.hosted-plan.result == 'success' && (needs.hosted-image.result == 'success' || needs.hosted-image.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Verify anonymous pulls and publish the hosted release descriptor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          # This job does not log in to GHCR. Confirm the tagged index and both
+          # architectures can be pulled as a public deployment would pull them.
+          repo="ghcr.io/$GITHUB_REPOSITORY"
+          image="$repo:sha-$SOURCE_SHA"
+          docker buildx imagetools inspect --raw "$image" > "$RUNNER_TEMP/hosted-image.json"
+          for arch in amd64 arm64; do
+            digest=$(jq -er --arg arch "$arch" '
+              [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest]
+              | if length == 1 then .[0] else error("expected one linux/" + $arch + " manifest") end
+            ' "$RUNNER_TEMP/hosted-image.json")
+            docker pull --platform "linux/$arch" "$repo@$digest"
+            actual=$(docker image inspect --format '{{.Os}}/{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}}' "$repo@$digest")
+            test "$actual" = "linux/$arch $SOURCE_SHA"
+          done
+
+          descriptor="$RUNNER_TEMP/hosted-release.json"
+          jq -n --arg version "${RELEASE_TAG#v}" --arg image "$image" \
+            --arg notes "https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" \
+            '{version: $version, image: $image, releaseNotesUrl: $notes}' > "$descriptor"
+          exists=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq 'any(.assets[]; .name == "hosted-release.json")')
+          if [[ "$exists" == true ]]; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern hosted-release.json --output "$RUNNER_TEMP/previous-hosted-release.json"
+            cmp "$descriptor" "$RUNNER_TEMP/previous-hosted-release.json"
+          else
+            gh release upload "$RELEASE_TAG" "$descriptor" --repo "$GITHUB_REPOSITORY"
+          fi
 
   publish-mcp:
     needs: publish

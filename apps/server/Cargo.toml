@@ -25,6 +25,7 @@ include_dir = "0.7"
 mime_guess = "2"
 tower = { version = "0.5", features = ["util"] }
 rpassword = "7"
+semver = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

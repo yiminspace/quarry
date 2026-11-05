@@ -971,3 +971,28 @@ def test_platform_builtin_login_chrome_uses_theme_tokens(page_sqlite):
                 const equal = getComputedStyle(element)[prop] === getComputedStyle(probe)[prop];
                 probe.remove(); return equal;
             }''', [prop, token]), (mode, selector, prop, token)
+
+
+@pytest.mark.parametrize('mode', ['dark', 'light'])
+def test_hosted_update_notice_uses_theme_tokens(page_sqlite, mode):
+    from test_gui_browser_features import _hosted_workbench, _stub_hosted_update
+
+    page = page_sqlite
+    _stub_hosted_update(page, latest='2.0.1')
+    _hosted_workbench(page)
+    page.evaluate('mode => document.documentElement.dataset.mode = mode', mode)
+    notice = page.get_by_test_id('hosted-update')
+    notice.wait_for()
+    for element, prop, token in (
+        (notice, 'backgroundColor', '--surf-2'),
+        (notice, 'borderTopColor', '--line'),
+        (notice, 'color', '--fg'),
+        (notice.get_by_role('link'), 'color', '--accent'),
+    ):
+        assert element.evaluate('''(element, [prop, token]) => {
+          const probe = document.createElement('span');
+          probe.style[prop] = `var(${token})`;
+          element.append(probe);
+          const equal = getComputedStyle(element)[prop] === getComputedStyle(probe)[prop];
+          probe.remove(); return equal;
+        }''', [prop, token]), (mode, prop, token)

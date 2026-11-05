@@ -7,6 +7,7 @@ import { groupKey, groupQueriesByDb, groupsWithQueries, itemsInEngineOrder, quer
 import { useConnStore } from "./store/connStore";
 import { useUiStore } from "./store/uiStore";
 import { useTabsStore } from "./store/tabsStore";
+import HostedUpdateNotice from "./HostedUpdateNotice";
 
 export type PanelData = {
   loading: boolean;
@@ -422,6 +423,7 @@ export default function Sidebar(props: SidebarProps) {
         <button className="vg-iconbtn collapse-all" title={t("collapse_all")} aria-label={t("collapse_all")}
           onClick={() => { setSearch(""); props.onCollapseAll(); }}><i className="ti ti-fold" /></button>
       </div>
+      {PLATFORM_MODE && <HostedUpdateNotice />}
       {needle && <div className="sidebar-search-results">
         <div className="search-scope">{t("search_sidebar_scope")}</div>
         {!searchGroups.length && <div className="vg-empty">{t("search_no_matches")}</div>}
