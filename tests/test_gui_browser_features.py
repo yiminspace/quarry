@@ -6319,6 +6319,82 @@ def _open_platform_status(page):
         details.locator('summary').click()
 
 
+def _stub_hosted_update(page, *, current='2.0.0', latest=None):
+    state = {'current': current, 'latest': latest, 'unavailable': False, 'requests': []}
+
+    def update(route):
+        state['requests'].append(route.request.headers)
+        if state['unavailable']:
+            route.fulfill(status=503)
+            return
+        current, latest = state['current'], state['latest']
+        response = {'current': current, 'latest': latest, 'available': bool(latest and latest > current)}
+        if latest:
+            response['releaseNotesUrl'] = f'https://github.com/yiminspace/quarry/releases/tag/v{latest}'
+        route.fulfill(json=response)
+
+    page.route('**/api/hosted/update', update)
+    return state
+
+
+def test_hosted_update_notice_tracks_available_and_dismissed_releases(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    state = _stub_hosted_update(page, latest='2.0.0')
+    page.reload(wait_until='networkidle')
+    assert not state['requests']  # Standalone workbench does not check hosted releases.
+    page.clock.install()
+    workbench = _hosted_workbench(page)
+    notice = page.get_by_test_id('hosted-update')
+    expect(notice).to_have_count(0)
+    assert state['requests']
+    assert all('authorization' not in headers and 'cookie' not in headers for headers in state['requests'])
+
+    def refocus():
+        with page.expect_response('**/api/hosted/update') as check:
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+        check.value.finished()
+
+    page.locator('#sql').fill('select 17 as update_draft')
+    state['latest'] = '2.0.1'
+    with page.expect_response('**/api/hosted/update'):
+        page.clock.fast_forward(30 * 60 * 1000)
+    expect(notice).to_contain_text('Quarry v2.0.1 is now available')
+    expect(notice.get_by_role('link', name='View release notes')).to_have_attribute(
+        'href', 'https://github.com/yiminspace/quarry/releases/tag/v2.0.1')
+    notice.get_by_role('button', name='Dismiss update notice').click()
+    expect(notice).to_have_count(0)
+    expect(page.locator('#sql')).to_have_value('select 17 as update_draft')
+    page.reload(wait_until='networkidle')
+    expect(notice).to_have_count(0)
+
+    state['latest'] = '2.0.2'
+    refocus()
+    expect(notice).to_contain_text('Quarry v2.0.2 is now available')
+    page.locator('.vg-lang-switch').click()
+    expect(notice).to_contain_text('Quarry v2.0.2 已发布')
+    expect(notice.get_by_role('link', name='查看发布说明')).to_be_visible()
+    state['current'] = '2.0.2'
+    refocus()
+    expect(notice).to_have_count(0)
+    expect(page.locator('#sql')).to_have_value('select 17 as update_draft')
+    assert not workbench['queries']
+
+
+def test_hosted_update_check_failure_leaves_workbench_usable(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    state = _stub_hosted_update(page)
+    state['unavailable'] = True
+    _hosted_workbench(page)
+    assert state['requests']
+    expect(page.get_by_test_id('hosted-update')).to_have_count(0)
+    page.locator('#sql').fill('select 22 as update_unavailable')
+    expect(page.locator('#sql')).to_have_value('select 22 as update_unavailable')
+
+
 def _pair_workbench(page):
     # The CLI opens a fresh document with a one-use local launch fragment.
     base = page.url.split('?')[0].split('#')[0]

@@ -20,11 +20,19 @@ on:
       - 'scripts/verify_hosted_image.py'
       - '.github/workflows/hosted-image.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact source commit for a release image
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
-  group: hosted-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: hosted-image-${{ inputs.source_sha || github.ref }}
+  cancel-in-progress: ${{ !inputs.source_sha }}
+env:
+  SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
 jobs:
   image:
     strategy:
@@ -41,6 +49,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
@@ -56,7 +66,7 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           load: true
           tags: quarry-hosted:verify
-          build-args: GIT_SHA=${{ github.sha }}
+          build-args: GIT_SHA=${{ env.SOURCE_SHA }}
           cache-from: type=gha,scope=hosted-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=hosted-${{ matrix.arch }}
       - name: Native loader and hash command
@@ -65,11 +75,11 @@ jobs:
           printf 'disposable-ci-password\n' | docker run --rm -i quarry-hosted:verify hash-password --stdin | grep '^\$argon2id\$'
           docker run --rm --entrypoint pg_dump quarry-hosted:verify --version
       - name: Real container acceptance
-        run: python3 scripts/verify_hosted_image.py quarry-hosted:verify --expected-version ${{ github.sha }}
+        run: python3 scripts/verify_hosted_image.py quarry-hosted:verify --expected-version "$SOURCE_SHA"
       - name: Publish checked native image
         if: github.event_name != 'pull_request'
         run: |
-          image="ghcr.io/${{ github.repository }}:sha-${{ github.sha }}-${{ matrix.arch }}"
+          image="ghcr.io/${{ github.repository }}:sha-$SOURCE_SHA-${{ matrix.arch }}"
           docker tag quarry-hosted:verify "$image"
           docker push "$image"
   manifest:
@@ -87,12 +97,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish manifest from tested native images
+        env:
+          RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           image="ghcr.io/${{ github.repository }}"
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            docker buildx imagetools create --tag "$image:sha-${{ github.sha }}" --tag "$image:hosted" \
-              "$image:sha-${{ github.sha }}-amd64" "$image:sha-${{ github.sha }}-arm64"
-          else
-            docker buildx imagetools create --tag "$image:sha-${{ github.sha }}" \
-              "$image:sha-${{ github.sha }}-amd64" "$image:sha-${{ github.sha }}-arm64"
+          tags=(--tag "$image:sha-$SOURCE_SHA")
+          if [ "$GITHUB_REF" = "refs/heads/main" ] && [ -z "$RELEASE_SOURCE_SHA" ]; then
+            tags+=(--tag "$image:hosted")
           fi
+          docker buildx imagetools create "${tags[@]}" \
+            "$image:sha-$SOURCE_SHA-amd64" "$image:sha-$SOURCE_SHA-arm64"

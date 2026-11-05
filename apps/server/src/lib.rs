@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+mod updates;
 use auth::{Auth, fail};
 use axum::{
     Json, Router,
@@ -20,6 +21,7 @@ static UI: include_dir::Dir<'_> =
 struct App {
     auth: Arc<Auth>,
     hosted: Router,
+    updates: Arc<updates::UpdateCheck>,
     version: String,
 }
 pub fn router(config: config::Config, version: String) -> Result<Router, quarry_service::Failure> {
@@ -39,6 +41,7 @@ pub fn router(config: config::Config, version: String) -> Result<Router, quarry_
     Ok(Router::new().fallback(any(dispatch)).with_state(App {
         auth,
         hosted: quarry_platform::hosted_router(hosted),
+        updates: Arc::new(updates::UpdateCheck::new()),
         version,
     }))
 }
@@ -81,6 +84,7 @@ async fn dispatch(State(app): State<App>, req: Request) -> Response {
     let result=async {
         if path=="/health" && method==Method::GET {return Ok(json_response(json!({"status":"ok","service":"quarry","version":app.version,"packageVersion":env!("CARGO_PKG_VERSION")})));}
         if path=="/api/hosted/config" && method==Method::GET {return Ok(json_response(app.auth.discovery()));}
+        if path=="/api/hosted/update" && method==Method::GET {return Ok(json_response(app.updates.status().await));}
         if path=="/api/db/authorize" && method==Method::GET {
             let query=url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).collect::<std::collections::HashMap<_,_>>();
             let permission=query.get("permission").map(|s|s.as_ref()).unwrap_or("lab:db:read");

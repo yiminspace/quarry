@@ -374,6 +374,9 @@
 .platform-connection>summary{list-style:none}
 .platform-connection>summary::-webkit-details-marker{display:none}
 .platform-connection .platform-status{position:absolute;right:0;top:calc(100% + 8px);z-index:100;width:min(440px,calc(100vw - 24px));box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:12px;white-space:normal;text-align:left}
+.hosted-update{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 6px;margin:4px 8px 8px;padding:9px 10px;border:1px solid var(--line);border-radius:var(--r-btn);background:var(--surf-2);color:var(--fg);font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.hosted-update a{grid-column:1;color:var(--accent)}
+.hosted-update-dismiss{grid-column:2;grid-row:1 / span 2;align-self:start;width:22px;height:22px}
 .hosted-entry{display:grid;place-items:center;min-height:100vh;padding:24px;background:var(--bg1);color:var(--fg)}
 .hosted-login{width:min(360px,100%);padding:28px;border:1px solid var(--line);border-radius:12px;background:var(--surf-1)}
 .hosted-login h1{font-size:22px;margin:20px 0}

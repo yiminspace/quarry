@@ -2,13 +2,12 @@
 
 [中文](hosting.zh-CN.md) · [Standalone installation](install.md) · [Rust architecture](rust-preview.md)
 
-One official Docker image serves the workbench, sign-in, read-only database API
-and query executor. Supply database and access configuration; do not write a Rust
-adapter or rebuild the frontend. YiminLab uses the same image with its existing IAM.
+One official Docker image serves the workbench, sign-in, read-only database API,
+and query executor. Configure your databases and access grants, then choose the
+built-in account or connect your identity provider.
 
-Standalone Quarry remains independent: `qy`, `qy gui` and `qy mcp` need neither
-this server nor `ylab` nor platform sign-in. Existing local configuration and
-records are not forcibly migrated.
+Install `qy` to use the CLI, `qy gui`, or `qy mcp` on your computer with your local
+configuration and records. Standalone and hosted Quarry share the query engine.
 
 ## Start the image
 
@@ -59,6 +58,13 @@ password hashes or deployment keys into the image or commit them publicly.
 Existing standalone workspaces remain supported through the advanced
 `config_path`, `workspaces` and `resources` configuration.
 
+## See hosted updates
+
+The workbench shows a version and a link to the release notes when a newer stable
+hosted image is available. A notice can be dismissed for that version in the
+current browser. The release notes point deployment operators to the image they
+can select through their existing deployment process.
+
 ## Use an existing identity provider
 
 Keep the same image and change `auth` to `external`:
@@ -74,11 +80,13 @@ Keep the same image and change `auth` to `external`:
 }
 ```
 
-The server calls `verify_url` for live identity/permission checks. `headers` mode
-reads identity headers returned by trusted IAM; `json` mode reads `id`, `roles`
-and `permissions`. Every operation needs both the relevant permission and its
-resource `readers` grant. Browser-supplied identity headers or decoded-only tokens
-are insufficient. Permission names are `lab:db:read`, `lab:db:local`,
+For each authorization check, Quarry sends a GET request to `verify_url` with
+the Bearer token, `X-Required-Permission`, and `X-Required-Scope`. The identity
+provider verifies the session and permission before returning HTTP 200. In `json`
+mode, Quarry reads `id`, `roles`, and `permissions` from the response. In `headers`
+mode, it reads `X-User-Id`, `X-User-Roles`, and `X-User-Permissions`, with roles and
+permissions separated by commas. Quarry then checks the resource's `readers` grant.
+Permission names are `lab:db:read`, `lab:db:local`,
 `lab:db:schema:export` and `lab:ai:invoke`.
 
 Browser login, refresh and optional `logout_path` are same-origin paths served
@@ -88,10 +96,11 @@ by your existing platform, through a reverse proxy when needed. Session shape:
 {"access_token":"...","refresh_token":"...","expires_in":3600,"user":{"id":"stable-account-id"}}
 ```
 
-The frontend reads public runtime settings from `/api/hosted/config`, then uses
-that session key and authentication paths. YiminLab supplies
-`ylab.console.session.v1`, its existing Console login route and IAM refresh
-endpoint, without a separate database image or custom frontend build.
+The frontend reads the session key and authentication paths from
+`/api/hosted/config`. After sign-in, your platform writes the session to that key
+and returns the browser to `/quarry/`. Route `/quarry/`, `/api/hosted/*`, and
+`/api/db/*` to the hosted service. Route your sign-in, refresh, and sign-out paths
+to the platform endpoints that handle them.
 Private-network HTTP verification requires explicit `allow_insecure_http: true`;
 public connections should use HTTPS.
 
@@ -101,9 +110,10 @@ The server owns connections, access grants and query execution. Drafts, tabs,
 history, bounded result caches, assistant conversations, generated SQL and restore
 points live in the user's local SQLite, shared with the CLI.
 
-`ylab db connect` opens the workbench and connects/saves automatically, without
-address, pairing-code or database-administration forms. Standalone hosting uses
-a one-use sign-in handoff; existing platforms retain their account confirmation.
+An optional desktop client starts a loopback companion and opens the paired
+workbench. See the [desktop integration example](ylab-integration.md), or use
+the Rust SDK to provide a companion for your own platform. Bind it to the hosted
+origin, current account, and local SQLite path, and pair with a one-use code.
 The handoff code travels only in the URL fragment and is removed before requests;
 long-lived Bearer tokens never travel in URLs. Local capabilities remain bound
 to the platform, account and origin, with expiry and revocation and no arbitrary
@@ -133,5 +143,4 @@ cancellation, automatic companion SQLite writes and outage recovery, and the
 standalone CLI/GUI/MCP regression suite. Mock previews and successful builds are
 separate evidence, not substitutes.
 
-The Rust libraries remain available for advanced embedding; see
-[Rust architecture](rust-preview.md) and [YiminLab integration](ylab-integration.md).
+See [Rust architecture](rust-preview.md) to embed Quarry in another application.
