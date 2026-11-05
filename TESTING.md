@@ -293,6 +293,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 128 | native connection sources | a merged cloud environment keeps its human label and Cloud badge even when a configured connection has the same environment name. Workspace settings and Tunnel Keeper remain available. Metadata, execution and cancellation use the distinct cloud route ID; cloud connection info shows no credentials or local administration actions; the local SQL assistant stays available for locally configured connections; each environment restores its own SQL and result | F:test_native_cloud_source_separates_same_name_targets_and_cancel, V:test_native_cloud_badge_uses_theme_tokens | ✅ |
 | 129 | native cloud availability | adding a cloud dev environment preserves the original configured default; focus refresh updates the cloud catalog and status; a temporarily missing cloud target retains its draft and binding without falling back to a local connection; local queries work through the outage and reconnect never replays SQL | F:test_native_cloud_outage_preserves_drafts_and_local_queries | ✅ |
 | 130 | header | the logo and Quarry name share a link to the English or Chinese project homepage; a labeled GitHub icon inside VoyageToolbar follows the palette control and links to the project repository; both open in new tabs | F:test_header_project_links_open_in_new_tabs, V:test_header_project_links_use_theme_tokens, V:test_header_toolbar_buttons_share_full_box_spec | ✅ |
+| 131 | themes | Trace Paper, Exam Hall, and IELTS Lab are selectable in the Voyage palette; each applies its four-axis preset and background, keeps the selected theme across a mode toggle and reload, and shows the active palette card | F:test_voyage_theme_presets_apply_and_persist | ✅ |
 
 ### Hosted workbench matrix
 
@@ -1362,12 +1363,17 @@ This section describes the former cloud-origin companion. See the cloud-only and
 
 - Existence: the brand and GitHub anchors are covered by row 130. They add no
   event handlers, browser storage keys or Quarry API calls. The brand reads the
-  same locale as the existing Voyage language control.
+  same locale as the existing Voyage language control. Voyage 0.19 exposes three
+  new palette cards through the existing selection binding (row 131).
 - Capability: project discovery and source access are available from the
   standalone and hosted headers. Native links support pointer and keyboard
   activation, and GitHub follows the palette control with the same icon box.
-  The existing narrow-window header gap is recorded in Design gaps.
+  The existing narrow-window header gap is recorded in Design gaps. Each new
+  palette card applies its preset in both modes and remains selected on reload.
 - Shared state: both links open a separate tab and write no workbench state.
   Quarry supplies the repository URL via VoyageToolbar.githubHref.
   Connection selection, SQL drafts, active results and theme preferences stay
   with the original workbench.
+  Palette selection and mode use the existing Voyage preference write path.
+  The theme attributes and selected-card state read those preferences,
+  including after reload.

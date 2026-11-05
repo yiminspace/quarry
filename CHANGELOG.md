@@ -11,6 +11,7 @@ pre-1.0 history followed the earlier development policy.
 - Use the hosted workbench directly with cloud-only connections and account-scoped browser drafts and SQL history.
 - Keep the native workbench's full SQLite save budget and prioritize drafts when cached query results would exceed it.
 - Link the workbench logo and name to the localized Quarry homepage and add a GitHub repository shortcut next to the theme controls.
+- Add the Trace Paper, Exam Hall, and IELTS Lab themes to the workbench palette.
 
 ## [2.0.1] - 2026-11-05
 
