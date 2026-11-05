@@ -21,7 +21,7 @@ impl Cli {
             .expect("start isolated qy");
         assert!(
             output.status.success(),
-            "isolated qy failed: {}",
+            "isolated qy {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         serde_json::from_slice(&output.stdout).expect("JSON output")
