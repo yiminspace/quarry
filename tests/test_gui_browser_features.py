@@ -29,6 +29,72 @@ from test_gui_browser import page_saved  # noqa: F401  (fixture reused below)
 pytestmark = [requires_chromium, pytest.mark.browser]
 
 
+def test_header_project_links_open_in_new_tabs(page_sqlite):
+    page = page_sqlite
+    workbench = page.url
+    homepage = "https://yiminspace.github.io/quarry/"
+    repository = "https://github.com/yiminspace/quarry"
+    page.context.route(f"{homepage}**", lambda route: route.fulfill(body="Quarry homepage"))
+    page.context.route(repository, lambda route: route.fulfill(body="Quarry repository"))
+
+    brand = page.get_by_role("link", name="Quarry", exact=True)
+    github = page.locator(".vg-topbar").get_by_role("link", name="GitHub", exact=True)
+    assert page.locator(".vg-topbar > .vg-switcher + .vg-topbar-github").count() == 1
+    assert github.get_attribute("title") == "GitHub"
+
+    for control, url in ((brand.locator(".logo"), homepage),
+                         (brand.locator(".brand"), homepage), (github, repository)):
+        with page.expect_popup() as popup:
+            control.click()
+        with_popup = popup.value
+        with_popup.wait_for_url(url)
+        assert with_popup.evaluate("window.opener === null")
+        with_popup.close()
+        assert page.url == workbench
+
+    with page.expect_navigation():
+        page.locator(".vg-lang-switch").click()
+    with page.expect_popup() as popup:
+        brand.press("Enter")
+    popup.value.wait_for_url(f"{homepage}zh.html")
+    popup.value.close()
+    assert page.url == workbench
+
+
+@pytest.mark.parametrize(
+    "label,theme,style,tone,dark_background,light_background",
+    [
+        ("Trace Paper", "trace", "classic", "quiet", "rgb(14, 28, 48)", "rgb(242, 241, 232)"),
+        ("Exam Hall", "examhall", "plain", "crisp", "rgb(0, 0, 0)", "rgb(255, 255, 255)"),
+        ("IELTS Lab", "ielts", "plain", "crisp", "rgb(0, 0, 0)", "rgb(255, 255, 255)"),
+    ],
+)
+def test_voyage_theme_presets_apply_and_persist(
+    page_sqlite, label, theme, style, tone, dark_background, light_background
+):
+    page = page_sqlite
+    palette = page.locator(".vg-switcher-trigger")
+    card = page.get_by_role("menuitemradio", name=label, exact=True)
+
+    def appearance():
+        return page.evaluate("""() => {
+            const { theme, mode, style, tone } = document.documentElement.dataset;
+            return [theme, mode, style, tone, getComputedStyle(document.body).backgroundColor];
+        }""")
+
+    palette.click()
+    card.click()
+    assert appearance() == [theme, "dark", style, tone, dark_background]
+
+    page.locator(".vg-switcher-mode").click()
+    assert appearance() == [theme, "light", style, tone, light_background]
+    page.reload()
+    palette.wait_for()
+    assert appearance() == [theme, "light", style, tone, light_background]
+    palette.click()
+    assert card.get_attribute("aria-checked") == "true"
+
+
 def test_table_query_disclosure_preserves_draft_and_does_not_execute(page_noparam):
     page = page_noparam
     _select_testpg(page)

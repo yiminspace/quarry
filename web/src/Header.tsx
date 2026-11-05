@@ -10,12 +10,10 @@ import UpdatePanel from "./UpdatePanel";
 import WhatsNewPanel from "./WhatsNewPanel";
 import WorkspaceModal from "./WorkspaceModal";
 
-/** The header bar: brand, workspace label, workspace manager,
- * health-check-all, language and theme toggles — the legacy GUI's
- * `<header>` chrome, same DOM and icons. */
+/** The header bar: project links, workspace controls, and appearance settings. */
 export default function Header() {
   const headerRef = useRef<HTMLElement>(null);
-  // Voyage 0.15 exposes accessible labels but no title props. Mirror those
+  // Voyage exposes accessible labels but no title props. Mirror those
   // labels into native hover hints, including mode changes and locale reloads.
   useEffect(() => {
     const header = headerRef.current;
@@ -81,8 +79,15 @@ export default function Header() {
 
   return (
     <header className="vg-header" ref={headerRef}>
-      <div className="vg-logo logo">Q</div>
-      <span className="vg-brand brand">Quarry</span>
+      <a
+        className="header-brand-link"
+        href={LANG === "zh" ? "https://yiminspace.github.io/quarry/zh.html" : "https://yiminspace.github.io/quarry/"}
+        target="_blank"
+        rel="noreferrer"
+      >
+        <span className="vg-logo logo" aria-hidden="true">Q</span>
+        <span className="vg-brand brand">Quarry</span>
+      </a>
       <span className="vg-ws ws" id="ws" title={workspaces.join("\n")}>
         {multiWs ? (
           <>
@@ -143,6 +148,7 @@ export default function Header() {
       <VoyageToolbar
         locale={LANG}
         onLocaleChange={toggleLang}
+        githubHref="https://github.com/yiminspace/quarry"
         icons={{
           moon: <i className="ti ti-moon" />,
           sun: <i className="ti ti-sun" />,
