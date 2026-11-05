@@ -98,7 +98,7 @@ GUI, pins the React app unchanged. Packaging and React-only features live in
 | R7 | visual | design tokens resolve to the legacy "Slate & Copper" hex values in BOTH themes (body/header/Run-button/badge via getComputedStyle); dark is the default | test_gui_visual:test_default_theme_is_dark_with_legacy_palette, test_light_theme_matches_legacy_palette | ✅ |
 | R8 | visual | 14px sans app chrome + mono editor; icons render through the self-hosted tabler-icons webfont (no CDN — closes #14) | test_gui_visual:test_typography_matches_legacy, test_icons_use_selfhosted_tabler_font | ✅ |
 | R9 | visual | header's lang/theme/palette buttons share one uniform `.vg-iconbtn` box (equal height/min-width/border-radius, radius tracks `--r-btn` across the style axis — voyage 0.7.0); `.ciact .iconbtn`'s smaller CI-modal icons stay 22×22px, not stretched by voyage's fixed min-width | test_gui_visual:test_header_icon_controls_share_uniform_box, test_header_iconbtn_radius_follows_style_axis, test_ciact_iconbtn_fixed_size_not_stretched_by_min_width | ✅ |
-| R10 | visual | header uses Voyage 0.15's dedicated `.vg-topbar`: DOM order is fixed 语言→明暗→调色板; lang switching causes no horizontal reflow; all three controls share the full box spec; the topbar has transparent/zero chrome, contains no query `.vg-toolbar`, and omitting `account` renders no account placeholder; `ResultWorkbench`'s `.vg-toolbar.toolbar` independently retains its padding/surface/border chrome | test_gui_visual:test_header_toolbar_dom_order_is_lang_mode_palette, test_lang_switch_fixed_width_no_reflow, test_header_toolbar_buttons_share_full_box_spec, test_header_topbar_has_no_query_toolbar_chrome_or_account_placeholder, test_query_toolbar_keeps_its_own_chrome, test_workbench_compact_spacing | ✅ |
+| R10 | visual | header uses Voyage's dedicated `.vg-topbar`: language, mode, and palette keep their order and the GitHub link follows them inside the toolbar; lang switching causes no horizontal reflow; all four controls share the full box spec; the topbar has transparent/zero chrome, contains no query `.vg-toolbar`, and omitting `account` renders no account placeholder; `ResultWorkbench`'s `.vg-toolbar.toolbar` independently retains its padding/surface/border chrome | test_gui_visual:test_header_toolbar_dom_order_is_lang_mode_palette, test_lang_switch_fixed_width_no_reflow, test_header_toolbar_buttons_share_full_box_spec, test_header_topbar_has_no_query_toolbar_chrome_or_account_placeholder, test_query_toolbar_keeps_its_own_chrome, test_workbench_compact_spacing | ✅ |
 | R11 | visual | Voyage 0.15's Signal theme card is selectable; it resolves to `signal × current mode × classic × quiet`, renders true black/white body and header surfaces in dark/light modes, persists across reload without console errors, and does not disturb the pinned Slate baselines | test_gui_visual:test_signal_theme_four_axes_colors_and_reload_persistence, test_default_theme_is_dark_with_legacy_palette, test_light_theme_matches_legacy_palette | ✅ |
 
 ## GUI feature matrix
@@ -292,7 +292,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 127 | assistant/language | no reply-language controls appear on hover or keyboard focus; the GUI reads the CLI-owned preference and backend-resolved system language, independently of interface language and obsolete localStorage; reopening/focus/visibility/reload reads CLI updates without changing drafts/SQL/history or sending model/query requests; the preference affects GUI replies only | F:test_assistant_has_no_reply_language_settings_on_hover_or_focus, F:test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state, F:test_assistant_reply_language_rereads_cli_and_system_changes, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
 | 128 | native connection sources | a merged cloud environment keeps its human label and Cloud badge even when a configured connection has the same environment name. Workspace settings and Tunnel Keeper remain available. Metadata, execution and cancellation use the distinct cloud route ID; cloud connection info shows no credentials or local administration actions; the local SQL assistant stays available for locally configured connections; each environment restores its own SQL and result | F:test_native_cloud_source_separates_same_name_targets_and_cancel, V:test_native_cloud_badge_uses_theme_tokens | ✅ |
 | 129 | native cloud availability | adding a cloud dev environment preserves the original configured default; focus refresh updates the cloud catalog and status; a temporarily missing cloud target retains its draft and binding without falling back to a local connection; local queries work through the outage and reconnect never replays SQL | F:test_native_cloud_outage_preserves_drafts_and_local_queries | ✅ |
-
+| 130 | header | the logo and Quarry name share a link to the English or Chinese project homepage; a labeled GitHub icon inside VoyageToolbar follows the palette control and links to the project repository; both open in new tabs | F:test_header_project_links_open_in_new_tabs, V:test_header_project_links_use_theme_tokens, V:test_header_toolbar_buttons_share_full_box_spec | ✅ |
 
 ### Hosted workbench matrix
 
@@ -1357,3 +1357,17 @@ This section describes the former cloud-origin companion. See the cloud-only and
   state or dropping draft SQL. A size refusal leaves the pending revision and
   recovery intact. The explicit confirmed load is the only user action that discards
   recovery. Separate query-history entries are outside this CAS document.
+
+### Header project-link audits (2026-11-05)
+
+- Existence: the brand and GitHub anchors are covered by row 130. They add no
+  event handlers, browser storage keys or Quarry API calls. The brand reads the
+  same locale as the existing Voyage language control.
+- Capability: project discovery and source access are available from the
+  standalone and hosted headers. Native links support pointer and keyboard
+  activation, and GitHub follows the palette control with the same icon box.
+  The existing narrow-window header gap is recorded in Design gaps.
+- Shared state: both links open a separate tab and write no workbench state.
+  Quarry supplies the repository URL via VoyageToolbar.githubHref.
+  Connection selection, SQL drafts, active results and theme preferences stay
+  with the original workbench.

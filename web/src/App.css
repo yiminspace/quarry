@@ -16,6 +16,21 @@
   --production-selection:color-mix(in srgb,var(--production-accent) 10%,var(--surf-1));
 }
 
+.header-brand-link{
+  display:inline-flex;
+  align-items:center;
+  gap:inherit;
+  flex:none;
+  color:inherit;
+  text-decoration:none;
+}
+.header-brand-link:hover .vg-brand{text-decoration:underline}
+.header-brand-link:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:var(--r-btn);
+}
+
 /* ---- 侧栏里 voyage 组件层没有覆盖到的边角 ---- */
 .grp .ti{font-size:13px}
 .vg-ws-note{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg3);font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}

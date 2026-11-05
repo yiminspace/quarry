@@ -251,11 +251,23 @@ def test_lang_switch_fixed_width_no_reflow(page):
 
 
 def test_header_toolbar_buttons_share_full_box_spec(page):
-    # All three topbar buttons agree on the complete box spec pairwise.
-    selectors = (".vg-lang-switch", ".vg-switcher-mode", ".vg-switcher-trigger")
+    # The GitHub shortcut uses the same Voyage box as the appearance controls.
+    selectors = (".vg-lang-switch", ".vg-switcher-mode", ".vg-switcher-trigger", ".vg-topbar-github")
     for prop in ("height", "width", "borderRadius", "boxSizing"):
         values = {sel: _style(page, sel, prop) for sel in selectors}
         assert len(set(values.values())) == 1, (prop, values)
+
+
+def test_header_project_links_use_theme_tokens(page):
+    brand = ".header-brand-link"
+    github = ".vg-topbar-github"
+    for colors in (DARK, LIGHT):
+        assert _style(page, brand, "color") == colors["fg"]
+        assert _style(page, f"{brand} .logo", "color") == colors["accent_ink"]
+        page.locator(github).hover()
+        assert _style(page, github, "color") == colors["fg"]
+        assert _style(page, f"{github} svg", "stroke") == colors["fg"]
+        page.locator(".vg-switcher-mode").click()
 
 
 def test_signal_theme_four_axes_colors_and_reload_persistence(page):
