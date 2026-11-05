@@ -157,7 +157,8 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
     }
     let body = if method == axum::http::Method::POST {
         let limit = if state.native.is_some() && path == "/api/personal" {
-            2 * 1024 * 1024
+            // Allow the full SQLite document plus the value/revision envelope.
+            quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES + 128
         } else {
             262_144
         };
@@ -956,6 +957,72 @@ mod native_http_tests {
         assert_eq!(output["sql"], "SELECT :'key'");
         let history = native.history.read().await.unwrap();
         assert_eq!(history["history"][0]["sql"], "SELECT :'key'");
+    }
+    #[tokio::test]
+    async fn native_personal_http_preserves_sqlite_document_budget_and_revision() {
+        struct UnusedCloud;
+        #[async_trait::async_trait]
+        impl CloudBackend for UnusedCloud {
+            async fn request(
+                &self,
+                _method: &str,
+                _path: &str,
+                _pairs: &[(&str, String)],
+                _body: Option<Value>,
+            ) -> Result<Value> {
+                panic!("Personal storage must work offline");
+            }
+        }
+
+        let (dir, mut state) = fixture();
+        let native = NativeWorkbench::new(
+            Arc::new(UnusedCloud),
+            NativeHistory::new(
+                dir.path().join("personal.sqlite3"),
+                "local".into(),
+                "owner".into(),
+            ),
+        );
+        let launch = native.launch_url("http://localhost:8765/quarry/");
+        let code = launch.split_once("#quarry_workbench=").unwrap().1;
+        let session = native.establish(code, state.port).unwrap();
+        let cookie = session.split_once(';').unwrap().0;
+        state.native = Some(native);
+        let app = router(state);
+        let save = |revision: u64, value: Value| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/personal")
+                    .header("host", "localhost:8765")
+                    .header("cookie", cookie)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"value":value,"revision":revision}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+        };
+        let budget = quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES;
+        let overhead = json!({"values":{"draft":""}}).to_string().len();
+        let limit = budget - overhead;
+        let document = |size| json!({"values":{"draft":"x".repeat(size)}});
+
+        assert_eq!(
+            save(0, document(limit)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let oversized = save(1, document(limit + 1)).await.unwrap();
+        assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = oversized.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["code"],
+            "too_large"
+        );
+        assert_eq!(
+            save(1, document(32)).await.unwrap().status(),
+            StatusCode::OK
+        );
     }
     async fn send(
         state: &WebState,

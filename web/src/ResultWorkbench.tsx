@@ -1278,7 +1278,8 @@ export default function ResultWorkbench() {
         </div>
         <TabBar isProduction={isProduction} onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
-        <EditorWorkspace open={!!assistantSession.open}
+        <EditorWorkspace open={!!assistantSession.open && current?.source !== "cloud"}
+          unavailableReason={current?.source === "cloud" ? t("assistant_native_cloud_unavailable") : undefined}
           onOpen={() => void assistant.open(activeTab)} onClose={() => assistant.close(activeTabId)}
           assistant={<SqlAssistant key={activeTabId} session={assistantSession} currentSql={activeTab.sql}
             onDraftChange={(update) => assistant.setDraft(activeTabId, update)}

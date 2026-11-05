@@ -5,8 +5,9 @@ const COLLAPSED_HEIGHT = Math.max(EDITOR_MIN, 88);
 // Leave room for the chat's maximum-size composer and a visible message area.
 const EXPANDED_MIN_HEIGHT = 200;
 
-export default function EditorWorkspace({ open, onOpen, onClose, children, assistant, toolbar }: {
+export default function EditorWorkspace({ open, onOpen, onClose, children, assistant, toolbar, unavailableReason }: {
   open: boolean; onOpen: () => void; onClose: () => void; children: ReactNode; assistant: ReactNode; toolbar: ReactNode;
+  unavailableReason?: string;
 }) {
   // The persisted height always describes SQL input only. An expanded assistant
   // stretches to the bottom of the SQL column's resize handle and query toolbar.
@@ -91,7 +92,8 @@ export default function EditorWorkspace({ open, onOpen, onClose, children, assis
             <i className="ti ti-chevrons-left" aria-hidden="true" />
           </button>
         </div>
-      </> : <button type="button" className="assistant-rail" data-testid="assistant-open" onClick={onOpen} aria-label={t("assistant_open")} title={t("assistant_open")}>
+      </> : <button type="button" className="assistant-rail" data-testid="assistant-open" onClick={onOpen}
+        disabled={!!unavailableReason} aria-label={t("assistant_open")} title={unavailableReason ?? t("assistant_open")}>
         <span className="assistant-rail-name">{t("assistant_rail_label")}</span>
       </button>}
       <div className="editor-document">

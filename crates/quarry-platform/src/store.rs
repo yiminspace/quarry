@@ -9,6 +9,8 @@ pub struct PersonalStore {
     path: PathBuf,
 }
 impl PersonalStore {
+    pub const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
+
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
@@ -111,7 +113,7 @@ impl PersonalStore {
     ) -> Result<Value> {
         validate(kind, key)?;
         let raw = serde_json::to_string(&value)?;
-        if raw.len() > 16 * 1024 * 1024 {
+        if raw.len() > Self::MAX_DOCUMENT_BYTES {
             return Err(failure(
                 413,
                 "too_large",

@@ -4202,10 +4202,14 @@ def test_native_cloud_source_separates_same_name_targets_and_cancel(page_sqlite)
     expect(page.locator("#wsBtn")).to_be_visible()
     expect(page.locator("#kaBadge")).to_be_visible()
     expect(page.get_by_test_id("cloud-status")).to_have_text("Cloud: connected")
+    expect(page.get_by_test_id("assistant-open")).to_be_enabled()
     _run_sql(page, "select note from entries where id = 1")
     expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
 
     cloud.click()
+    expect(page.get_by_test_id("assistant-open")).to_be_disabled()
+    expect(page.get_by_test_id("assistant-open")).to_have_attribute(
+        "title", "The local SQL assistant is available for locally configured connections.")
     expect(page.locator('#tbl-panel [data-t="cloud_entries"]')).to_be_visible()
     expect(page.locator("#runModeBtn")).to_have_attribute("data-auto", "false")
     assert len(queries) == 1
@@ -7134,8 +7138,9 @@ def test_platform_builtin_handoff_never_replaces_another_browser_account(page_sq
     assert not state['local_requests']
 
 
-def _native_personal_workbench(page, *, unavailable=False, launch_code=None):
-    state = {'revision': 0, 'value': None, 'unavailable': unavailable, 'writes': [], 'launches': []}
+def _native_personal_workbench(page, *, unavailable=False, launch_code=None, saved_values=None):
+    state = {'revision': 0, 'value': None if saved_values is None else {'values': saved_values},
+             'unavailable': unavailable, 'writes': [], 'launches': []}
 
     def document(route):
         if route.request.resource_type != 'document':
@@ -7190,6 +7195,57 @@ def test_native_workbench_records_reopen_from_sqlite_without_browser_records(pag
     page.reload(wait_until='domcontentloaded')
     page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=sql)
     assert len(state['launches']) == 1
+
+
+def test_native_workbench_large_save_prioritizes_drafts_over_results(page_sqlite):
+    page = page_sqlite
+    # Simulate a legacy document close to the SQLite limit with multi-byte text.
+    # This result is inactive, so its removal must only affect persistence.
+    result = json.dumps({'cached_rows': '界' * (16 * 1024 * 1024 // 3 - 10_000)}, ensure_ascii=False)
+    state = _native_personal_workbench(page, saved_values={'qy_result': result, 'qy_tabres': '[]'})
+    editor = page.locator('#sql')
+
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        editor.fill('select 13 as compatible_large_document')
+    assert state['value']['values']['qy_result'] == result
+
+    sql = 'select 14 -- ' + '界' * 15_000
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST') as saved:
+        editor.fill(sql)
+    assert saved.value.ok
+    values = state['value']['values']
+    assert 'qy_result' not in values and 'qy_tabres' not in values
+    assert any(tab['sql'] == sql for tab in json.loads(values['qy_tabs']))
+    assert editor.input_value() == sql
+
+
+def test_native_workbench_oversized_draft_can_resume_saving(page_sqlite):
+    page = page_sqlite
+    history = json.dumps(['-- ' + '界' * (16 * 1024 * 1024 // 3 - 10_000)], ensure_ascii=False)
+    state = _native_personal_workbench(page, saved_values={'qy_hist': history})
+    editor = page.locator('#sql')
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        editor.fill('select 15 as save_before_oversize')
+    previous_revision = state['revision']
+    previous_writes = len(state['writes'])
+
+    sql = 'select 16 -- ' + '界' * 15_000
+    editor.fill(sql)
+    page.get_by_test_id('native-records-status').click()
+    page.get_by_text('Workbench records exceed 16 MiB. Shorten drafts or export recovery before closing.', exact=True).wait_for()
+    assert len(state['writes']) == previous_writes
+    assert state['revision'] == previous_revision
+    assert editor.input_value() == sql
+    assert sql in page.evaluate("sessionStorage.getItem('qy_native:native-fixture:recovery')")
+
+    shorter_sql = 'select 17 as retry_after_shrinking'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST') as saved:
+        editor.fill(shorter_sql)
+    assert saved.value.ok
+    assert state['revision'] == previous_revision + 1
+    assert state['value']['values']['qy_hist'] == history
+    assert any(tab['sql'] == shorter_sql for tab in json.loads(state['value']['values']['qy_tabs']))
+    page.get_by_test_id('native-records-status').wait_for(state='detached')
 
 
 def test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite(page_sqlite):

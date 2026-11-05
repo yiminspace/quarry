@@ -290,7 +290,7 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 125 | assistant/saved queries | changing an immutable saved-query template creates an editable draft and leaves the source template intact, without executing either query | F:test_assistant_saved_query_edit_creates_draft_preserves_template | ✅ |
 | 126 | assistant/Markdown | assistant replies render headings, emphasis, lists, inline/fenced code, tables and blockquotes in streams and recovered history; user/system messages stay literal; code examples cannot apply or run SQL; raw HTML, executable/local URLs and remote image requests are blocked; external links open separately; code/tables scroll within a narrow panel; headings use the theme accent and SQL keywords/strings/numbers/comments use distinct theme tokens | F:test_assistant_markdown_formats_reply_and_reopened_history_without_sql_changes, F:test_assistant_markdown_blocks_html_unsafe_urls_and_remote_images, F:test_assistant_markdown_stream_closes_fence_and_keeps_composer_fixed, F:test_assistant_markdown_wide_code_and_tables_scroll_inside_narrow_panel, V:test_assistant_markdown_chrome_tracks_theme_tokens | ✅ |
 | 127 | assistant/language | no reply-language controls appear on hover or keyboard focus; the GUI reads the CLI-owned preference and backend-resolved system language, independently of interface language and obsolete localStorage; reopening/focus/visibility/reload reads CLI updates without changing drafts/SQL/history or sending model/query requests; the preference affects GUI replies only | F:test_assistant_has_no_reply_language_settings_on_hover_or_focus, F:test_assistant_cli_reply_language_preserves_drafts_history_and_tab_state, F:test_assistant_reply_language_rereads_cli_and_system_changes, V:test_assistant_chrome_tracks_theme_tokens | ✅ |
-| 128 | native connection sources | a merged cloud environment keeps its human label and Cloud badge even when a configured connection has the same environment name. Workspace settings and Tunnel Keeper remain available. Metadata, execution and cancellation use the distinct cloud route ID; cloud connection info shows no credentials or local administration actions; each environment restores its own SQL and result | F:test_native_cloud_source_separates_same_name_targets_and_cancel, V:test_native_cloud_badge_uses_theme_tokens | ✅ |
+| 128 | native connection sources | a merged cloud environment keeps its human label and Cloud badge even when a configured connection has the same environment name. Workspace settings and Tunnel Keeper remain available. Metadata, execution and cancellation use the distinct cloud route ID; cloud connection info shows no credentials or local administration actions; the local SQL assistant stays available for locally configured connections; each environment restores its own SQL and result | F:test_native_cloud_source_separates_same_name_targets_and_cancel, V:test_native_cloud_badge_uses_theme_tokens | ✅ |
 | 129 | native cloud availability | adding a cloud dev environment preserves the original configured default; focus refresh updates the cloud catalog and status; a temporarily missing cloud target retains its draft and binding without falling back to a local connection; local queries work through the outage and reconnect never replays SQL | F:test_native_cloud_outage_preserves_drafts_and_local_queries | ✅ |
 
 
@@ -444,7 +444,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 |--------|--------------------|----------|
 | platform | shared SQL library and cloud/cross-device personal history sync | explicitly excluded; hosted records stay in the browser and the native workbench uses local SQLite |
 | hosted/offline | first visit with no cached application assets | application must be downloaded once; cached static shell supports later offline visits |
-| native cloud targets | connection details cannot reveal cloud credentials or configure the remote database; the local schema-sync button cannot use a cloud connection as its source | cloud connections expose the provider and reachability. Local configuration and local schema sync remain available for configured local sources |
+| native cloud targets | connection details cannot reveal cloud credentials or configure the remote database; the local schema-sync button and local SQL assistant require a locally configured connection | cloud connections expose provider and reachability. Hosted SQL assistant availability follows the hosted server configuration |
 | SQLite | create/import databases, remote file access, attached databases, schema editing and GUI connection configuration | first release opens configured existing local files; connections remain CLI/TOML managed |
 | editor | autocomplete does not quote reserved/special table names or parse quoted column qualifiers | backlog; table-click previews are dialect-quoted, while these autocomplete cases need manual quoting |
 | header | long workspace paths squeeze status badges on narrow windows | backlog; outside workbench spacing scope |
@@ -1307,7 +1307,7 @@ This section describes the former cloud-origin companion. See the cloud-only and
   info, and the new same-origin `/api/cancel` binding. Connection selection,
   SQL execution, metadata and optional connection fields use the existing
   `/api/connections`, `/api/query`, `/api/tables`, `/api/conninfo` and health
-  operations. Deep links and saved runs now carry the request ID through the
+  operations. The assistant rail uses the same source field to disable the local assistant for cloud targets without changing tab or conversation state. Deep links and saved runs now carry the request ID through the
   same execution contract. The source badge does not introduce a storage key.
 - Capability. The native header keeps workspace settings and Tunnel Keeper
   while reporting cloud status. The environment switcher shows the cloud
@@ -1333,6 +1333,7 @@ This section describes the former cloud-origin companion. See the cloud-only and
 | NP1 | editor/tabs | Native launch hydrates the account's SQLite workbench document before constructing the editor. Drafts survive reload without browser records. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records | ✅ |
 | NP2 | persistence/recovery | Failed hydration makes no SQLite writes. Browser recovery remains available until the persisted revision can be checked. A concurrent write preserves the current draft and offers recovery export and confirmed reload. | F:test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite; F:test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly | ✅ |
 | NP3 | launch and history | Native launch clears the one-use fragment, exchanges it for a loopback session, and reopens with that session. Query history stays in the existing account's SQLite document and loads independently of cloud access. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust native history test; YLab native process tests | ✅ |
+| NP4 | large workbench documents | Saves use the existing 16 MiB SQLite budget in UTF-8 bytes. Optional result snapshots are omitted first. A larger draft stays available for editing and recovery, and shortening it resumes saving at the same revision. | F:test_native_workbench_large_save_prioritizes_drafts_over_results; F:test_native_workbench_oversized_draft_can_resume_saving; Rust `native_personal_http_preserves_sqlite_document_budget_and_revision` | ✅ |
 
 - Existence. Native startup reads `/api/personal` after validating the loopback
   session via `/api/workbench/session`. SQL recall reads `/api/history` at startup
@@ -1340,14 +1341,19 @@ This section describes the former cloud-origin companion. See the cloud-only and
   scoped `qy_native:…:recovery` key keeps the current window copy in session
   storage and a browser backup when the shared slot is available. Updating or
   clearing this window's recovery preserves a different window's backup. The save warning, export and confirmed load action
-  are exercised in NP2.
+  are exercised in NP2 and NP4. NP4 adds a size-specific status to the same
+  recovery control, with no new endpoint or storage key.
 - Capability. Drafts, tabs, bounded tab results and editor preferences reopen
   with the native account without a cloud connection. The warning makes failed
   saves recoverable. Multiple windows can recover or explicitly load a newer
-  revision. Automatic merging of conflicting drafts is deferred.
+  revision. Legacy SQLite documents retain their 16 MiB budget. Larger
+  documents keep draft SQL in the editor and can resume saving after an edit
+  reduces their size. Automatic merging of conflicting drafts is deferred.
 - Shared state. `initializeNativeRecords` loads the saved document before
   tab/history/preferences readers initialize. The storage facade's two write
   sites update the in-memory document and browser recovery. `flushNativeRecords`
   clears recovery only for the revision it saved, and retains edits made while
-  saving. The explicit confirmed load is the only user action that discards
+  saving. The save body can omit result snapshots without changing active-tab
+  state or dropping draft SQL. A size refusal leaves the pending revision and
+  recovery intact. The explicit confirmed load is the only user action that discards
   recovery. Separate query-history entries are outside this CAS document.

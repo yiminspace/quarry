@@ -16,15 +16,22 @@ let saving = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let persistence: Persistence = "ready";
 let storageError = "";
+let oversized = false;
 let ownRecovery: string | null = null;
 const listeners = new Set<() => void>();
 export const subscribeNativeRecords = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export function nativeRecordsError(): string {
   if (persistence === "conflict") return t("native_records_conflict");
   if (persistence === "unavailable") return t("native_records_unavailable");
+  if (oversized) return t("native_records_oversized");
   return storageError;
 }
 function notify() { listeners.forEach((listener) => listener()); }
+function setOversized(value: boolean): void {
+  if (oversized === value) return;
+  oversized = value;
+  notify();
+}
 
 function validRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -57,15 +64,34 @@ function clearRecovery(key: string): void {
 }
 
 const BROWSER_LIMIT = 2_000_000;
+const DOCUMENT_BYTE_LIMIT = 16 * 1024 * 1024; // PersonalStore::MAX_DOCUMENT_BYTES
+const utf8 = new TextEncoder();
+
+function withoutResultSnapshots(snapshot: Values): Values {
+  const copy = { ...snapshot };
+  delete copy.qy_tabres;
+  delete copy.qy_result;
+  return copy;
+}
+
+function saveBody(): string | null {
+  let document = JSON.stringify({ values });
+  if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) {
+    document = JSON.stringify({ values: withoutResultSnapshots(values) });
+    if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) return null;
+  }
+  return `{"value":${document},"revision":${revision}}`;
+}
+
 function saveRecovery(): void {
   try {
     if (!recoveryKey) throw new Error("Native workbench storage scope is missing");
     if (dirty) {
-      const copy = { ...values };
+      let copy = { ...values };
       const document = () => JSON.stringify({ values: copy, revision, dirty });
       let raw = document();
       if (raw.length > BROWSER_LIMIT) {
-        delete copy.qy_tabres;
+        copy = withoutResultSnapshots(copy);
         raw = document();
       }
       if (raw.length > BROWSER_LIMIT) {
@@ -137,6 +163,11 @@ function scheduleSave(): void {
 }
 async function flushNativeRecords(): Promise<void> {
   if (!dirty || persistence !== "ready" || saving) return;
+  const body = saveBody();
+  if (body === null) {
+    setOversized(true);
+    return;
+  }
   saving = true;
   const version = edits;
   try {
@@ -144,12 +175,16 @@ async function flushNativeRecords(): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ value: { values }, revision }),
+      body,
       signal: AbortSignal.timeout(5000),
     });
     if (response.status === 409) {
       persistence = "conflict";
       notify();
+      return;
+    }
+    if (response.status === 413) {
+      setOversized(true);
       return;
     }
     if (!response.ok) throw new Error("Cannot save native records");
@@ -158,12 +193,13 @@ async function flushNativeRecords(): Promise<void> {
     revision = saved.revision;
     dirty = edits !== version;
     saveRecovery();
+    setOversized(false);
   } catch {
     persistence = "unavailable";
     notify();
   } finally {
     saving = false;
-    if (dirty) scheduleSave();
+    if (dirty && edits !== version) scheduleSave();
   }
 }
 function changed(): void {
