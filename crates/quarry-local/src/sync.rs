@@ -845,16 +845,16 @@ mod tests {
 #[cfg(test)]
 mod compensation_tests {
     use super::*;
+
     #[tokio::test]
     async fn second_rename_failure_restores_the_original_database() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let psql = dir.path().join("psql");
         let dump = dir.path().join("pg_dump");
         let log = dir.path().join("sql.log");
-        std::fs::write(
+        write_executable_fixture(
             &psql,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 sql=$(cat)
 printf '%s\n' "$sql" >> '{}'
@@ -869,12 +869,11 @@ esac
 "#,
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::write(&dump,"#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'pg_dump (PostgreSQL) 16.10'; else echo 'CREATE TABLE example(id integer);'; fi\n").unwrap();
-        for p in [&psql, &dump] {
-            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        );
+        write_executable_fixture(
+            &dump,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'pg_dump (PostgreSQL) 16.10'; else echo 'CREATE TABLE example(id integer);'; fi\n",
+        );
         let config = RuntimeConfig::load(dir.path().join("config.toml")).unwrap();
         let mut manager = LocalManager::new(config, dir.path().join("state"));
         manager.psql = psql;
@@ -885,9 +884,18 @@ esac
         target.url = "postgres://test:secret@localhost/app".into();
         target.key = "app_local".into();
         let tunnels = quarry_runtime::TunnelManager::new(dir.path().join("tunnels"));
-        assert!(manager.sync(&source, &target, &tunnels).await.is_err());
+        let error = manager.sync(&source, &target, &tunnels).await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RuntimeError::Operation(message)
+                    if message == "PostgreSQL schema operation failed; connection credentials omitted"
+            ),
+            "expected the failed staging rename, got {error:?}"
+        );
         let sql = std::fs::read_to_string(log).unwrap();
         assert!(sql.contains("ALTER DATABASE \"app\" RENAME TO \"app__prev\""));
+        assert!(sql.contains("ALTER DATABASE \"app__staging\" RENAME TO \"app\""));
         assert!(sql.contains("ALTER DATABASE \"app__prev\" RENAME TO \"app\""));
         let journal = std::fs::read_dir(dir.path().join("state"))
             .unwrap()
@@ -899,13 +907,12 @@ esac
     }
     #[tokio::test]
     async fn interrupted_swap_recovery_restores_previous_and_converges_journal() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let psql = dir.path().join("psql");
         let log = dir.path().join("sql.log");
-        std::fs::write(
+        write_executable_fixture(
             &psql,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 sql=$(cat)
 printf '%s\n' "$sql" >> '{}'
@@ -918,9 +925,7 @@ esac
 "#,
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&psql, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let mut manager = LocalManager::new(
             RuntimeConfig::load(dir.path().join("config.toml")).unwrap(),
             dir.path().join("state"),

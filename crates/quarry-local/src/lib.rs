@@ -886,6 +886,26 @@ pub fn local_identity(source: &ConnectionRecord) -> String {
 }
 
 #[cfg(test)]
+fn write_executable_fixture(path: &std::path::Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Keep writable executable descriptors out of this process so a
+    // concurrent fork cannot inherit one and cause Linux exec to fail.
+    let writer = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"umask 077; printf '%s' "$1" > "$2""#,
+            "quarry-fixture",
+        ])
+        .arg(script)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(writer.success(), "cannot write executable test fixture");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn inspected_container(host: &str, port: u16, running: bool) -> Value {
@@ -898,15 +918,14 @@ mod tests {
         info: &Value,
         configured_port: u16,
     ) -> (tempfile::TempDir, LocalManager, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let inspect = dir.path().join("inspect.json");
         std::fs::write(&inspect, serde_json::to_vec(&vec![info]).unwrap()).unwrap();
         let calls = dir.path().join("calls");
         let docker = dir.path().join("docker");
-        std::fs::write(
+        write_executable_fixture(
             &docker,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 printf '%s\n' "$1" >> '{}'
 case "$1" in
@@ -919,9 +938,7 @@ esac
                 calls.display(),
                 inspect.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let config = RuntimeConfig::load(dir.path().join("config.toml"))
             .unwrap()
             .set_local_port("postgres", configured_port)
@@ -1057,12 +1074,16 @@ esac
     }
     #[tokio::test]
     async fn docker_creation_binds_loopback_and_omits_password_from_arguments() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("docker");
         let args_file = dir.path().join("arguments");
-        std::fs::write(&script,format!("#!/bin/sh\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nrun) printf '%s\\n' \"$@\" > '{}'; echo created;;\nexec) exit 0;;\n*) exit 0;;\nesac\n",args_file.display())).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable_fixture(
+            &script,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nrun) printf '%s\\n' \"$@\" > '{}'; echo created;;\nexec) exit 0;;\n*) exit 0;;\nesac\n",
+                args_file.display()
+            ),
+        );
         let config = RuntimeConfig::load(dir.path().join("config.toml")).unwrap();
         let mut manager = LocalManager::new(config, dir.path().join("state"));
         manager.docker = script;
@@ -1075,13 +1096,14 @@ esac
     }
     #[tokio::test]
     async fn new_logical_database_registers_without_a_remote_connection() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let docker = dir.path().join("docker");
-        std::fs::write(&docker,"#!/bin/sh\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nrun) echo created;;\nexec) exit 0;;\n*) exit 0;;\nesac\n").unwrap();
-        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_executable_fixture(
+            &docker,
+            "#!/bin/sh\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nrun) echo created;;\nexec) exit 0;;\n*) exit 0;;\nesac\n",
+        );
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
