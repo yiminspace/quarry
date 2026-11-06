@@ -23,6 +23,10 @@ The next launch activates the verified update. Run `qy update` to update now.
 
 ## Use
 
+Run `qy gui stop` from another terminal to shut down the local standalone GUI.
+Use the same `--config`, `--workspace`, `--host`, and `--port` overrides as at
+launch. If you started with `--port 0`, use the port in the printed GUI URL.
+
 ```sh
 qy --workspace /path/to/workspace connections
 qy --workspace /path/to/workspace exec shop --env dev --sql 'SELECT 1'

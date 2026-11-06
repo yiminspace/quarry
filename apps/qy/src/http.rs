@@ -1,6 +1,8 @@
 //! Local HTTP workbench. The library facade is separate from transport DTOs.
 mod native;
-use crate::gui_launch::{CHALLENGE_HEADER, Instance, PROOF_HEADER};
+use crate::gui_launch::{
+    CHALLENGE_HEADER, Instance, PROOF_HEADER, ProofPurpose, STOP_HEADER, STOP_PATH,
+};
 use crate::service::{Failure, Host, Result};
 use axum::{
     Json, Router,
@@ -152,15 +154,37 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
                 .into_response();
         }
     }
+    let challenge = req
+        .headers()
+        .get(CHALLENGE_HEADER)
+        .and_then(|value| uuid::Uuid::try_parse_ascii(value.as_bytes()).ok());
+    if method == axum::http::Method::POST && path == STOP_PATH {
+        let proof = challenge.and_then(|challenge| {
+            state
+                .gui_instance?
+                .proof(&state.host, challenge, ProofPurpose::Stop)
+        });
+        if !proof.is_some_and(|proof| {
+            req.headers()
+                .get(STOP_HEADER)
+                .is_some_and(|value| value == proof.as_str())
+        }) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        state.shutdown.cancel();
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let query: BTreeMap<String, String> =
         url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
             .into_owned()
             .collect();
     let launch_proof = if method == axum::http::Method::GET && path == "/api/version" {
-        req.headers()
-            .get(CHALLENGE_HEADER)
-            .and_then(|value| uuid::Uuid::try_parse_ascii(value.as_bytes()).ok())
-            .and_then(|challenge| state.gui_instance?.proof(&state.host, challenge))
+        challenge
+            .and_then(|challenge| {
+                state
+                    .gui_instance?
+                    .proof(&state.host, challenge, ProofPurpose::Discover)
+            })
             .and_then(|proof| header::HeaderValue::from_str(&proof).ok())
     } else {
         None

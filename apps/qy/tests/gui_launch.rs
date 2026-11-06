@@ -1,4 +1,4 @@
-//! Exercises standalone GUI startup with real processes and loopback sockets.
+//! Exercises the standalone GUI lifecycle with real processes and loopback sockets.
 #![cfg(unix)]
 
 use std::{
@@ -53,6 +53,24 @@ struct GuiProcess {
     stderr: tempfile::NamedTempFile,
 }
 
+fn qy(root: &Path, config: &str, workspace: Option<&str>) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_qy"));
+    command
+        .current_dir(root)
+        .env("HOME", root)
+        .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+        .env("QUARRY_AI_HOME", root.join("assistant"))
+        .env("QUARRY_UPDATE_CHECK", "0")
+        .env("QUARRY_AUTO_UPDATE", "0")
+        .env("QUARRY_TEST_OPEN_LOG", root.join("browser.log"))
+        .env("TOKIO_WORKER_THREADS", "2")
+        .args(["--config", config]);
+    if let Some(workspace) = workspace {
+        command.args(["--workspace", workspace]);
+    }
+    command
+}
+
 impl GuiProcess {
     fn start(
         root: &Path,
@@ -63,20 +81,7 @@ impl GuiProcess {
         open: bool,
     ) -> Self {
         let stderr = tempfile::NamedTempFile::new_in(root).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_qy"));
-        command
-            .current_dir(root)
-            .env("HOME", root)
-            .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
-            .env("QUARRY_AI_HOME", root.join("assistant"))
-            .env("QUARRY_UPDATE_CHECK", "0")
-            .env("QUARRY_AUTO_UPDATE", "0")
-            .env("QUARRY_TEST_OPEN_LOG", root.join("browser.log"))
-            .env("TOKIO_WORKER_THREADS", "2")
-            .args(["--config", config]);
-        if let Some(workspace) = workspace {
-            command.args(["--workspace", workspace]);
-        }
+        let mut command = qy(root, config, workspace);
         command
             .args(["gui", "--host", host, "--port"])
             .arg(port.to_string())
@@ -111,9 +116,7 @@ impl GuiProcess {
     }
 
     fn exited_successfully(&mut self) {
-        let status = wait_for("the re-entry command to exit", || {
-            self.child.try_wait().unwrap()
-        });
+        let status = wait_for("the GUI command to exit", || self.child.try_wait().unwrap());
         assert!(status.success(), "{}", self.output());
     }
 
@@ -129,19 +132,34 @@ impl GuiProcess {
     }
 }
 
-fn version_response(address: SocketAddr) -> Option<()> {
+fn http_response(address: SocketAddr, request: &str, headers: &str) -> Option<String> {
     let timeout = Duration::from_millis(200);
     let mut stream = TcpStream::connect_timeout(&address, timeout).ok()?;
     stream.set_read_timeout(Some(timeout)).unwrap();
     stream.set_write_timeout(Some(timeout)).unwrap();
     write!(
         stream,
-        "GET /api/version HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        "{request} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n{headers}\r\n"
     )
     .ok()?;
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
+    Some(response)
+}
+
+fn version_response(address: SocketAddr) -> Option<()> {
+    let response = http_response(address, "GET /api/version", "")?;
     (response.starts_with("HTTP/1.1 200 OK") && response.contains("Quarry")).then_some(())
+}
+
+fn stop_gui(root: &Path, config: &str, workspace: Option<&str>, host: &str, port: u16) -> String {
+    let output = qy(root, config, workspace)
+        .args(["gui", "stop", "--host", host, "--port"])
+        .arg(port.to_string())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    String::from_utf8(output.stdout).unwrap()
 }
 
 impl Drop for GuiProcess {
@@ -199,6 +217,27 @@ fn native_gui_reuses_matching_workbench_and_opens_its_url() {
     });
     assert_eq!(opened, format!("http://{address}/quarry/\n"));
     original.still_serving(address);
+
+    // Discovery is available over HTTP, so its proof cannot authorize a stop.
+    let challenge = format!("x-quarry-launch-challenge: {}\r\n", uuid::Uuid::new_v4());
+    let response = http_response(address, "GET /api/version", &challenge).unwrap();
+    let proof = response
+        .lines()
+        .find_map(|line| line.strip_prefix("x-quarry-launch-proof: "))
+        .unwrap();
+    let headers = format!("{challenge}x-quarry-stop-proof: {proof}\r\n");
+    let response = http_response(address, "POST /api/gui/stop", &headers).unwrap();
+    assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+    original.still_serving(address);
+
+    let message = stop_gui(root, "config.toml", None, "localhost", address.port());
+    assert!(message.contains(&format!("http://{address}/quarry/")));
+    original.exited_successfully();
+    assert!(version_response(address).is_none());
+    assert!(
+        stop_gui(root, "config.toml", None, "localhost", address.port())
+            .contains("No matching Quarry GUI")
+    );
 }
 
 #[test]
@@ -278,6 +317,10 @@ fn native_gui_keeps_foreign_and_different_workbenches_alive() {
         different.still_serving(address);
         original.still_serving(original_address);
     }
+    assert!(
+        stop_gui(root, "other.toml", None, "127.0.0.1", occupied.port())
+            .contains("No matching Quarry GUI")
+    );
     assert!(version_response(occupied).is_some());
     drop(stop);
     foreign.join().unwrap();
@@ -295,6 +338,27 @@ fn native_gui_keeps_foreign_and_different_workbenches_alive() {
     assert_eq!(reentry.address(), original_address);
     reentry.exited_successfully();
     original.still_serving(original_address);
+
+    let mut different = GuiProcess::start(
+        root,
+        "config.toml",
+        Some("workspace-b"),
+        "127.0.0.1",
+        occupied.port(),
+        false,
+    );
+    let different_address = different.address();
+    assert_eq!(different_address, occupied);
+    let message = stop_gui(
+        root,
+        "config.toml",
+        Some("workspace-a"),
+        "127.0.0.1",
+        occupied.port(),
+    );
+    assert!(message.contains(&format!("http://{original_address}/quarry/")));
+    original.exited_successfully();
+    different.still_serving(different_address);
 }
 
 #[test]

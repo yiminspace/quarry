@@ -186,13 +186,16 @@ enum Command {
         #[command(subcommand)]
         action: LocalCommand,
     },
+    /// Open the local browser workbench.
     Gui {
-        #[arg(long, default_value = "127.0.0.1")]
+        #[arg(long, global = true, default_value = "127.0.0.1")]
         host: String,
-        #[arg(long, default_value_t = 8765)]
+        #[arg(long, global = true, default_value_t = 8765)]
         port: u16,
         #[arg(long)]
         no_browser: bool,
+        #[command(subcommand)]
+        action: Option<GuiCommand>,
     },
     Mcp {
         #[arg(long)]
@@ -229,6 +232,11 @@ enum Command {
         #[arg(long)]
         fixture: Option<PathBuf>,
     },
+}
+#[derive(Subcommand)]
+enum GuiCommand {
+    /// Gracefully stop the matching standalone workbench.
+    Stop,
 }
 #[derive(Subcommand)]
 enum ConnectionCommand {
@@ -424,7 +432,11 @@ fn parse_cli(args: &[std::ffi::OsString], standalone: bool) -> Result<Option<Cli
         .to_owned();
     let mut command = Cli::command().bin_name(program);
     if !standalone {
-        command = command.mut_subcommand("update", |command| command.hide(true));
+        command = command
+            .mut_subcommand("update", |command| command.hide(true))
+            .mut_subcommand("gui", |command| {
+                command.mut_subcommand("stop", |command| command.hide(true))
+            });
     }
     let parsed = command
         .try_get_matches_from(args)
@@ -1065,9 +1077,22 @@ async fn run_with_prefix(
             host: bind,
             port,
             no_browser,
+            action,
         } => {
             if !matches!(bind.as_str(), "127.0.0.1" | "localhost" | "::1") {
                 return Err(Failure::invalid("Local GUI must bind a loopback host"));
+            }
+            if matches!(action, Some(GuiCommand::Stop)) {
+                if !standalone_updates {
+                    return Err(Failure::invalid(
+                        "Stop the embedded GUI through its host application",
+                    ));
+                }
+                match gui_launch::stop(&host, &bind, port).await? {
+                    Some(address) => println!("Stopping Quarry GUI at http://{address}/quarry/"),
+                    None => println!("No matching Quarry GUI is running."),
+                }
+                return Ok(());
             }
             let launch = if standalone_updates {
                 gui_launch::standalone(&host, &bind, port).await?
@@ -1129,7 +1154,10 @@ async fn run_with_prefix(
             let shutdown = a.clone();
             let served = axum::serve(listener, http::router(state))
                 .with_graceful_shutdown(async move {
-                    let _ = tokio::signal::ctrl_c().await;
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => (),
+                        _ = http_shutdown.cancelled() => (),
+                    }
                     http_shutdown.cancel();
                     shutdown.close();
                 })
