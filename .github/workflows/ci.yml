@@ -107,7 +107,7 @@ jobs:
         run: |
           cargo run -p quarry-core --example embedded_sqlite --locked
           cargo run -p quarry-service --example embedded_host --locked
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: >-
           ${{ success() &&
               (steps.browser-scope.outcome != 'success' || steps.browser-scope.outputs.browser_required != 'false') }}
