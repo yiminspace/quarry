@@ -635,6 +635,21 @@ impl Registry {
     }
 
     pub fn associate_many(&self, entries: &[(String, LocalTarget)]) -> Result<()> {
+        self.update_associations(entries, false).map(drop)
+    }
+
+    pub(crate) fn associate_missing(
+        &self,
+        entries: &[(String, LocalTarget)],
+    ) -> Result<Vec<String>> {
+        self.update_associations(entries, true)
+    }
+
+    fn update_associations(
+        &self,
+        entries: &[(String, LocalTarget)],
+        keep_existing: bool,
+    ) -> Result<Vec<String>> {
         let cwd = std::env::current_dir()?;
         let mut links = BTreeMap::new();
         for (id, target) in entries {
@@ -651,7 +666,7 @@ impl Registry {
             }
         }
         if links.is_empty() {
-            return Ok(());
+            return Ok(vec![]);
         }
         self.update(|state| {
             let registered: BTreeSet<_> = state
@@ -667,11 +682,17 @@ impl Registry {
             if links.keys().any(|id| !registered.contains(id)) {
                 return Err(missing_target());
             }
-            let changed = links
+            if keep_existing {
+                links.retain(|id, _| !state.associations.contains_key(id));
+            }
+            let applied: Vec<_> = links
                 .iter()
-                .any(|(id, target)| state.associations.get(id) != Some(target));
+                .filter(|(id, target)| state.associations.get(*id) != Some(*target))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let changed = !applied.is_empty();
             state.associations.extend(links);
-            Ok(((), changed))
+            Ok((applied, changed))
         })
     }
 
@@ -1119,7 +1140,23 @@ mod tests {
                 .is_err()
         );
         assert!(registry.load().unwrap().associations.is_empty());
-        registry.associate(&id, target.clone()).unwrap();
+        assert_eq!(
+            registry
+                .associate_missing(&[(id.clone(), target.clone())])
+                .unwrap(),
+            vec![id.clone()]
+        );
+        let alternative = LocalTarget {
+            id: format!("local:{}:other", "b".repeat(64)),
+            key: "other".into(),
+            ..target.clone()
+        };
+        assert!(
+            registry
+                .associate_missing(&[(id.clone(), alternative)])
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(registry.load().unwrap().associations[&id], target);
         registry
             .register(&bob, &helper, &catalog("bob", "notes"))
