@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Reopen the newer saved workbench without a conflict warning when the older browser recovery adds no workbench content.
+
 ## [2.2.0] - 2026-11-06
 
 - Verify PostgreSQL connections with `qy connections reconcile` and link confirmed local and cloud routes even when their database labels differ. Merged rows use the local name.

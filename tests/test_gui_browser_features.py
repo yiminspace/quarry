@@ -7673,6 +7673,40 @@ def test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite(page
     assert any(sql in body['value']['values']['qy_tabs'] for body in state['writes'])
 
 
+def test_native_workbench_reopen_uses_newer_records_when_recovery_adds_no_content(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    sql = 'select 22 as saved_in_newer_workbench'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(sql)
+    page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    saved = state['value']['values']
+    tabs = json.loads(saved['qy_tabs'])
+    draft = {**next(tab for tab in tabs if tab['sql'] == sql), 'visited': 0}
+    # A different window only changed navigation before it went away. Its
+    # older document lacks the newer window's additional tab.
+    recovered = {**saved, 'qy_tabs': json.dumps([draft]), 'qy_ati': '0',
+                 'qy_tabres': '[null]', 'qy_hist': '[]', 'qy_collapsed': '{}'}
+    tabs.append({**draft, 'id': 't999', 'sql': 'select 23 as another_saved_tab'})
+    state['value']['values'] = {**saved, 'qy_tabs': json.dumps(tabs)}
+    recovery = {'values': recovered, 'revision': state['revision'], 'dirty': True}
+    state['revision'] += 1
+    newer_revision = state['revision']
+    page.evaluate("""recovery => {
+      const key = 'qy_native:native-fixture:recovery';
+      sessionStorage.removeItem(key);
+      localStorage.setItem(key, JSON.stringify(recovery));
+    }""", recovery)
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=sql)
+    page.wait_for_function("""revision => {
+      const raw = localStorage.getItem('qy_native:native-fixture:recovery');
+      return raw === null || JSON.parse(raw).revision >= revision;
+    }""", arg=newer_revision)
+    assert not page.get_by_test_id('native-records-status').count()
+    assert 'another_saved_tab' in state['value']['values']['qy_tabs']
+
+
 def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(page_sqlite):
     page = page_sqlite
     state = _native_personal_workbench(page)
