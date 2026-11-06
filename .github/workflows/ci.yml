@@ -22,9 +22,6 @@ jobs:
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
     services:
       postgres:
         image: postgres:16
@@ -73,7 +70,6 @@ jobs:
         env:
           CI_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
           CI_CHECKOUT_REF: ${{ inputs.checkout_ref }}
-          GH_TOKEN: ${{ github.token }}
         run: python3 scripts/ci_browser_scope.py
       - uses: actions/setup-node@v4
         with:

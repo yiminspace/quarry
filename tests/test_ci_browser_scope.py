@@ -1,10 +1,13 @@
 """Coverage decisions from real Git snapshots without an Actions runner."""
+from io import BytesIO
 import json
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 from scripts import ci_browser_scope as scope
 
@@ -117,14 +120,33 @@ class BrowserScopeTest(TestCase):
         self.assertTrue(self.required(head, unavailable))
 
     def test_only_exact_green_actions_run_counts(self):
-        exact = {"headSha": self.base, "status": "completed", "conclusion": "success"}
-        with patch.object(scope.subprocess, "check_output", return_value=json.dumps([exact])) as gh:
+        exact = {"head_sha": self.base, "head_branch": "main", "event": "push",
+                 "status": "completed", "conclusion": "success"}
+        with patch.object(scope, "urlopen", return_value=BytesIO(json.dumps({"workflow_runs": [exact]}).encode())) as rest:
             self.assertTrue(scope.green_main_predecessor("yiminspace/quarry", self.base))
-            self.assertIn(self.base, gh.call_args.args[0])
+            request = rest.call_args.args[0]
+            self.assertIsNone(request.get_header("Authorization"))
+            url = urlsplit(request.full_url)
+            self.assertEqual(url.netloc, "api.github.com")
+            self.assertEqual(url.path, "/repos/yiminspace/quarry/actions/workflows/ci.yml/runs")
+            self.assertEqual(parse_qs(url.query), {
+                "branch": ["main"], "event": ["push"], "head_sha": [self.base], "per_page": ["1"],
+            })
         for result in ([], [dict(exact, status="queued")], [dict(exact, conclusion="failure")],
-                       [dict(exact, headSha="1" * 40)]):
-            with self.subTest(result=result), patch.object(scope.subprocess, "check_output", return_value=json.dumps(result)):
+                       [dict(exact, head_sha="1" * 40)], [dict(exact, event="workflow_dispatch")],
+                       [dict(exact, head_branch="feature")]):
+            response = BytesIO(json.dumps({"workflow_runs": result}).encode())
+            with self.subTest(result=result), patch.object(scope, "urlopen", return_value=response):
                 self.assertFalse(scope.green_main_predecessor("yiminspace/quarry", self.base))
+
+    def test_public_api_errors_require_browser(self):
+        self.write("README.md", "Changed docs.\n")
+        head = self.commit()
+        for error in (HTTPError("https://api.github.com", 403, "Forbidden", None, None),
+                      HTTPError("https://api.github.com", 429, "Too Many Requests", None, None),
+                      URLError("Unavailable")):
+            with self.subTest(error=error), patch.object(scope, "urlopen", side_effect=error):
+                self.assertTrue(self.required(head, scope.green_main_predecessor))
 
     def test_unknown_push_checkout_and_reusable_or_manual_workflow_require_browser(self):
         self.write("README.md", "Changed docs.\n")
@@ -141,7 +163,9 @@ class BrowserScopeTest(TestCase):
             (env, []),
         ):
             with self.subTest(env=changed_env, event=changed_event):
-                self.assertTrue(scope.browser_scope(self.root, changed_env, changed_event, self.green)[0])
+                with patch.object(scope, "urlopen") as rest:
+                    self.assertTrue(scope.browser_scope(self.root, changed_env, changed_event)[0])
+                    rest.assert_not_called()
 
     def test_pull_request_uses_verified_merge_commit_and_green_main_base(self):
         self.git("checkout", "-b", "feature")

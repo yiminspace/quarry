@@ -2,12 +2,15 @@
 """Decide whether a verified Git change can reuse browser coverage."""
 from collections.abc import Callable, Mapping
 from datetime import date
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import tomllib
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 ROOT_DOCS = frozenset({
     "AGENTS.md", "ARCHITECTURE.zh-CN.md", "CLAUDE.md", "CODE_OF_CONDUCT.md",
@@ -166,16 +169,20 @@ def version_only(root: Path, base: str, head: str, stamp_changelog: bool) -> boo
 
 
 def green_main_predecessor(repository: str, commit: str) -> bool:
-    result = subprocess.check_output(
-        [
-            "gh", "run", "list", "--repo", repository, "--workflow", "ci.yml", "--branch", "main",
-            "--event", "push", "--commit", commit, "--limit", "1",
-            "--json", "headSha,status,conclusion",
-        ],
-        stderr=subprocess.PIPE,
-        timeout=15,
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        return False
+    query = urlencode({"branch": "main", "event": "push", "head_sha": commit, "per_page": 1})
+    request = Request(
+        f"https://api.github.com/repos/{repository}/actions/workflows/ci.yml/runs?{query}",
+        headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10"},
     )
-    return json.loads(result) == [{"headSha": commit, "status": "completed", "conclusion": "success"}]
+    with urlopen(request, timeout=10) as response:
+        result = json.load(response)
+    match result:
+        case {"workflow_runs": [{"head_sha": sha, "head_branch": "main", "event": "push",
+                                  "status": "completed", "conclusion": "success"}]}:
+            return sha == commit
+    return False
 
 
 def browser_scope(
@@ -208,7 +215,7 @@ def browser_scope(
         if not predecessor_green(environment["GITHUB_REPOSITORY"], base):
             return True, "main base has no successful CI"
         return False, reason
-    except (KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError):
+    except (HTTPException, KeyError, OSError, TypeError, ValueError, subprocess.SubprocessError):
         return True, "change scope or predecessor could not be verified"
 
 
