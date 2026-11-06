@@ -12,8 +12,9 @@ curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh
 ```
 
 The website serves the repository's canonical installer. It detects the OS and
-architecture, downloads the latest stable native archive, verifies SHA-256, and
-atomically replaces `~/.local/bin/qy`. Python is not required.
+architecture, downloads the latest stable native archive, and verifies SHA-256.
+It installs the `qy` entry point at `~/.local/bin/qy` with versioned executables
+in the adjoining `.quarry/releases` directory.
 
 For a specific version or custom directory:
 
@@ -32,35 +33,41 @@ sh install-quarry.sh --version 2.0.0
 $HOME/.local/bin/qy --version
 ```
 
-The installer checks SHA-256 before replacing the executable. It installs to
-`~/.local/bin`; use `--dir` to choose another directory and add it to PATH.
-Release archives and `SHA256SUMS` are available on GitHub Releases.
+Use `--dir` to choose another directory and add it to PATH.
+Release archives and `SHA256SUMS` are available on
+[GitHub Releases](https://github.com/yiminspace/quarry/releases).
 
-## pip / pipx / uv
+## Update
 
 ```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0
-# or: pipx install --pip-args='--only-binary=:all:' quarry-db==2.0.0
-# or: uv tool install quarry-db==2.0.0
-qy --version
+qy update
 ```
 
-These install the same native Rust executable from a platform wheel. Python is
-needed to run pip, not to execute the installed program. No Python business API
-ships in version 2. The old `from quarry import ...` API remains in Python 1.x;
-use the Rust crates, CLI JSON or MCP for new integrations. No source build is
-silently required on unsupported platforms.
+Starting with releases that include `qy update`, the installer-managed
+executable checks for a newer stable release in the background, at most once
+per hour. Quarry verifies and stages the download, then activates it at the
+next launch. Run `qy update` to download and activate
+the new version immediately. Set `QUARRY_AUTO_UPDATE=0` to opt out of automatic
+downloads and activation while retaining `qy update`.
 
-## Upgrade an existing Python installation
+If you copied a native binary manually, rerun the installer at the same
+location to make it eligible for future self-updates. Use your normal build
+process to update source builds. YLab's embedded copy updates with YLab.
+The hosted workbench updates when the operator deploys a new Docker image.
 
-1. Finish active queries/assistant turns. Stop the old GUI and keeper through
-   their owning process/version (`qy down` stops the keeper, not Docker data).
-2. Upgrade through the same installer/tool that owns the existing installation.
-   Avoid installing pip, pipx and native copies into competing PATH locations.
-3. Remove any custom shell `qy` function that forces `PYENV_VERSION` or invokes
-   `python -m quarry`. Refresh the shell command cache (`rehash` in zsh).
-4. Check `type -a qy` and `qy --version`, then restart `qy gui` at the same origin
-   to retain browser drafts and preferences. Update MCP to run `qy mcp`.
+## Switch from an existing Python package
+
+1. Finish active queries and Assistant turns. Stop the old GUI and keeper with
+   the version that started them. Use `qy down` for the keeper.
+2. Remove the old executable through its owning tool
+   (`pip uninstall quarry-db`, `pipx uninstall quarry-db` or
+   `uv tool uninstall quarry-db`). Then run the native installer above.
+3. Remove any shell function that invokes `python -m quarry` or overrides
+   `PYENV_VERSION` for `qy`. Refresh the shell command cache (`rehash` in zsh).
+4. Run `type -a qy` and `qy --version` to verify the new executable. Reopen
+   `qy gui` at the same origin to retain browser drafts and preferences.
+5. Set your MCP client to run the installed `qy mcp` directly. Existing MCP
+   Registry entries continue to describe their historical package versions.
 
 Config, saved queries and assistant histories are retained. Existing Local data
 is not automatically purged. SSH and Docker still use their system executables;

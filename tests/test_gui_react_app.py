@@ -4,20 +4,18 @@ ships; `gui.py` is backend-only (http.server + /api/* + serving web_dist).
 The general feature matrix lives in test_gui_browser.py /
 test_gui_browser_features.py (the suite originally written against the
 retired embedded GUI — the React app is a drop-in for its DOM and behavior).
-This file keeps the packaging checks plus the React-only table-structure
+This file keeps the React-only table-structure
 browser (issue #11): double-click a sidebar table name to see its columns and
 types without running anything.
 """
 
 from __future__ import annotations
 
-import re
 import urllib.request
-import zipfile
 
 import pytest
 
-from conftest import REPO, TEST_DB_URL, _running_gui, requires_browser, stub_events, english_browser_context
+from conftest import TEST_DB_URL, _running_gui, requires_browser, stub_events, english_browser_context
 from quarry import __version__
 from test_gui_browser import _select_testpg
 
@@ -193,89 +191,3 @@ def test_react_app_index_served(gui_server):
         html = resp.read().decode()
     assert resp.status == 200
     assert 'id="root"' in html
-
-
-@pytest.mark.unit
-def test_wheel_includes_web_dist(tmp_path):
-    """Wheel index and every hashed asset it references must ship together."""
-    import subprocess
-    import sys
-
-    pytest.importorskip("build")
-    dist = tmp_path / "dist"
-    subprocess.run(
-        [sys.executable, "-m", "build", "--outdir", str(dist)],
-        cwd=REPO,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheels = list(dist.glob("*.whl"))
-    assert wheels, "expected a wheel in dist/"
-    with zipfile.ZipFile(wheels[0]) as zf:
-        names = set(zf.namelist())
-        indexes = [n for n in names
-                   if n.startswith("quarry/web_dist/") and n.endswith("index.html")]
-        assert len(indexes) == 1
-        index_name = indexes[0]
-        html = zf.read(index_name).decode()
-
-    asset_refs = set(re.findall(r'(?:src|href)="(/quarry/assets/[^"]+)"', html))
-    assert asset_refs, "expected hashed JS/CSS references in the built index"
-    web_dist_prefix = index_name.removesuffix("index.html")
-    missing = {
-        web_dist_prefix + ref.removeprefix("/quarry/")
-        for ref in asset_refs
-    } - names
-    assert not missing, f"wheel is missing index-referenced assets: {sorted(missing)}"
-
-
-@pytest.mark.unit
-def test_wheel_includes_changelog(tmp_path):
-    """Built wheel must ship CHANGELOG.md next to gui.py (build hook in
-    hatch_build.py) — GET /api/changelog reads it at runtime for the What's
-    New panel; without it, installed (non-editable) users would get an empty
-    panel forever."""
-    import subprocess
-    import sys
-
-    pytest.importorskip("build")
-    dist = tmp_path / "dist"
-    subprocess.run(
-        [sys.executable, "-m", "build", "--outdir", str(dist)],
-        cwd=REPO,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    wheels = list(dist.glob("*.whl"))
-    assert wheels, "expected a wheel in dist/"
-    with zipfile.ZipFile(wheels[0]) as zf:
-        names = zf.namelist()
-        content = zf.read("quarry/CHANGELOG.md").decode()
-    assert "quarry/CHANGELOG.md" in names
-    assert "## v" in content  # a real, non-empty changelog, not a placeholder
-
-
-@pytest.mark.unit
-def test_sdist_excludes_node_modules(tmp_path):
-    """sdist must not ship npm install trees — Node is dev/CI-only."""
-    import subprocess
-    import sys
-    import tarfile
-
-    pytest.importorskip("build")
-    dist = tmp_path / "dist"
-    subprocess.run(
-        [sys.executable, "-m", "build", "--outdir", str(dist)],
-        cwd=REPO,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    sdists = list(dist.glob("*.tar.gz"))
-    assert sdists, "expected an sdist in dist/"
-    with tarfile.open(sdists[0], "r:gz") as tf:
-        names = tf.getnames()
-    assert not any("node_modules" in n for n in names)
-    assert not any(n.endswith("tsconfig.tsbuildinfo") for n in names)

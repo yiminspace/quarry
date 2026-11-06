@@ -107,8 +107,7 @@ service file, rather than an argument containing a secret.
 
 See [Rust verification](rust-verification.md) for the exact test commands and
 verification boundaries. CI must pass for the exact main commit before the
-release workflow builds four native platform wheels and matching archives. Each
-platform must pass fresh-install, Python 1.11 upgrade and Python-free execution
-checks before publication to PyPI and GitHub Releases. Stable versions also
-publish the pinned MCP manifest. Historical Python tags remain available for
-rollback. A configured workflow alone is not proof that a remote run has passed.
+release workflow builds and verifies four native archives before uploading them
+to GitHub Releases with SHA-256 checksums. Each platform must pass an isolated
+installer run, existing workspace checks, and CLI, GUI and MCP smoke tests.
+Historical Python tags remain available for rollback.

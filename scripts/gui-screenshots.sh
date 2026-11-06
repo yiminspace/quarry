@@ -8,7 +8,7 @@
 # Preconditions (exits non-zero with the reason when missing — callers treat
 # screenshots as advisory, not a gate):
 #   - node/npm on PATH
-#   - python Playwright + Chromium installed (pip install -e ".[e2e]")
+#   - python Playwright + Chromium installed (make install && make browser-install)
 #   - the quarry_test Postgres from TESTING.md (QUARRY_TEST_DB_URL to override)
 set -euo pipefail
 

@@ -1499,6 +1499,7 @@ dependencies = [
  "axum",
  "clap",
  "csv",
+ "fs2",
  "futures-util",
  "http-body-util",
  "include_dir",

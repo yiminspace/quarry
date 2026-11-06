@@ -1,7 +1,5 @@
 # Quarry 2
 
-<!-- mcp-name: io.github.yiminspace/quarry -->
-
 A native database workbench: one reusable Rust kernel, CLI, browser GUI and MCP.
 PostgreSQL, MySQL, SQLite, Redis and experimental Neptune; explicit query/write
 policies, SSH tunnels, saved queries, local Docker services and a SQL assistant.
@@ -20,11 +18,8 @@ Or download a native archive and SHA256SUMS from [GitHub Releases](https://githu
 The native executable needs neither Python nor a Rust toolchain. Supported:
 macOS/Linux arm64/x86_64; Linux glibc 2.28+. See [install and upgrade](docs/install.md).
 
-Or use pip (the same native executable):
-
-```sh
-pip install --upgrade --only-binary=:all: quarry-db==2.0.0
-```
+Installer-managed copies can download new stable versions in the background.
+The next launch activates the verified update. Run `qy update` to update now.
 
 ## Use
 
@@ -53,7 +48,8 @@ For a hosted workbench, the official Docker image serves the GUI, authentication
 read-only API and execution from one configuration file. Use a built-in
 administrator or configure an existing platform's IAM; YiminLab consumes the same
 image. `ylab` automatically connects and saves personal records to computer
-SQLite. Standalone `qy` needs neither the hosted service nor platform sign-in.
+SQLite. YLab's embedded Quarry updates with YLab. Standalone `qy` also runs
+locally with its own workspaces.
 See the [hosting guide](docs/hosting.md) for deployment, access grants and offline
 behavior. The Rust SDK remains available for advanced embedding.
 

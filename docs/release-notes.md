@@ -1,14 +1,13 @@
-The hosted workbench can now show a dismissible notice when a newer stable
-Quarry image is available. The notice links to the release notes. The hosted
-release descriptor is attached after both Linux image architectures pass
-container acceptance and can be pulled anonymously.
+Install Quarry from GitHub Releases. The native archive includes the CLI, local
+workbench and MCP server. Installer-managed copies can apply a verified update
+at the next launch or immediately with `qy update`.
 
-The [hosting guide](https://github.com/yiminspace/quarry/blob/main/docs/hosting.md)
-describes configuring the official Docker image with built-in or external IAM,
-per-database grants, and optional desktop integration. The update also preserves
-bundled icon fonts when a cached hosted workbench is reopened offline.
+The [installation guide](https://github.com/yiminspace/quarry/blob/main/docs/install.md)
+covers switching from Python packages while keeping your existing configuration,
+saved queries and data.
 
-Deployment operators can use the image pinned in the
-[hosted release descriptor](https://github.com/yiminspace/quarry/releases/download/v2.0.1/hosted-release.json).
-See the [installation guide](https://github.com/yiminspace/quarry/blob/main/docs/install.md)
-for standalone native and Python-package upgrades.
+YLab's embedded copy of Quarry updates with YLab. Operators can update the
+hosted workbench using the Docker image pinned in the stable release's
+`hosted-release.json` descriptor. See the
+[hosting guide](https://github.com/yiminspace/quarry/blob/main/docs/hosting.md)
+for IAM and database access configuration.

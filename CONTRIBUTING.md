@@ -1,11 +1,8 @@
-> Rust 2.x is the current implementation. Build web assets, then use Cargo for
-> runtime tests and Maturin for platform wheels. See docs/install.md and
-> .github/workflows/ci.yml. Python commands below support the historical test
-> baseline; Python runtime publication belongs to archive/python-1.x.
-
 # Contributing to Quarry
 
-Thanks for your interest! Quarry is young and contributions of all sizes are welcome — bug reports, docs, new engine backends, GUI polish.
+Rust 2.x is the current runtime. The retained Python implementation is a
+development baseline for tests. See [installation](docs/install.md) for native
+releases and [CI](.github/workflows/ci.yml) for the verification steps.
 
 ## Ground rules (design invariants)
 
@@ -21,18 +18,18 @@ Quarry has a few invariants that PRs must not break. If your change needs to ben
 
 ```bash
 git clone https://github.com/yiminspace/quarry && cd quarry
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+npm --prefix web ci && npm --prefix web run build
+cargo build --locked -p quarry-cli
 ```
 
-### Reinstalling after a worktree is removed
+For the Python test and browser harness, activate an isolated environment and
+install its dependencies:
 
-`pip install -e .` records the *exact path* you ran it from. If you installed
-from a `git worktree` (e.g. one created for a specific issue/branch) and later
-remove that worktree, `qy`/`quarry` will fail to import — you'll see a
-`FileNotFoundError` naming the now-missing path. That's expected: re-run
-`pip install -e ".[dev]"` from a checkout that still exists (your main clone or
-a surviving worktree) to point the install back at real source again.
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+make install
+make browser-install
+```
 
 ### Manual hosted GUI preview
 
@@ -51,10 +48,10 @@ build, Playwright or database.
 
 ### Running tests
 
-Unit tests run with no setup:
+Run the native tests after building the web assets:
 
 ```bash
-python3 -m pytest -q
+cargo test --workspace --all-targets --locked
 ```
 
 DB-backed tests need a local PostgreSQL with a seeded `quarry_test` database (they skip automatically if it's unreachable):
@@ -77,25 +74,18 @@ An engine implements: URL parsing, query execution returning the standard result
 
 - Keep PRs focused; separate refactors from behavior changes.
 - Add or update tests for what you change.
-- `python3 -m pytest -q` must pass.
+- Run the relevant Cargo and browser tests. See [the GUI matrix](TESTING.md).
 - Describe *why*, not just *what*, in the PR body.
 - PR titles must follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
-  `chore:`, `docs:`, ...). Quarry uses squash merge, so the PR title is the
-  release-driving commit message.
+  `chore:`, `docs:`, ...). Quarry uses squash merge.
 
-## Release flow (fully automated)
+## Release flow
 
-- Versioning and changelog updates are handled by `python-semantic-release` on
-  every merge to `main`; do not manually edit `project.version` in
-  `pyproject.toml` for routine releases.
-- Bump rules follow Conventional Commits:
-  - `fix` -> patch
-  - `feat` -> minor
-  - `BREAKING CHANGE` footer or `!` -> breaking change (while on `0.x`,
-    configured to bump **minor**, not `1.0.0`)
-- The release workflow updates `pyproject.toml`, writes the new `CHANGELOG.md`
-  section, creates a git tag, and publishes a GitHub Release. The existing
-  publish workflow then ships that release to PyPI.
+Update the Cargo workspace version and release notes, then verify the explicit
+tag with `python3 scripts/validate_release.py vX.Y.Z`. The release workflow
+requires CI for the exact main commit before it builds and checks all four
+native archives. GitHub Releases hosts the archives and their SHA-256
+checksums. The stable release also carries the verified hosted image descriptor.
 
 ## Reporting bugs / proposing features
 

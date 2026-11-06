@@ -1,0 +1,21 @@
+[run]
+source = quarry
+branch = true
+# subprocess-launched code (qy CLI / MCP) is covered in-process by the
+# integration suites, so we don't need coverage's multiprocess plumbing.
+
+[report]
+# The 95% gate applies to unit + integration (see `make cov`). Frontend JS lives
+# in web/ and is exercised by the browser suite, not by
+# line coverage. Defensive/unreachable lines are excluded explicitly.
+precision = 1
+show_missing = true
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    def main\(
+    if TYPE_CHECKING:
+    [#] unreachable
+    \.\.\.
+omit = */quarry/__main__.py

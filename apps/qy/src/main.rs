@@ -1,6 +1,5 @@
-#[tokio::main]
-async fn main() {
-    if let Err(error) = quarry_cli::run_from(std::env::args_os().collect(), vec![]).await {
+fn main() {
+    if let Err(error) = quarry_cli::run_standalone(std::env::args_os().collect()) {
         eprintln!(
             "{}",
             serde_json::json!({"error":error.message,"code":error.code})

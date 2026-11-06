@@ -26,15 +26,18 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+REPO = Path(__file__).resolve().parent.parent
+SRC = REPO / "src"
+sys.path.insert(0, str(SRC))
+# Baseline tests also start Python subprocesses from disposable directories.
+python_path = os.environ.get("PYTHONPATH")
+os.environ["PYTHONPATH"] = f"{SRC}{os.pathsep}{python_path}" if python_path else str(SRC)
 
 from quarry import cache, tunnel, workspace  # noqa: E402
 
 TEST_DB_URL = os.environ.get(
     "QUARRY_TEST_DB_URL", "postgresql://localhost:5432/quarry_test"
 )
-REPO = Path(__file__).resolve().parent.parent
-SRC = REPO / "src"
 
 
 # ---------------------------------------------------------------------------

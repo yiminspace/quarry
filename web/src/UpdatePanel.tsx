@@ -2,13 +2,9 @@ import type { UpdateInfo } from "./api";
 import { t } from "./i18n";
 import { useModalEscape } from "./modalStack";
 
-const UPGRADE_CMD = "pipx upgrade quarry-db";
-
 type Props = { info: UpdateInfo; onClose: () => void };
 
-/** The header update badge's panel: current vs. latest version, the exact
- * upgrade command, and a link to the GitHub release notes — everything
- * needed to act on "there's a new version" without leaving the page. */
+/** Show the installed and available versions and the upgrade path for this install. */
 export default function UpdatePanel({ info, onClose }: Props) {
   useModalEscape(onClose);
   const releaseUrl = info.latest
@@ -30,13 +26,13 @@ export default function UpdatePanel({ info, onClose }: Props) {
             <span className="vg-cik cik">{t("latest_version")}</span>
             <span className="vg-civ civ">{info.latest}</span>
           </div>
-          <div className="vg-cirow cirow">
-            <span className="vg-cik cik">{t("upgrade_cmd")}</span>
-            <span className="vg-civ civ" id="updCmd">
-              {UPGRADE_CMD}
-            </span>
-          </div>
-          <p><a id="upgradeGuide" href="https://github.com/yiminspace/quarry/blob/main/docs/install.md" target="_blank" rel="noreferrer">Native / pip upgrade instructions</a></p>
+          {info.managed && (
+            <div className="vg-cirow cirow">
+              <span className="vg-cik cik">{t("upgrade_cmd")}</span>
+              <span className="vg-civ civ" id="updCmd">qy update</span>
+            </div>
+          )}
+          <p><a id="upgradeGuide" href="https://github.com/yiminspace/quarry/blob/main/docs/install.md" target="_blank" rel="noreferrer">{t("native_install_guide")}</a></p>
           {releaseUrl && (
             <div className="vg-cirow cirow">
               <span className="vg-cik cik">{t("release_notes")}</span>

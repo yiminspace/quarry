@@ -28,7 +28,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: python scripts/validate_release.py '${{ inputs.tag || github.ref_name }}'
+      - run: python scripts/validate_release.py "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       - name: Require successful CI for the exact main commit
         id: source
         env:
@@ -88,22 +90,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, asset: linux-x86_64, manylinux: '2_28'}
-          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: linux-arm64, manylinux: '2_28'}
-          - {os: macos-15, target: aarch64-apple-darwin, asset: macos-arm64, manylinux: 'off'}
-          - {os: macos-15-intel, target: x86_64-apple-darwin, asset: macos-x86_64, manylinux: 'off'}
+          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, asset: linux-x86_64, container: 'quay.io/pypa/manylinux_2_28_x86_64'}
+          - {os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: linux-arm64, container: 'quay.io/pypa/manylinux_2_28_aarch64'}
+          - {os: macos-15, target: aarch64-apple-darwin, asset: macos-arm64}
+          - {os: macos-15-intel, target: x86_64-apple-darwin, asset: macos-x86_64}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
+      TARGET: ${{ matrix.target }}
+      ASSET: ${{ matrix.asset }}
+      LINUX_BUILDER: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.validate.outputs.source_sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: python scripts/validate_release.py '${{ inputs.tag || github.ref_name }}'
+      - run: python scripts/validate_release.py "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -111,47 +118,49 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci && npm run build
         working-directory: web
-      - uses: PyO3/maturin-action@v1
-        with:
-          rust-toolchain: 1.98.1
-          target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux }}
-          args: --release --locked --out dist
-      - run: python scripts/package_release.py --asset '${{ matrix.asset }}' --output dist
-      - name: Fresh install and Python upgrade acceptance
+      - uses: dtolnay/rust-toolchain@1.98.1
+        if: runner.os == 'macOS'
+      - name: Build macOS native executable
+        if: runner.os == 'macOS'
+        run: cargo build --locked --release -p quarry-cli --target "$TARGET"
+      - name: Build Linux native executable against glibc 2.28
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+            -e TARGET -e HOME=/tmp -e CARGO_HOME=/tmp/cargo -e RUSTUP_HOME=/tmp/rustup \
+            "$LINUX_BUILDER" bash -euo pipefail -c '
+              curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+              "$CARGO_HOME/bin/cargo" build --locked --release -p quarry-cli --target "$TARGET"
+            '
+      - name: Package native release archive
+        run: python scripts/package_release.py --asset "$ASSET" --binary "target/$TARGET/release/qy" --output dist
+      - name: Verify macOS archive
+        if: runner.os == 'macOS'
         run: python scripts/verify_install.py dist
+      - name: Verify Linux archive on glibc 2.28
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm --network none --user "$(id -u):$(id -g)" -v "$PWD:/work:ro" -w /work \
+            "$LINUX_BUILDER" /opt/python/cp312-cp312/bin/python scripts/verify_install.py dist
       - uses: actions/upload-artifact@v4
         with:
           name: distribution-${{ matrix.asset }}
           path: dist/*
           if-no-files-found: error
   publish:
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write
       contents: write
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.validate.outputs.source_sha }}
       - uses: actions/download-artifact@v4
         with:
           pattern: distribution-*
           path: dist
           merge-multiple: true
-      - run: mkdir wheels && cp dist/*.whl wheels/
-      - name: Publish platform wheels
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: wheels
-          skip-existing: true
-          attestations: true
-          # Archives/checksums are GitHub assets, not Python distributions.
-          verbose: true
-        env:
-          TWINE_NON_INTERACTIVE: '1'
       - name: Publish GitHub release and checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -160,8 +169,25 @@ jobs:
           cat dist/*.sha256 > dist/SHA256SUMS
           prerelease=()
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
-          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          if release=$(gh release view "$RELEASE_TAG" --json assets,isDraft); then
+            if jq -e '.isDraft' <<< "$release" >/dev/null; then
+              # Recover a create attempt that stopped while uploading assets.
+              gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+              gh release edit "$RELEASE_TAG" --draft=false
+            else
+              # Keep the original published executables and checksums on a retry.
+              assets=$(jq -r '.assets[].name' <<< "$release")
+              for file in dist/*.tar.gz dist/SHA256SUMS; do
+                if ! grep -Fxq "${file##*/}" <<< "$assets"; then
+                  echo "Existing release $RELEASE_TAG is missing ${file##*/}" >&2
+                  exit 1
+                fi
+              done
+            fi
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag \
+              "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
+          fi
 
   publish-hosted-release:
     needs: [validate, hosted-plan, hosted-image, publish]
@@ -203,26 +229,3 @@ jobs:
           else
             gh release upload "$RELEASE_TAG" "$descriptor" --repo "$GITHUB_REPOSITORY"
           fi
-
-  publish-mcp:
-    needs: publish
-    if: ${{ !contains(inputs.tag || github.ref_name, '-rc.') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.tag || github.ref_name }}
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - run: python scripts/prepare_mcp_release.py --tag '${{ inputs.tag || github.ref_name }}' --output "$RUNNER_TEMP/server.json"
-      - name: Install verified MCP publisher
-        run: |
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/mcp-publisher.tar.gz" https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
-          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
-      - run: '"$RUNNER_TEMP/mcp-publisher" login github-oidc'
-      - run: '"$RUNNER_TEMP/mcp-publisher" publish "$RUNNER_TEMP/server.json"'
