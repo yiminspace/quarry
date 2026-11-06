@@ -1,5 +1,6 @@
 //! Local HTTP workbench. The library facade is separate from transport DTOs.
 mod native;
+use crate::gui_launch::{CHALLENGE_HEADER, Instance, PROOF_HEADER};
 use crate::service::{Failure, Host, Result};
 use axum::{
     Json, Router,
@@ -38,6 +39,7 @@ pub struct WebState {
     pub(crate) native: Option<Arc<NativeWorkbench>>,
     pub(crate) standalone_updates: bool,
     pub(crate) managed_install: bool,
+    pub(crate) gui_instance: Option<Instance>,
 }
 trait FailureResponse {
     fn into_response(self) -> Response;
@@ -154,6 +156,15 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
         url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
             .into_owned()
             .collect();
+    let launch_proof = if method == axum::http::Method::GET && path == "/api/version" {
+        req.headers()
+            .get(CHALLENGE_HEADER)
+            .and_then(|value| uuid::Uuid::try_parse_ascii(value.as_bytes()).ok())
+            .and_then(|challenge| state.gui_instance?.proof(&state.host, challenge))
+            .and_then(|proof| header::HeaderValue::from_str(&proof).ok())
+    } else {
+        None
+    };
     if method == axum::http::Method::GET && path == "/api/events" {
         return events(state);
     }
@@ -210,6 +221,9 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
                 header::CACHE_CONTROL,
                 header::HeaderValue::from_static("no-store"),
             );
+            if let Some(proof) = launch_proof {
+                response.headers_mut().insert(PROOF_HEADER, proof);
+            }
             response
         }
         Err(error) => error.into_response(),
@@ -856,6 +870,7 @@ mod native_http_tests {
                 native: None,
                 standalone_updates: true,
                 managed_install: false,
+                gui_instance: None,
             },
         )
     }

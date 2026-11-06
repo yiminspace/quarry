@@ -7,6 +7,7 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Reopen the running standalone Quarry GUI from another terminal when the configuration and workspace selection match. Use a nearby port when the requested port belongs to another application or workbench.
 - Clarify the native, embedded, and hosted workbench options and their update paths on the website and in the hosting guide.
 - Install Quarry from native GitHub releases and update managed installs automatically or with `qy update`. Embedded Quarry follows YLab's release.
 - Open the full local Quarry workbench from YLab with managed cloud connections alongside existing workspaces. Cloud connections are labeled by source and keep their credentials on the server.
