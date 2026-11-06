@@ -71,7 +71,7 @@ jobs:
           CI_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
           CI_CHECKOUT_REF: ${{ inputs.checkout_ref }}
         run: python3 scripts/ci_browser_scope.py
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
