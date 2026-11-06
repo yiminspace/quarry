@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — 为 AI 时代而生的数据库工作台</title>
-<meta name="description" content="Rust 原生 CLI、GUI、MCP 与类库。独立使用，或接入自己的 IAM 托管工作台，通过配对本机服务保存个人记录。">
+<meta name="description" content="Rust 原生 CLI、GUI、MCP 与类库。可以本机独立使用、嵌入客户端，或用自己的 IAM 托管工作台。">
 <meta property="og:title" content="Quarry — 为 AI 时代而生的数据库工作台">
 <meta property="og:description" content="Rust 原生 CLI、GUI、MCP 与类库；独立使用或集成 IAM 托管工作台，个人记录保存在自己的电脑。">
 <meta property="og:type" content="website">
@@ -229,7 +229,8 @@
           <span class="dollar">$</span><span id="installcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
           <button onclick="navigator.clipboard.writeText('curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
         </div>
-        <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">原生安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装 / 升级 / Python 归档</a></p>
+        <p>Rust 原生版 · <a href="https://github.com/yiminspace/quarry/releases">安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装、更新与迁移</a></p>
+        <p>安装支持自更新的版本后，Quarry 会在后台检查稳定版。也可以运行 <code>qy update</code> 手动更新。</p>
         <a class="btn btn-copper" href="https://github.com/yiminspace/quarry">去 GitHub 点个 Star</a>
         <a href="#hosting">集成到你的平台 →</a>
       </div>
@@ -315,7 +316,7 @@
         <div class="face"><span class="mono">qy mcp</span> <span class="tag">MCP server — agent 原生接入</span></div>
         <div class="face"><span class="mono">skill</span> <span class="tag">Claude Code 及友商</span></div>
         <div class="face"><span class="mono">Rust crates</span> <span class="tag">直接嵌入应用或 CLI</span></div>
-        <div class="face"><span class="mono">quarry-platform</span> <span class="tag">IAM 托管 + 配对本机服务</span></div>
+        <div class="face"><span class="mono">quarry-server</span> <span class="tag">支持 IAM 的托管网页工作台</span></div>
       </div>
     </div>
   </div>
@@ -325,23 +326,23 @@
   <div class="wrap">
     <div class="eyebrow">托管工作台 · 一个 Docker 镜像</div>
     <h2>你的 IAM、你的数据库，同一个工作台</h2>
-    <p class="lede">官方 Docker 镜像加一个配置文件，就能提供网页、登录、只读 API 和查询执行。可用内置管理员，也可配置接入已有 IAM。YiminLab 使用同一个镜像；原有 Quarry 本地模式保持独立。</p>
+    <p class="lede">官方 Docker 镜像加一个配置文件，就能提供网页、登录、只读 API 和查询执行。可以使用内置管理员，也可以接入平台已有的身份系统。</p>
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">▣</span> 平台控制只读访问</h3>
         <p>只展示平台登记的资源。每次远程查询、结构查看、取消和 schema 导出都检查实时 IAM 权限与资源授权，数据库连接凭据保留在服务器。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">⌁</span> 个人工作保存在自己电脑</h3>
-        <p>运行 ylab db connect 后自动打开工作台，将草稿、标签、查询历史、有限结果缓存、助手对话和生成 SQL 保存到电脑上的 SQLite，网页与 CLI 共用账号隔离的记录。断开时由有限的浏览器恢复副本保护待保存内容。</p>
+        <h3><span class="ico">⌁</span> 在浏览器打开托管工作台</h3>
+        <p>登录后查询服务端授权的连接。草稿和 SQL 历史按账号保存在当前浏览器，查询结果留在当前页面。缓存过的工作台可以断网打开继续编辑。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">⇄</span> 断开连接也能继续编辑</h3>
-        <p>首次成功加载后，可用缓存的页面离线重新打开工作台。远程和本机分别显示连接状态；重连不会自动执行 SQL、启动 Docker、导入结构或替换未保存草稿。有效配对授权内，本机操作可继续离线使用。</p>
+        <h3><span class="ico">⇄</span> 在本机同时使用本地库和云端库</h3>
+        <p>嵌入 Quarry 的客户端可以在 localhost 提供工作台。本机连接在电脑上执行，已授权的云端请求转发到服务端。草稿和执行历史保存在本机 SQLite，例如 YLab 的 <code>ylab db connect</code>。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">▤</span> 配置一次，打开就查</h3>
-        <p>镜像自带工作台和查询服务。数据库连接、访问账号和登录方式通过配置提供，不需要编写 Rust IAM 适配器或定制构建网页。本机连接和个人记录保存都在后台完成，仅在需要处理保存冲突时提供恢复选择。</p>
+        <h3><span class="ico">▤</span> 按版本部署镜像</h3>
+        <p>镜像包含编译好的网页资源和查询服务。配置数据库连接、读取权限和登录方式后，部署通过验收的镜像。托管工作台通过部署新镜像升级。</p>
       </div>
     </div>
     <p class="lede" style="margin-top:26px">远程查询会把 SQL 发送到平台；助手会把所需上下文发送到配置的模型网关，日志保留遵循平台策略。托管共享 SQL、云端个人历史与跨设备同步暂未实现。</p>
@@ -423,7 +424,7 @@
     <div class="grid2">
       <div class="card">
         <h3><span class="ico">⌁</span> 真类库,可 import</h3>
-        <p><code>quarry-service::QuarryService</code> 嵌入执行内核，<code>quarry-cli::run_from</code> 嵌入 CLI，<code>quarry-platform</code> 提供托管授权与配对本机服务。不依赖另装的 <code>qy</code> 或 Python 子进程。</p>
+        <p>可用 <code>quarry-service::QuarryService</code> 嵌入执行内核，用 <code>quarry-cli::run_from</code> 嵌入 CLI，或用 <code>quarry-cli::run_gui_from</code> 嵌入本机工作台。宿主应用构建并分发自己的二进制。</p>
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 自己选择运行位置</h3>
