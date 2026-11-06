@@ -3562,6 +3562,13 @@ def test_tabs_do_not_move_between_workspaces_with_same_db(page_envset):
     response = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     for group in response['groups']:
         group['ws'] = '/different/workspace'
+        for item in group['items']:
+            for env in item['envs']:
+                env['workspace'] = group['ws']
+                if 'targetId' in env:
+                    # Distinct from the original target. Fixture IDs stay in
+                    # the browser while metadata uses the seeded test server.
+                    env['targetId'] = f"fixture-replacement:{env['targetId']}"
     page.route('**/api/connections', lambda route: route.fulfill(json=response))
     page.goto(page.url.split('?')[0], wait_until='networkidle')
     assert page.locator('#sql').input_value() == 'select 88 as old_workspace_draft'
