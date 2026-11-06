@@ -827,7 +827,7 @@ impl CloudResource {
         groups: &mut Vec<Value>,
         provider: &crate::federation::ProviderIdentity,
     ) {
-        let entry = json!({"env":route_key(&self.id),"display_env":self.env,"source":"cloud","key":self.id,"resourceId":self.id,
+        let mut entry = json!({"env":route_key(&self.id),"display_env":self.env,"source":"cloud","key":self.id,"resourceId":self.id,
             "targetId":self.id,"providerLabel":format!("YLab · {} · {}",provider.origin,provider.profile),
             "sourceStatus":self.status,"engine":self.engine,"production":self.production,"region":null,"ssh":false,"proxied":false});
         if let Some(association) = &self.association {
@@ -837,6 +837,7 @@ impl CloudResource {
                         continue;
                     };
                     if envs.iter().any(|env| env["targetId"] == association.id) {
+                        entry["associatedTargetId"] = json!(association.id);
                         envs.push(entry);
                         item["is_env_set"] = json!(true);
                         return;

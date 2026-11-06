@@ -98,11 +98,19 @@ impl Target {
         db: &str,
         workspace: &Path,
     ) -> Result<bool> {
-        if self.db() == db {
-            return Ok(true);
-        }
         match self {
-            Self::Local { record, .. } => Ok(record.key == db),
+            Self::Local { record, .. } => {
+                if owns_saved_query(record, db, workspace) {
+                    return Ok(true);
+                }
+                match host.resolve_related(db, Some(&record.env), workspace) {
+                    Ok(related) => Ok(related.target_id() == record.target_id()),
+                    Err(error) if matches!(error.code.as_str(), "not_found" | "ambiguous") => {
+                        Ok(false)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             Self::Cloud(resource) => {
                 let Some(association) = &resource.association else {
                     return Ok(false);
@@ -352,24 +360,22 @@ impl Catalog {
             }
         };
         let mut catalog = Self::from_local(local, Some(federation)).await?;
-        if source != Some(Source::Cloud) {
-            // The saved file's owning workspace is authoritative. A cloud
-            // target with the same display name alone cannot inherit the file.
-            let owners: HashSet<_> = host
-                .catalog()?
-                .connections()?
-                .into_iter()
-                .filter(|record| owns_saved_query(record, db, workspace))
-                .map(|record| record.target_id())
-                .collect();
-            catalog.resources.retain(|target| match target {
-                Target::Local { .. } => true,
-                Target::Cloud(resource) => resource
-                    .association
-                    .as_ref()
-                    .is_some_and(|association| owners.contains(&association.id)),
-            });
-        }
+        // The saved file's owning workspace is authoritative. A cloud
+        // target with the same display name alone cannot inherit the file.
+        let owners: HashSet<_> = host
+            .catalog()?
+            .connections()?
+            .into_iter()
+            .filter(|record| owns_saved_query(record, db, workspace))
+            .map(|record| record.target_id())
+            .collect();
+        catalog.resources.retain(|target| match target {
+            Target::Local { .. } => true,
+            Target::Cloud(resource) => resource
+                .association
+                .as_ref()
+                .is_some_and(|association| owners.contains(&association.id)),
+        });
         Ok(catalog)
     }
 

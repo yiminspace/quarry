@@ -843,16 +843,27 @@ export default function ResultWorkbench() {
     if (!q) return;
     const cur = useConnStore.getState().current;
     const nv = q.sql || `-- ${q.name}`;
-    const related = groups.flatMap((group) => group.items).filter((item) =>
-      item.db === q.db || (item.label === q.db && !item.db.startsWith("cloud-db:")) || item.envs.some((env) => env.key === q.db));
-    const item = related.find((item) => item.db === cur?.db)
-      ?? related.find((item) => item.envs.some((env) => env.workspaceLabel === q.ws && (env.key === q.db || item.label === q.db)))
-      ?? (related.length === 1 ? related[0] : undefined);
-    if (!item) { toast(t("saved_missing"), false); return; }
-    const keyed = q.db !== item.db ? item.envs.filter((e) => e.key === q.db) : [];
-    const pinnedEnv = keyed.find((env) => env.workspaceLabel === q.ws) ?? (keyed.length === 1 ? keyed[0] : undefined);
-    if (!pinnedEnv && !cur && needsLocalTargetChoice(item)) { selectDb(item.db, null); return; }
-    const env = pinnedEnv ? pinnedEnv.env : item.envs.some((e) => e.env === cur?.env) ? cur!.env : defaultEnvFor(item);
+    const related = groups.flatMap((group) => group.items.map((item) => ({ item, workspace: group.ws })));
+    const matching = related.flatMap(({ item, workspace }) => item.envs.filter((env) => {
+      if (q.targetIds) {
+        if (env.source === "cloud") return !!env.associatedTargetId && !!q.ownerTargetIds?.includes(env.associatedTargetId);
+        return !!env.targetId && q.targetIds.includes(env.targetId);
+      }
+      // Older local servers don't expose exact target IDs for saved queries.
+      return (!q.ws || q.ws === workspace || q.ws === env.workspaceLabel) &&
+        (item.db === q.db || (item.label === q.db && env.source !== "cloud") || env.key === q.db);
+    }).map((env) => ({ item, env })));
+    const current = matching.find(({ item, env }) => item.db === cur?.db && env.env === cur?.env && env.targetId === cur?.targetId);
+    const local = matching.filter(({ env }) => env.source !== "cloud");
+    const owned = local.filter(({ env }) => env.targetId && q.ownerTargetIds?.includes(env.targetId));
+    const defaults = owned.length ? owned : local.length ? local : matching;
+    const pinned = defaults.find(({ env }) => env.key === q.db);
+    const defaultItem = defaults[0]?.item;
+    const defaultEnv = defaultItem && defaultEnvFor({ ...defaultItem, envs: defaults.map(({ env }) => env) });
+    const selected = current ?? pinned ?? defaults.find(({ env }) => env.env === defaultEnv);
+    if (!selected) { toast(t("saved_missing"), false); return; }
+    const { item } = selected;
+    const env = selected.env.env;
     const state = useTabsStore.getState();
     const created = state.openSavedTab({ ...q, sql: nv }, item.db, env);
     selectDb(item.db, env, { force: true });

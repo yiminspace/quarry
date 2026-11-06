@@ -4726,6 +4726,31 @@ def test_duplicate_workspace_targets_are_selectable_and_survive_label_changes(pa
     assert len(requests) == 2
 
 
+@pytest.mark.skipif(not os.environ.get('QUARRY_RUST_BINARY'), reason='Exact saved query routes require the Rust workbench')
+def test_saved_query_prefers_owner_over_same_name_selected_workspace(page_sqlite_workspaces, tmp_path):
+    from playwright.sync_api import expect
+
+    page = page_sqlite_workspaces
+    for owner in ('brain', 'yiminlab'):
+        path = tmp_path / owner / 'connections.toml'
+        path.write_text(path.read_text().replace(f'db = "{owner}_notes"', 'db = "notes"')
+                        .replace(f'group = "{owner}"', 'group = "Shared"'))
+    (tmp_path / 'brain' / 'queries' / 'owned-notes.sql').write_text(
+        '-- @name: owned-notes\n-- @db: notes\nselect note from records\n')
+    page.reload(wait_until='networkidle')
+    page.locator('.dbrow[data-db="notes"]').click()
+    page.locator('#esw .ep').filter(has_text=str(tmp_path / 'yiminlab')).click()
+    _run_sql(page, 'select note from records')
+    expect(page.locator('#grid td[data-v="yiminlab own data"]')).to_be_visible()
+
+    with page.expect_request(lambda req: req.method == 'POST' and req.url.endswith('/api/run')) as sent:
+        page.locator('.qname[data-q="owned-notes"]').first.click()
+    expect(page.locator('#grid td[data-v="brain own data"]')).to_be_visible()
+    expect(page.locator('#esw .ep.on')).to_contain_text(str(tmp_path / 'brain'))
+    assert sent.value.post_data_json['target'] == page.evaluate(
+        "JSON.parse(localStorage.qy_tabs)[Number(localStorage.qy_ati)].targetId")
+
+
 def test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage(page_sqlite, tmp_path):
     import sqlite3
     from contextlib import closing

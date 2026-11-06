@@ -14,6 +14,7 @@ export type ConnEnv = {
   label?: string;
   resourceId?: string;
   targetId?: string;
+  associatedTargetId?: string;
   providerLabel?: string;
   sourceStatus?: CloudStatus;
   workspaceLabel?: string;
@@ -76,6 +77,8 @@ export type SavedQuery = {
   desc: string | null;
   sql: string;
   params: SavedQueryParam[];
+  targetIds?: string[];
+  ownerTargetIds?: string[];
 };
 
 export type QueryColumn = {

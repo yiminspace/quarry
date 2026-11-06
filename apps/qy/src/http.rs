@@ -1,5 +1,6 @@
 //! Local HTTP workbench. The library facade is separate from transport DTOs.
 mod native;
+use crate::federated_cli::Target;
 use crate::gui_launch::{
     CHALLENGE_HEADER, Instance, PROOF_HEADER, ProofPurpose, STOP_HEADER, STOP_PATH,
 };
@@ -712,12 +713,23 @@ async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
                 out["env"] = json!(env);
                 return Ok(out);
             }
-            let record = match body["target"].as_str() {
-                Some(target) => local_target(host, &query.db, env, None, Some(target))?,
-                None if env.is_some_and(|env| env.starts_with(native::LOCAL_ROUTE_PREFIX)) => {
-                    local_target(host, &query.db, env, None, None)?
+            let target = body["target"].as_str();
+            let record = if target.is_some()
+                || env.is_some_and(|env| env.starts_with(native::LOCAL_ROUTE_PREFIX))
+            {
+                let record = local_target(host, &query.db, env, None, target)?;
+                if !Target::local(record.clone()).supports_saved_query(
+                    host,
+                    &query.db,
+                    &query.workspace,
+                )? {
+                    return Err(Failure::invalid(
+                        "Saved query belongs to a different database",
+                    ));
                 }
-                None => host.resolve_related(&query.db, env, &query.workspace)?,
+                record
+            } else {
+                host.resolve_related(&query.db, env, &query.workspace)?
             };
             let mut request = QueryRequest::new(&query.sql);
             request.parameters = params;
@@ -921,9 +933,37 @@ fn query_id(q: &quarry_runtime::SavedQuery) -> String {
     )
 }
 fn queries(host: &Host) -> Result<Value> {
-    let inventory = QueryStore::new(host.catalog()?).scan()?;
+    let catalog = host.catalog()?;
+    let connections = catalog.connections()?;
+    let inventory = QueryStore::new(catalog).scan()?;
     crate::warn_query_issues(&inventory);
-    Ok(json!(inventory.queries.iter().map(|q|json!({"name":q.name,"db":q.db,"desc":q.desc,"sql":q.sql,"ws":crate::service::display_path(&q.workspace),"queryId":query_id(q),"params":q.params})).collect::<Vec<_>>()))
+    let mut scopes = BTreeMap::new();
+    let mut queries = Vec::with_capacity(inventory.queries.len());
+    for query in &inventory.queries {
+        let key = (&query.workspace, &query.db);
+        let (target_ids, owner_target_ids) = match scopes.entry(key) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let mut targets = Vec::new();
+                let mut owners = Vec::new();
+                for record in connections
+                    .iter()
+                    .filter(|record| record.logical_db() == query.db || record.key == query.db)
+                {
+                    let target = Target::local(record.clone());
+                    if target.supports_saved_query(host, &query.db, &query.workspace)? {
+                        targets.push(target.id().to_owned());
+                        if record.workspace == query.workspace {
+                            owners.push(target.id().to_owned());
+                        }
+                    }
+                }
+                entry.insert((targets, owners))
+            }
+        };
+        queries.push(json!({"name":query.name,"db":query.db,"desc":query.desc,"sql":query.sql,"ws":crate::service::display_path(&query.workspace),"queryId":query_id(query),"params":query.params,"targetIds":target_ids,"ownerTargetIds":owner_target_ids}));
+    }
+    Ok(json!(queries))
 }
 fn version_gt(a: &str, b: &str) -> bool {
     semver::Version::parse(a.trim_start_matches('v'))
@@ -1121,6 +1161,71 @@ mod native_http_tests {
         assert_eq!(result.1["rowCount"], 3);
         assert_eq!(result.1["env"], Value::Null);
     }
+    #[tokio::test]
+    async fn exact_saved_query_target_respects_owner_and_allows_related_environment() {
+        let (dir, mut state) = fixture();
+        let mut workspaces = Vec::new();
+        for (name, group, environment) in [
+            ("owner", "Product", "dev"),
+            ("unrelated", "Other", "dev"),
+            ("sibling", "Product", "local"),
+        ] {
+            let workspace = dir.path().join(name);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join("connections.toml"), format!("[notes_{environment}]\ndb='notes'\nenv='{environment}'\ngroup='{group}'\nurl='sqlite:///notes.db'\n")).unwrap();
+            let db = rusqlite::Connection::open(workspace.join("notes.db")).unwrap();
+            db.execute("CREATE TABLE entries (owner TEXT)", []).unwrap();
+            db.execute("INSERT INTO entries VALUES (?)", [name])
+                .unwrap();
+            workspaces.push(std::fs::canonicalize(workspace).unwrap());
+        }
+        std::fs::create_dir(workspaces[0].join("queries")).unwrap();
+        std::fs::write(
+            workspaces[0].join("queries/recent.sql"),
+            "-- @name: recent\n-- @db: notes\nSELECT owner FROM entries\n",
+        )
+        .unwrap();
+        state.host = Host::new(
+            dir.path().join("config.toml"),
+            workspaces.clone(),
+            dir.path().join("state"),
+        );
+        let ids: Vec<_> = workspaces
+            .iter()
+            .zip(["dev", "dev", "local"])
+            .map(|(workspace, env)| {
+                state
+                    .host
+                    .resolve("notes", Some(env), Some(workspace))
+                    .unwrap()
+                    .target_id()
+            })
+            .collect();
+        let (status, queries) = send(&state, "/api/queries", None, "localhost:8765", None).await;
+        assert_eq!(status, 200);
+        let query = &queries[0];
+        assert_eq!(query["ownerTargetIds"], json!([ids[0]]));
+        let targets = query["targetIds"].as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&json!(ids[0])) && targets.contains(&json!(ids[2])));
+        let execute = |env: String, target: Option<&str>| {
+            let body = json!({"queryId":query["queryId"],"env":env,"target":target});
+            send(&state, "/api/run", Some(body), "localhost:8765", None)
+        };
+        assert_eq!(execute("dev".into(), Some(&ids[1])).await.0, 400);
+        assert_eq!(
+            execute(format!("{}{}", native::LOCAL_ROUTE_PREFIX, ids[1]), None)
+                .await
+                .0,
+            400
+        );
+        for (index, env, name) in [(0, "dev", "owner"), (2, "local", "sibling")] {
+            let (status, result) = execute(env.into(), Some(&ids[index])).await;
+            assert_eq!(status, 200);
+            assert_eq!(result["rows"][0]["owner"], name);
+        }
+    }
+
     #[tokio::test]
     async fn cloud_saved_query_sends_parameters_but_keeps_them_out_of_personal_sql() {
         struct TestCloud;
