@@ -6,8 +6,18 @@ One official Docker image serves the workbench, sign-in, read-only database API,
 and query executor. Configure your databases and access grants, then choose the
 built-in account or connect your identity provider.
 
-Install `qy` to use the CLI, `qy gui`, or `qy mcp` on your computer with your local
-configuration and records. Standalone and hosted Quarry share the query engine.
+## Choose a workbench
+
+| Entry point | Connections | Personal records |
+| --- | --- | --- |
+| Hosted `/quarry/` | Server connections authorized for the signed-in account | Drafts and SQL history in account-scoped browser storage |
+| Embedded localhost GUI, such as `ylab db connect` | Local workspaces and authorized server connections | Workbench state and execution history in local SQLite |
+| Standalone `qy gui` | Databases configured in your Quarry workspace | Drafts and SQL history in browser storage on the local GUI origin |
+
+All three share Quarry's query engine. The embedding client runs local queries
+on your computer and forwards cloud requests under the selected account. The
+hosted service keeps connection credentials and checks authorization on each
+cloud request. See the [YLab integration](ylab-integration.md) for one example.
 
 ## Start the image
 
@@ -58,12 +68,22 @@ password hashes or deployment keys into the image or commit them publicly.
 Existing standalone workspaces remain supported through the advanced
 `config_path`, `workspaces` and `resources` configuration.
 
-## See hosted updates
+## Build and update the hosted image
 
-The workbench shows a version and a link to the release notes when a newer stable
-hosted image is available. A notice can be dismissed for that version in the
-current browser. The release notes point deployment operators to the image they
-can select through their existing deployment process.
+The [Dockerfile](../Dockerfile.hosted) builds the React assets with Vite and
+embeds them into the Rust `quarry-server` binary at compile time. The runtime
+image contains that binary and its runtime dependencies. CI tests the Linux
+amd64 and arm64 images before publishing them to GHCR under the source SHA.
+
+The workbench links to the release notes when a newer stable hosted release is
+available. Each browser can dismiss the notice for that version. Use the release
+notes to select the new image, update `QUARRY_IMAGE_TAG` in your Compose
+environment, then run `docker compose pull quarry` and `docker compose up -d quarry`.
+Verify the running version at `/health`.
+
+Standalone installs from releases with self-update support use
+[`qy update`](install.md#update). An embedded workbench ships with its host
+application and follows that application's release channel.
 
 ## Use an existing identity provider
 
@@ -111,12 +131,9 @@ account. Drafts and SQL history stay in that account's browser storage. Query
 results remain in the current page. A previously cached shell can reopen for
 editing when the network is unavailable.
 
-An embedding client can open the complete workbench on localhost. It combines
-local workspaces with the cloud catalog, runs locally configured connections as
-usual, and forwards cloud operations to the hosted service. Drafts and execution
-history are stored in local SQLite. See the [YLab integration](ylab-integration.md).
-The hosted server keeps the managed connection configuration and verifies
-authorization for every cloud operation.
+To embed the localhost workbench in a Rust client, build the web assets and call
+`quarry_cli::run_gui_from` with a host-provided `CloudBackend` for the cloud catalog
+and operations. The host selects the account and manages its session credentials.
 
 ## Assistant and acceptance
 
