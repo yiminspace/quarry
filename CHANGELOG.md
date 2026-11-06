@@ -7,6 +7,10 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Verify PostgreSQL connections with `qy connections reconcile` and link confirmed local and cloud routes even when their database labels differ. Merged rows use the local name.
+
+- Register installed database provider helpers with `qy provider register` and use their authorized databases beside local connections in the same workbench. YLab uses the shared provider protocol.
+
 ## [2.1.0] - 2026-11-06
 
 - Stop a matching standalone workbench gracefully from another terminal with `qy gui stop`.

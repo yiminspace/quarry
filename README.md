@@ -65,6 +65,24 @@ read by Rust. See upgrade instructions before changing installer ownership.
 
 ## Build and verify
 
+For frontend development, start the Rust workbench and Vite in separate terminals.
+
+```sh
+qy gui --no-browser
+```
+
+```sh
+cd web
+npm ci
+npm run dev
+```
+
+Open the Vite URL ending in `/quarry/`. Vite reloads frontend changes and forwards
+`/api` to the local Rust workbench on port 8765. If `qy gui` uses a different
+port, start Vite with `QUARRY_DEV_API_PORT=<port> npm run dev`.
+
+For a native build and the existing test workflow:
+
 ```sh
 cd web && npm ci && npm run build && cd ..
 cargo build --release --locked -p quarry-cli

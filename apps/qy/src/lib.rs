@@ -5,6 +5,7 @@ pub mod http;
 mod mcp;
 mod service;
 mod updater;
+mod verified_associations;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use federated_cli::{Catalog, Selector, Source, Target};
 use federation::Federation;
@@ -94,6 +95,11 @@ enum Command {
         action: Option<ConnectionCommand>,
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
+    },
+    /// Register installed database provider helpers for this Quarry configuration.
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommand,
     },
     Schema {
         db: String,
@@ -286,6 +292,15 @@ enum ConnectionCommand {
     },
     /// List possible associations between hosted resources and local connections.
     Candidates,
+    /// Verify which PostgreSQL routes reach the same database.
+    Reconcile {
+        /// Restrict verification to a project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Save verified associations that do not already have a link.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Associate one or more pairs of exact cloud and local IDs.
     Link {
         #[arg(required = true, num_args = 2.., value_names = ["CLOUD_ID", "LOCAL_ID"])]
@@ -346,6 +361,26 @@ enum WorkspaceCommand {
     },
     Remove {
         dir: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Verify a local helper and register its authorized database catalog.
+    Register {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        origin: url::Url,
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        executable: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
 }
 #[derive(Subcommand)]
@@ -853,6 +888,30 @@ async fn run_with_prefix(
         host.catalog()?.skill_links(&skill)?;
     }
     let result = match cli.command {
+        Command::Provider {
+            action:
+                ProviderCommand::Register {
+                    id,
+                    label,
+                    origin,
+                    profile,
+                    owner,
+                    executable,
+                    args,
+                },
+        } => {
+            let identity = federation::ProviderIdentity {
+                id,
+                label,
+                origin: origin.to_string(),
+                profile,
+                owner,
+            };
+            let helper = federation::ProviderHelper { executable, args };
+            let federation = Federation::new(&host.config_path)?;
+            let count = federation.register(&identity, &helper).await?;
+            output(json!({"registered": count}))
+        }
         Command::Exec {
             db,
             sql,
@@ -1626,6 +1685,10 @@ async fn connections(host: &Host, action: Option<ConnectionCommand>, format: &st
                 format,
             )
         }
+        Some(ConnectionCommand::Reconcile { project, apply }) => {
+            let federation = Federation::new(&host.config_path)?;
+            output(reconcile_connections(host, &federation, project.as_deref(), apply).await?)
+        }
         Some(ConnectionCommand::Link { targets, yes }) => {
             let (pairs, unmatched) = targets.as_chunks::<2>();
             if !unmatched.is_empty() {
@@ -1697,6 +1760,61 @@ async fn connections(host: &Host, action: Option<ConnectionCommand>, format: &st
         Some(ConnectionCommand::Set(fields)) => put_connection(host, fields, true).await,
     }
 }
+
+/// Verify PostgreSQL routes through their existing local and provider credentials.
+pub async fn reconcile_connections(
+    host: &quarry_service::QuarryService,
+    federation: &Federation,
+    project: Option<&str>,
+    apply: bool,
+) -> quarry_service::Result<Value> {
+    let catalog = federation.catalog().await?;
+    let locals = host.catalog()?.connections()?;
+    let discovery =
+        verified_associations::discover(host, federation, &catalog, &locals, project).await;
+    let mut applied = Vec::new();
+    if apply {
+        let entries: Vec<_> = discovery
+            .candidates
+            .iter()
+            .filter(|candidate| !candidate.already_linked)
+            .map(|candidate| (candidate.resource_id.clone(), candidate.local.clone()))
+            .collect();
+        if !entries.is_empty() {
+            let latest = federation.catalog().await?;
+            for (cloud_id, local) in &entries {
+                let unchanged = catalog.resources.iter().any(|previous| {
+                    previous.id == *cloud_id
+                        && latest.resources.iter().any(|resource| {
+                            resource.id == *cloud_id
+                                && resource.status == federation::Status::Connected
+                                && resource.provider == previous.provider
+                                && resource.upstream_id == previous.upstream_id
+                                && resource.project == previous.project
+                                && resource.db == previous.db
+                                && resource.env == previous.env
+                                && resource.engine == previous.engine
+                                && resource.production == previous.production
+                        })
+                });
+                if !unchanged || federated_cli::resolve_local_target(host, &local.id).is_err() {
+                    return Err(Failure::invalid(
+                        "A database route changed during verification; run reconcile again",
+                    ));
+                }
+            }
+            applied = federation.registry().associate_missing(&entries)?;
+        }
+    }
+    Ok(json!({
+        "cloudStatus": catalog.status,
+        "candidates": discovery.candidates,
+        "skipped": discovery.skipped,
+        "unavailableLocalCount": discovery.unavailable_local_count,
+        "applied": applied,
+    }))
+}
+
 async fn put_connection(host: &Host, f: ConnectionFields, overwrite: bool) -> Result<()> {
     let env_explicit = f.env.is_some();
     let catalog = host.catalog()?;

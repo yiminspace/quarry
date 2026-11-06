@@ -639,7 +639,13 @@ mod tests {
         )
         .unwrap();
         let mut catalog = Catalog::new(&host, None).await.unwrap();
-        let provider = ProviderIdentity::ylab("https://ylab.example/", "test", "owner").unwrap();
+        let provider = ProviderIdentity {
+            id: "test-provider".into(),
+            label: "Test provider".into(),
+            origin: "https://example.test/".into(),
+            profile: "test".into(),
+            owner: "owner".into(),
+        };
         let id = provider.route_id("notes");
         catalog.resources.push(Target::Cloud(Resource {
             id: id.clone(),

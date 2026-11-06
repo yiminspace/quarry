@@ -18,6 +18,15 @@ registry when they use the same Quarry configuration. If a pure local Quarry
 window is already open when a source is first registered, run `qy gui` again
 to open the protected workbench.
 
+To verify which configured PostgreSQL routes reach the same database, run
+`qy connections reconcile --project yiminlab`. The command compares
+server-provided database and instance metadata through the existing authorized
+routes. It does not require matching display names. Add `--apply` to save
+the verified pairs that have no existing association. Routes that cannot be
+verified or have multiple matches stay separate. Verification is on demand.
+If an endpoint changes, remove any outdated link with `qy connections unlink`
+and verify again.
+
 Use an exact target ID when a short name is ambiguous. Run
 `qy connections candidates` to review potential associations, then
 `qy connections link <cloud-id> <local-id> ...` to confirm them. A link changes
@@ -28,9 +37,10 @@ connections can read them. A physical copy can preserve those values, so
 review the source and environment before linking.
 
 The desktop workbench accepts a short-lived, one-use launch code and exchanges
-it for a loopback browser session. Quarry calls the installed YLab helper with
-a bounded database operation and resource ID. YLab reads and refreshes its
-own credentials. The hosted gateway continues to authorize every operation.
+it for a loopback browser session. YLab uses the [local provider protocol](database-providers.md).
+Quarry calls the installed helper with a bounded database operation and resource
+ID. YLab reads and refreshes its own credentials. The hosted gateway continues
+to authorize every operation.
 
 Local drafts and history stay available across cloud account changes. Cloud
 records keep their original account and target scope. A disconnected target

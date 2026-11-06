@@ -346,7 +346,8 @@ from contextlib import closing, contextmanager  # noqa: E402
 
 @contextmanager
 def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = None,
-                 connections_toml: str | None = None, registered_workspaces=None):
+                 connections_toml: str | None = None, registered_workspaces=None,
+                 federated_launch: bool = False):
     """Start the real GUI HTTP server on an ephemeral port against a temp workspace.
     Yields the base URL. The shared cache (cache.py) is already isolated per-test
     by the autouse _isolated_cache fixture.
@@ -356,6 +357,7 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
                   e.g. an env-set or a redis target for browser tests).
     connections_toml: replace the default Postgres workspace for standalone
                       engine fixtures that must run without Postgres.
+    federated_launch: yield the Rust workbench's one-use browser launch URL.
     """
     from http.server import ThreadingHTTPServer
 
@@ -389,19 +391,29 @@ def _running_gui(tmp_path: Path, seed_queries=None, extra_conn: str | None = Non
             args += ["--workspace", str(tmp_path)]
         process = subprocess.Popen([*args, "gui", "--port", str(rust_port), "--no-browser"], env=env, stdout=log, stderr=log)
         base = f"http://127.0.0.1:{rust_port}"
+        readiness_path = "/quarry/" if federated_launch else "/api/version"
         try:
             for _ in range(100):
                 if process.poll() is not None:
                     raise RuntimeError("Rust GUI exited: " + (tmp_path / "rust-http.log").read_text())
                 try:
-                    with urllib.request.urlopen(base + "/api/version", timeout=1) as response:
+                    with urllib.request.urlopen(base + readiness_path, timeout=1) as response:
                         if response.status == 200:
                             break
                 except OSError:
                     time.sleep(0.05)
             else:
                 raise RuntimeError("Rust GUI startup timed out")
-            yield base
+            if federated_launch:
+                launch_url = next(
+                    line.removeprefix("Quarry GUI → ")
+                    for line in (tmp_path / "rust-http.log").read_text().splitlines()
+                    if line.startswith("Quarry GUI → ")
+                )
+                assert "#quarry_workbench=" in launch_url
+                yield launch_url
+            else:
+                yield base
         finally:
             process.send_signal(signal.SIGINT)
             try:

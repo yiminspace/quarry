@@ -549,9 +549,7 @@ impl NativeWorkbench {
             local["cloudStatus"] = status;
         }
         if let Some(groups) = local["groups"].as_array_mut() {
-            for resource in self.resources.read().expect("cloud catalog lock").iter() {
-                resource.add_to(groups);
-            }
+            add_cloud_resources(groups, &self.resources.read().expect("cloud catalog lock"));
         }
         local
     }
@@ -684,7 +682,7 @@ pub(super) fn session_required() -> Failure {
     Failure {
         status: StatusCode::UNAUTHORIZED.as_u16(),
         code: "workbench_session_required".into(),
-        message: "Open this local workbench from ylab db gui.".into(),
+        message: "Open this local workbench from its terminal command.".into(),
     }
 }
 
@@ -748,6 +746,35 @@ fn distinguish_local_targets(groups: &mut [Value]) {
     }
 }
 
+fn add_cloud_resources(groups: &mut Vec<Value>, resources: &[CloudResource]) {
+    let mut cloud_projects = BTreeMap::<String, HashSet<(String, &str)>>::new();
+    for resource in resources {
+        if let Some(provider) = &resource.provider {
+            cloud_projects
+                .entry(resource.project.to_ascii_lowercase())
+                .or_default()
+                .insert((provider.scope_id(), resource.project.as_str()));
+        }
+    }
+    for resource in resources {
+        let project = resource.project.to_ascii_lowercase();
+        let workspace_group = cloud_projects
+            .get(&project)
+            .filter(|projects| projects.len() == 1)
+            .and_then(|_| {
+                let mut matches = groups.iter().enumerate().filter(|(_, group)| {
+                    group["ws"].is_string()
+                        && group["group"]
+                            .as_str()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&project))
+                });
+                let (index, _) = matches.next()?;
+                matches.next().is_none().then_some(index)
+            });
+        resource.add_to(groups, workspace_group);
+    }
+}
+
 impl CloudResource {
     pub(super) fn saved_sql(
         &self,
@@ -776,9 +803,9 @@ impl CloudResource {
         ))
     }
 
-    fn add_to(&self, groups: &mut Vec<Value>) {
+    fn add_to(&self, groups: &mut Vec<Value>, workspace_group: Option<usize>) {
         if let Some(provider) = &self.provider {
-            self.add_federated(groups, provider);
+            self.add_federated(groups, provider, workspace_group);
             return;
         }
         let matching_group = groups.iter().position(|group| {
@@ -826,9 +853,14 @@ impl CloudResource {
         &self,
         groups: &mut Vec<Value>,
         provider: &crate::federation::ProviderIdentity,
+        workspace_group: Option<usize>,
     ) {
+        let provider_label = format!(
+            "{} · {} · {}",
+            provider.label, provider.origin, provider.profile
+        );
         let mut entry = json!({"env":route_key(&self.id),"display_env":self.env,"source":"cloud","key":self.id,"resourceId":self.id,
-            "targetId":self.id,"providerLabel":format!("YLab · {} · {}",provider.origin,provider.profile),
+            "targetId":self.id,"providerLabel":provider_label,
             "sourceStatus":self.status,"engine":self.engine,"production":self.production,"region":null,"ssh":false,"proxied":false});
         if let Some(association) = &self.association {
             for group in groups.iter_mut() {
@@ -845,11 +877,12 @@ impl CloudResource {
                 }
             }
         }
-        // Project and database display names can collide across providers or with local names.
-        let provider_label = format!("YLab · {} · {}", provider.origin, provider.profile);
+        // A workspace heading is presentation only. Keep the provider's database key
+        // even when its row is displayed alongside local databases.
         let group_id = opaque_key("cloud-group", &(provider.scope_id(), &self.project));
         let db_id = opaque_key("cloud-db", &(&group_id, &self.db));
-        let group = if let Some(index) = groups.iter().position(|group| group["group"] == group_id)
+        let group = if let Some(index) =
+            workspace_group.or_else(|| groups.iter().position(|group| group["group"] == group_id))
         {
             &mut groups[index]
         } else {
@@ -897,7 +930,7 @@ mod tests {
             association: None,
             status: None,
         };
-        resource.add_to(&mut groups);
+        resource.add_to(&mut groups, None);
         assert_eq!(groups[0]["items"][0]["envs"][0]["env"], "dev");
         assert_eq!(
             groups[0]["items"][0]["envs"][1]["env"],
@@ -911,17 +944,21 @@ mod tests {
             id: "other-notes".into(),
             ..resource
         }
-        .add_to(&mut groups);
+        .add_to(&mut groups, None);
         assert_eq!(groups[1]["items"][0]["db"], "other/notes");
         assert_eq!(groups[1]["items"][0]["envs"][0]["env"], "cloud:other-notes");
     }
 
     #[test]
-    fn federation_only_merges_explicit_endpoint_bound_associations() {
-        let provider =
-            crate::federation::ProviderIdentity::ylab("https://ylab.example/", "default", "alice")
-                .unwrap();
-        let mut groups = vec![json!({"group":"demo","ws":"/workspace","items":[
+    fn federation_shares_a_workspace_heading_but_only_links_explicit_targets() {
+        let provider = crate::federation::ProviderIdentity {
+            id: "fixture".into(),
+            label: "Fixture Cloud".into(),
+            origin: "https://lab.example/".into(),
+            profile: "default".into(),
+            owner: "alice".into(),
+        };
+        let mut groups = vec![json!({"group":"DEMO","ws":"/workspace","items":[
             {"db":"notes","engine":"sqlite","envs":[{"env":"dev","key":"dev","targetId":"local:original"}]}
         ]})];
         let mut resource = CloudResource {
@@ -935,18 +972,36 @@ mod tests {
             association: None,
             status: Some(crate::federation::Status::Connected),
         };
-        resource.add_to(&mut groups);
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[1]["items"][0]["label"], "notes");
+        add_cloud_resources(&mut groups, std::slice::from_ref(&resource));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["group"], "DEMO");
+        assert_eq!(groups[0]["items"][1]["label"], "notes");
+        assert_ne!(groups[0]["items"][0]["db"], groups[0]["items"][1]["db"]);
+        assert_eq!(groups[0]["items"][1]["envs"][0]["resourceId"], resource.id);
+        assert_eq!(
+            groups[0]["items"][1]["envs"][0]["providerLabel"],
+            "Fixture Cloud · https://lab.example/ · default"
+        );
         assert_eq!(groups[0]["items"][0]["envs"].as_array().unwrap().len(), 1);
-        groups.pop();
+        groups[0]["items"].as_array_mut().unwrap().pop();
+        resource.db = "remote_notes".into();
         resource.association = Some(crate::federation::LocalTarget {
             workspace: "/workspace".into(),
             key: "dev".into(),
             id: "local:original".into(),
         });
-        resource.add_to(&mut groups);
+        add_cloud_resources(&mut groups, std::slice::from_ref(&resource));
         assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["items"].as_array().unwrap().len(), 1);
+        assert_eq!(groups[0]["items"][0]["db"], "notes");
+        assert_eq!(
+            groups[0]["items"][0]["envs"][0]["targetId"],
+            "local:original"
+        );
+        assert_eq!(
+            groups[0]["items"][0]["envs"][1]["associatedTargetId"],
+            "local:original"
+        );
         assert_eq!(
             groups[0]["items"][0]["envs"][1]["env"],
             route_key(&resource.id)
@@ -954,8 +1009,64 @@ mod tests {
         let envs = groups[0]["items"][0]["envs"].as_array_mut().unwrap();
         envs.pop();
         envs[0]["targetId"] = json!("local:replacement");
-        resource.add_to(&mut groups);
-        assert_eq!(groups.len(), 2);
+        add_cloud_resources(&mut groups, std::slice::from_ref(&resource));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["items"][0]["envs"].as_array().unwrap().len(), 1);
+        assert_eq!(groups[0]["items"][1]["label"], "remote_notes");
+        assert_eq!(groups[0]["items"][1]["envs"][0]["resourceId"], resource.id);
+    }
+
+    #[test]
+    fn federation_keeps_ambiguous_workspace_names_in_source_groups() {
+        let provider = crate::federation::ProviderIdentity {
+            id: "fixture".into(),
+            label: "Fixture Cloud".into(),
+            origin: "https://lab.example/".into(),
+            profile: "default".into(),
+            owner: "alice".into(),
+        };
+        let resource = CloudResource {
+            id: provider.route_id("notes"),
+            project: "demo".into(),
+            db: "notes".into(),
+            env: Some("dev".into()),
+            engine: quarry_core::Engine::Sqlite,
+            production: false,
+            provider: Some(provider.clone()),
+            association: None,
+            status: Some(crate::federation::Status::Connected),
+        };
+        let local = json!({"group":"demo","ws":"/first","items":[]});
+        let mut groups = vec![
+            local.clone(),
+            json!({"group":"DEMO","ws":"/second","items":[]}),
+        ];
+        add_cloud_resources(&mut groups, std::slice::from_ref(&resource));
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[2]["items"][0]["envs"][0]["resourceId"], resource.id);
+
+        let case_variant = CloudResource {
+            id: provider.route_id("second-notes"),
+            project: "DEMO".into(),
+            ..resource.clone()
+        };
+        let mut groups = vec![local.clone()];
+        add_cloud_resources(&mut groups, &[resource.clone(), case_variant]);
+        assert_eq!(groups.len(), 3);
+
+        let other = crate::federation::ProviderIdentity {
+            owner: "bob".into(),
+            ..provider
+        };
+        let other_resource = CloudResource {
+            id: other.route_id("notes"),
+            provider: Some(other),
+            ..resource.clone()
+        };
+        let mut groups = vec![local];
+        add_cloud_resources(&mut groups, &[resource, other_resource]);
+        assert_eq!(groups.len(), 3);
+        assert_ne!(groups[1]["items"][0]["db"], groups[2]["items"][0]["db"]);
     }
 
     #[tokio::test]

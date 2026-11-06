@@ -81,47 +81,24 @@ fn valid_resource_id(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || b"._:-".contains(&ch))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    Ylab,
-}
-
-impl ProviderKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ylab => "YLab",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderIdentity {
-    pub kind: ProviderKind,
+    pub id: String,
+    pub label: String,
     pub origin: String,
     pub profile: String,
     pub owner: String,
 }
 
 impl ProviderIdentity {
-    pub fn ylab(origin: &str, profile: &str, owner: &str) -> Result<Self> {
-        let origin = Url::parse(origin).map_err(|_| Failure::invalid("Invalid provider origin"))?;
-        let identity = Self {
-            kind: ProviderKind::Ylab,
-            origin: origin.into(),
-            profile: profile.into(),
-            owner: owner.into(),
-        };
-        identity.validate()?;
-        Ok(identity)
-    }
-
     pub fn validate(&self) -> Result<()> {
         let origin =
             Url::parse(&self.origin).map_err(|_| Failure::invalid("Invalid provider origin"))?;
         let loopback = matches!(origin.host_str(), Some("127.0.0.1" | "[::1]"));
-        if origin.as_str() != self.origin
+        if !valid_resource_id(&self.id)
+            || !valid_text(&self.label, 128)
+            || origin.as_str() != self.origin
             || origin.host_str().is_none()
             || !(origin.scheme() == "https" || origin.scheme() == "http" && loopback)
             || !origin.username().is_empty()
@@ -143,14 +120,14 @@ impl ProviderIdentity {
     }
 
     pub fn scope_id(&self) -> String {
-        hash((self.kind, &self.origin, &self.profile, &self.owner))
+        hash((&self.id, &self.origin, &self.profile, &self.owner))
     }
 
     pub fn route_id(&self, upstream_id: &str) -> String {
         format!(
             "f:{}",
             hash((
-                self.kind,
+                &self.id,
                 &self.origin,
                 &self.profile,
                 &self.owner,
@@ -160,7 +137,35 @@ impl ProviderIdentity {
     }
 
     fn slot(&self) -> String {
-        hash((self.kind, &self.origin, &self.profile))
+        hash((&self.id, &self.origin, &self.profile))
+    }
+}
+
+/// Locally trusted command, separate from provider requests and catalog data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderHelper {
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl ProviderHelper {
+    fn validate(&self) -> Result<()> {
+        if !self.executable.is_absolute()
+            || self.executable.file_name().is_none()
+            || !self
+                .executable
+                .to_str()
+                .is_some_and(|path| valid_text(path, 4096))
+            || self.args.len() > 16
+            || self
+                .args
+                .iter()
+                .any(|arg| !arg.is_empty() && !valid_text(arg, 4096))
+        {
+            return Err(Failure::invalid("Invalid database provider helper"));
+        }
+        Ok(())
     }
 }
 
@@ -421,6 +426,7 @@ impl UpstreamResource {
 #[serde(deny_unknown_fields)]
 struct Registered {
     provider: ProviderIdentity,
+    helper: ProviderHelper,
     resources: Vec<UpstreamResource>,
 }
 
@@ -468,7 +474,7 @@ impl Registry {
     }
 
     fn document_path(&self) -> PathBuf {
-        self.root.join(format!("{}.json", self.scope))
+        self.root.join(format!("{}.v2.json", self.scope))
     }
 
     fn check_root(&self, create: bool) -> Result<bool> {
@@ -530,6 +536,7 @@ impl Registry {
                 .any(|target| target.validate().is_err())
             || state.providers.iter().any(|(slot, entry)| {
                 entry.provider.validate().is_err()
+                    || entry.helper.validate().is_err()
                     || &entry.provider.slot() != slot
                     || entry.resources.len() > MAX_RESOURCES
                     || entry.resources.iter().any(|resource| !resource.is_valid())
@@ -542,7 +549,7 @@ impl Registry {
 
     fn update<T>(&self, change: impl FnOnce(&mut State) -> Result<(T, bool)>) -> Result<T> {
         self.check_root(true)?;
-        let lock_path = self.root.join(format!("{}.lock", self.scope));
+        let lock_path = self.root.join(format!("{}.v2.lock", self.scope));
         let mut options = OpenOptions::new();
         options.create(true).read(true).write(true);
         #[cfg(unix)]
@@ -569,9 +576,16 @@ impl Registry {
         Ok(outcome)
     }
 
-    pub fn register(&self, provider: &ProviderIdentity, catalog: &Value) -> Result<()> {
+    fn register(
+        &self,
+        provider: &ProviderIdentity,
+        helper: &ProviderHelper,
+        catalog: &Value,
+    ) -> Result<usize> {
         provider.validate()?;
+        helper.validate()?;
         let resources = UpstreamResource::from_catalog(catalog, provider)?;
+        let count = resources.len();
         self.update(|state| {
             let slot = provider.slot();
             if state.providers.len() >= MAX_PROVIDERS && !state.providers.contains_key(&slot) {
@@ -579,13 +593,14 @@ impl Registry {
             }
             let entry = Registered {
                 provider: provider.clone(),
+                helper: helper.clone(),
                 resources,
             };
             let changed = state.providers.get(&slot) != Some(&entry);
             if changed {
                 state.providers.insert(slot, entry);
             }
-            Ok(((), changed))
+            Ok((count, changed))
         })
     }
 
@@ -593,17 +608,26 @@ impl Registry {
         Ok(!self.load()?.providers.is_empty())
     }
 
-    pub fn contains(&self, provider: &ProviderIdentity) -> Result<bool> {
+    pub fn contains_registration(
+        &self,
+        provider: &ProviderIdentity,
+        helper: &ProviderHelper,
+    ) -> Result<bool> {
         provider.validate()?;
-        Ok(self.cached(provider)?.is_some())
+        helper.validate()?;
+        Ok(self.cached(provider, helper)?.is_some())
     }
 
-    fn cached(&self, provider: &ProviderIdentity) -> Result<Option<Registered>> {
+    fn cached(
+        &self,
+        provider: &ProviderIdentity,
+        helper: &ProviderHelper,
+    ) -> Result<Option<Registered>> {
         Ok(self
             .load()?
             .providers
             .remove(&provider.slot())
-            .filter(|entry| &entry.provider == provider))
+            .filter(|entry| &entry.provider == provider && &entry.helper == helper))
     }
 
     pub fn associate(&self, resource_id: &str, target: LocalTarget) -> Result<()> {
@@ -611,6 +635,21 @@ impl Registry {
     }
 
     pub fn associate_many(&self, entries: &[(String, LocalTarget)]) -> Result<()> {
+        self.update_associations(entries, false).map(drop)
+    }
+
+    pub(crate) fn associate_missing(
+        &self,
+        entries: &[(String, LocalTarget)],
+    ) -> Result<Vec<String>> {
+        self.update_associations(entries, true)
+    }
+
+    fn update_associations(
+        &self,
+        entries: &[(String, LocalTarget)],
+        keep_existing: bool,
+    ) -> Result<Vec<String>> {
         let cwd = std::env::current_dir()?;
         let mut links = BTreeMap::new();
         for (id, target) in entries {
@@ -627,7 +666,7 @@ impl Registry {
             }
         }
         if links.is_empty() {
-            return Ok(());
+            return Ok(vec![]);
         }
         self.update(|state| {
             let registered: BTreeSet<_> = state
@@ -643,11 +682,17 @@ impl Registry {
             if links.keys().any(|id| !registered.contains(id)) {
                 return Err(missing_target());
             }
-            let changed = links
+            if keep_existing {
+                links.retain(|id, _| !state.associations.contains_key(id));
+            }
+            let applied: Vec<_> = links
                 .iter()
-                .any(|(id, target)| state.associations.get(id) != Some(target));
+                .filter(|(id, target)| state.associations.get(*id) != Some(*target))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let changed = !applied.is_empty();
             state.associations.extend(links);
-            Ok(((), changed))
+            Ok((applied, changed))
         })
     }
 
@@ -665,7 +710,9 @@ impl Registry {
     ) -> Result<Option<Vec<UpstreamResource>>> {
         self.update(|state| {
             let entry = state.providers.get_mut(&previous.provider.slot());
-            if let Some(entry) = entry.filter(|entry| entry.provider == previous.provider) {
+            if let Some(entry) = entry.filter(|entry| {
+                entry.provider == previous.provider && entry.helper == previous.helper
+            }) {
                 let changed = entry == previous && entry.resources != resources;
                 if changed {
                     entry.resources = resources;
@@ -681,39 +728,53 @@ impl Registry {
 #[derive(Clone)]
 pub struct Federation {
     registry: Registry,
-    ylab: PathBuf,
 }
 
 impl Federation {
     pub fn new(config_path: &Path) -> Result<Self> {
         Ok(Self {
             registry: Registry::new(config_path)?,
-            ylab: home()?.join(".ylab/bin/ylab"),
         })
-    }
-
-    pub fn with_ylab(mut self, path: PathBuf) -> Self {
-        self.ylab = path;
-        self
     }
 
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
 
-    async fn call(&self, request: ProviderRequest) -> Result<Value> {
+    pub async fn register(
+        &self,
+        provider: &ProviderIdentity,
+        helper: &ProviderHelper,
+    ) -> Result<usize> {
+        helper.validate()?;
+        let identity = Self::probe(provider, helper, "/identity").await?;
+        match identity.get("id") {
+            Some(Value::String(id)) if id == &provider.owner => {}
+            Some(Value::String(_)) => {
+                return Err(failure(
+                    403,
+                    "provider_account_mismatch",
+                    "The database provider uses a different account",
+                ));
+            }
+            Some(Value::Null) => {
+                return Err(failure(
+                    401,
+                    "sign_in_required",
+                    "Sign in to the database provider",
+                ));
+            }
+            _ => return Err(unavailable()),
+        }
+        let catalog = Self::probe(provider, helper, "/api/platform").await?;
+        self.registry.register(provider, helper, &catalog)
+    }
+
+    async fn call(helper: &ProviderHelper, request: ProviderRequest) -> Result<Value> {
         request.validate()?;
         let input = serde_json::to_vec(&request)?;
         if input.len() > MAX_REQUEST {
             return Err(Failure::invalid("Database provider request is too large"));
-        }
-        let program = match request.provider.kind {
-            ProviderKind::Ylab => &self.ylab,
-        };
-        // A workspace or remote catalog cannot choose the executable, its
-        // arguments, or the endpoint used by a registered provider.
-        if !program.is_absolute() {
-            return Err(unavailable());
         }
         let limit = match request.path.as_str() {
             "/identity" => Duration::from_secs(2),
@@ -721,8 +782,8 @@ impl Federation {
             _ => Duration::from_secs(65),
         };
         timeout(limit, async {
-            let mut child = Command::new(program)
-                .args(["db", "provider"])
+            let mut child = Command::new(&helper.executable)
+                .args(&helper.args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -776,20 +837,27 @@ impl Federation {
         .map_err(|_| unavailable())?
     }
 
-    async fn probe(&self, entry: &Registered, path: &str) -> Result<Value> {
-        self.call(ProviderRequest {
-            version: VERSION,
-            provider: entry.provider.clone(),
-            method: "GET".into(),
-            path: path.into(),
-            pairs: vec![],
-            body: None,
-        })
+    async fn probe(
+        provider: &ProviderIdentity,
+        helper: &ProviderHelper,
+        path: &str,
+    ) -> Result<Value> {
+        Self::call(
+            helper,
+            ProviderRequest {
+                version: VERSION,
+                provider: provider.clone(),
+                method: "GET".into(),
+                path: path.into(),
+                pairs: vec![],
+                body: None,
+            },
+        )
         .await
     }
 
-    async fn verify_identity(&self, entry: &Registered) -> std::result::Result<(), Status> {
-        match self.probe(entry, "/identity").await {
+    async fn verify_identity(entry: &Registered) -> std::result::Result<(), Status> {
+        match Self::probe(&entry.provider, &entry.helper, "/identity").await {
             Ok(value) if value["id"].as_str() == Some(&entry.provider.owner) => Ok(()),
             Ok(value)
                 if value
@@ -812,8 +880,11 @@ impl Federation {
             .providers
             .into_values()
             .map(|entry| async move {
-                self.verify_identity(&entry).await.ok()?;
-                self.registry.cached(&entry.provider).ok().flatten()
+                Self::verify_identity(&entry).await.ok()?;
+                self.registry
+                    .cached(&entry.provider, &entry.helper)
+                    .ok()
+                    .flatten()
             })
             .collect();
         let mut ids = Vec::new();
@@ -833,12 +904,11 @@ impl Federation {
 
     async fn refresh_provider(&self, entry: Registered) -> (ProviderStatus, Vec<UpstreamResource>) {
         let (status, resources, identity_verified) = if let Err(status) =
-            self.verify_identity(&entry).await
+            Self::verify_identity(&entry).await
         {
             (status, vec![], false)
         } else {
-            let response = self
-                .probe(&entry, "/api/platform")
+            let response = Self::probe(&entry.provider, &entry.helper, "/api/platform")
                 .await
                 .and_then(|document| UpstreamResource::from_catalog(&document, &entry.provider));
             match response {
@@ -860,8 +930,8 @@ impl Federation {
                     };
                     (status, vec![], status == Status::Forbidden)
                 }
-                Err(_) => match self.verify_identity(&entry).await {
-                    Ok(()) => match self.registry.cached(&entry.provider) {
+                Err(_) => match Self::verify_identity(&entry).await {
+                    Ok(()) => match self.registry.cached(&entry.provider, &entry.helper) {
                         Ok(Some(cached)) => (Status::Unavailable, cached.resources, true),
                         Ok(None) => (Status::SignedOut, vec![], false),
                         Err(_) => (Status::Unavailable, vec![], true),
@@ -959,7 +1029,7 @@ impl CloudBackend for Federation {
             .or_else(|| body.as_ref().and_then(|value| value["resourceId"].as_str()))
             .ok_or_else(missing_target)?;
         let state = self.registry.load()?;
-        let (provider, upstream_id) = state
+        let (provider, helper, upstream_id) = state
             .providers
             .into_values()
             .find_map(|entry| {
@@ -967,7 +1037,7 @@ impl CloudBackend for Federation {
                     .resources
                     .into_iter()
                     .find(|resource| entry.provider.route_id(&resource.id) == route_id)
-                    .map(|resource| (entry.provider, resource.id))
+                    .map(|resource| (entry.provider, entry.helper, resource.id))
             })
             .ok_or_else(missing_target)?;
         if let Some(route) = route {
@@ -975,14 +1045,17 @@ impl CloudBackend for Federation {
         } else if let Some(body) = body.as_mut() {
             body["resourceId"] = json!(upstream_id);
         }
-        self.call(ProviderRequest {
-            version: VERSION,
-            provider,
-            method: method.into(),
-            path: path.into(),
-            pairs,
-            body,
-        })
+        Self::call(
+            &helper,
+            ProviderRequest {
+                version: VERSION,
+                provider,
+                method: method.into(),
+                path: path.into(),
+                pairs,
+                body,
+            },
+        )
         .await
     }
 }
@@ -992,7 +1065,20 @@ mod tests {
     use super::*;
 
     fn provider(owner: &str) -> ProviderIdentity {
-        ProviderIdentity::ylab("https://lab.example", "production", owner).unwrap()
+        ProviderIdentity {
+            id: "fixture".into(),
+            label: "Fixture Cloud".into(),
+            origin: "https://lab.example/".into(),
+            profile: "production".into(),
+            owner: owner.into(),
+        }
+    }
+
+    fn helper(executable: PathBuf, args: &[&str]) -> ProviderHelper {
+        ProviderHelper {
+            executable,
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        }
     }
 
     fn catalog(owner: &str, id: &str) -> Value {
@@ -1018,15 +1104,23 @@ mod tests {
         let registry = registry(root.path());
         let alice = provider("alice");
         let bob = provider("bob");
+        let helper = helper(root.path().join("provider"), &["db", "provider"]);
         let id = alice.route_id("notes");
         assert_ne!(id, bob.route_id("notes"));
+        let mut renamed = alice.clone();
+        renamed.label = "Renamed Cloud".into();
+        assert_eq!(renamed.route_id("notes"), id);
         assert!(!registry.has_providers().unwrap());
-        assert!(registry.register(&alice, &catalog("bob", "notes")).is_err());
+        assert!(
+            registry
+                .register(&alice, &helper, &catalog("bob", "notes"))
+                .is_err()
+        );
         registry
-            .register(&alice, &catalog("alice", "notes"))
+            .register(&alice, &helper, &catalog("alice", "notes"))
             .unwrap();
-        assert!(registry.contains(&alice).unwrap());
-        assert!(!registry.contains(&bob).unwrap());
+        assert!(registry.contains_registration(&alice, &helper).unwrap());
+        assert!(!registry.contains_registration(&bob, &helper).unwrap());
         assert!(registry.load().unwrap().associations.is_empty());
         let text = fs::read_to_string(registry.document_path()).unwrap();
         assert!(!text.contains("not-for-cache"));
@@ -1046,11 +1140,29 @@ mod tests {
                 .is_err()
         );
         assert!(registry.load().unwrap().associations.is_empty());
-        registry.associate(&id, target.clone()).unwrap();
+        assert_eq!(
+            registry
+                .associate_missing(&[(id.clone(), target.clone())])
+                .unwrap(),
+            vec![id.clone()]
+        );
+        let alternative = LocalTarget {
+            id: format!("local:{}:other", "b".repeat(64)),
+            key: "other".into(),
+            ..target.clone()
+        };
+        assert!(
+            registry
+                .associate_missing(&[(id.clone(), alternative)])
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(registry.load().unwrap().associations[&id], target);
-        registry.register(&bob, &catalog("bob", "notes")).unwrap();
-        assert!(!registry.contains(&alice).unwrap());
-        assert!(registry.contains(&bob).unwrap());
+        registry
+            .register(&bob, &helper, &catalog("bob", "notes"))
+            .unwrap();
+        assert!(!registry.contains_registration(&alice, &helper).unwrap());
+        assert!(registry.contains_registration(&bob, &helper).unwrap());
         assert!(
             !registry
                 .load()
@@ -1108,8 +1220,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let registry = registry(root.path());
         let alice = provider("alice");
+        let helper = helper(root.path().join("provider"), &[]);
         registry
-            .register(&alice, &catalog("alice", "notes"))
+            .register(&alice, &helper, &catalog("alice", "notes"))
             .unwrap();
         let path = registry.document_path();
         assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
@@ -1149,7 +1262,14 @@ mod tests {
         assert!(request.validate().is_ok());
         request.provider.origin = "https://user:password@lab.example/".into();
         assert!(request.validate().is_err());
-        assert!(ProviderIdentity::ylab("http://lab.example", "production", "alice").is_err());
+        request.provider.origin = "http://lab.example/".into();
+        assert!(request.validate().is_err());
+        assert!(helper("provider".into(), &[]).validate().is_err());
+        assert!(
+            helper("/opt/provider".into(), &["db\n"])
+                .validate()
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -1160,10 +1280,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let registry = registry(root.path());
         let alice = provider("alice");
-        registry
-            .register(&alice, &catalog("alice", "notes"))
-            .unwrap();
         let program = root.path().join("provider");
+        let helper = helper(program.clone(), &["db", "provider"]);
         let fixture = |identity: &str, catalog_reply: &str| {
             let source = format!(
                 r#"#!/bin/sh
@@ -1180,15 +1298,13 @@ esac
             fs::write(&program, source).unwrap();
             fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         };
-        let cloud = Federation {
-            registry,
-            ylab: program.clone(),
-        };
+        let cloud = Federation { registry };
         let id = alice.route_id("notes");
         fixture(
             r#"{"value":{"id":"alice"}}"#,
             &json!({"value": catalog("alice", "notes")}).to_string(),
         );
+        assert_eq!(cloud.register(&alice, &helper).await.unwrap(), 1);
         assert_eq!(cloud.catalog().await.unwrap().resources[0].id, id);
         let value = cloud
             .request(
@@ -1209,6 +1325,10 @@ esac
         assert_eq!(offline.resources[0].status, Status::Unavailable);
         assert_eq!(cloud.authorized_cached_ids().await.unwrap(), vec![id]);
         fixture(r#"{"value":{"id":"bob"}}"#, "{}");
+        assert_eq!(
+            cloud.register(&alice, &helper).await.unwrap_err().code,
+            "provider_account_mismatch"
+        );
         let switched = cloud.catalog().await.unwrap();
         assert_eq!(switched.status, Status::SignedOut);
         assert!(switched.resources.is_empty());
@@ -1228,39 +1348,40 @@ esac
 
         let root = tempfile::tempdir().unwrap();
         let registry = registry(root.path());
-        let alice = provider("alice");
-        let bob = ProviderIdentity::ylab("https://lab.example", "secondary", "bob").unwrap();
-        registry
-            .register(&alice, &catalog("alice", "notes"))
-            .unwrap();
-        registry.register(&bob, &catalog("bob", "notes")).unwrap();
-        let program = root.path().join("provider");
-        let source = format!(
-            r#"#!/bin/sh
+        let fixture = |id: &str| {
+            let program = root.path().join(id);
+            let source = format!(
+                r#"#!/bin/sh
+[ "$#" = 1 ] && [ "$1" = "{id}" ] || exit 2
 input=$(cat)
 case "$input" in
-    *'"owner":"alice"'*'"/identity"'*) printf '%s' '{{"value":{{"id":"alice"}}}}';;
-    *'"owner":"bob"'*'"/identity"'*) printf '%s' '{{"value":{{"id":"bob"}}}}';;
-    *'"owner":"alice"'*'"/api/platform"'*) printf '%s' '{}';;
-    *'"owner":"bob"'*'"/api/platform"'*) printf '%s' '{}';;
-    *'"owner":"alice"'*'"/api/tables"'*'"notes"'*) printf '%s' '{{"value":"alice"}}';;
-    *'"owner":"bob"'*'"/api/tables"'*'"notes"'*) printf '%s' '{{"value":"bob"}}';;
+    *'"id":"{id}"'*'"/identity"'*) printf '%s' '{{"value":{{"id":"alice"}}}}';;
+    *'"id":"{id}"'*'"/api/platform"'*) printf '%s' '{}';;
+    *'"id":"{id}"'*'"/api/tables"'*'"notes"'*) printf '%s' '{{"value":"{id}"}}';;
     *) exit 2;;
 esac
 "#,
-            json!({"value":catalog("alice", "notes")}),
-            json!({"value":catalog("bob", "notes")}),
-        );
-        fs::write(&program, source).unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let cloud = Federation {
-            registry,
-            ylab: program,
+                json!({"value":catalog("alice", "notes")}),
+            );
+            fs::write(&program, source).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            (
+                ProviderIdentity {
+                    id: id.into(),
+                    ..provider("alice")
+                },
+                helper(program, &[id]),
+            )
         };
+        let (first, first_helper) = fixture("first");
+        let (second, second_helper) = fixture("second");
+        let cloud = Federation { registry };
+        cloud.register(&first, &first_helper).await.unwrap();
+        cloud.register(&second, &second_helper).await.unwrap();
         let catalog = cloud.catalog().await.unwrap();
         assert_eq!(catalog.resources.len(), 2);
         assert_ne!(catalog.resources[0].id, catalog.resources[1].id);
-        for provider in [alice, bob] {
+        for provider in [&first, &second] {
             let value = cloud
                 .request(
                     "GET",
@@ -1270,7 +1391,12 @@ esac
                 )
                 .await
                 .unwrap();
-            assert_eq!(value, provider.owner);
+            assert_eq!(value, provider.id);
         }
+        fs::remove_file(&first_helper.executable).unwrap();
+        let catalog = cloud.catalog().await.unwrap();
+        assert_eq!(catalog.resources.len(), 1);
+        assert_eq!(catalog.resources[0].provider, second);
+        assert_eq!(catalog.resources[0].status, Status::Connected);
     }
 }
