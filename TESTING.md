@@ -69,6 +69,13 @@ and runs Cargo checks, real-engine tests (Postgres, MySQL and Redis), and the
 browser matrix against native `qy` in headless Chromium. A separate check
 compiles the workspace with the declared minimum Rust version.
 
+Direct pull requests into `main` and pushes to `main` can reuse browser
+coverage from a successful CI run on their exact base commit. CI skips only
+Chromium setup and the browser matrix when the diff contains approved Markdown
+documentation or a Cargo version stamp with matching lockfile versions. The
+embedded `CHANGELOG.md` may only add the heading for that version. CI runs the
+browser matrix for other changes and when it cannot verify the diff or base.
+
 ## The React frontend (`/quarry`)
 
 The GUI frontend is a Vite + React + TypeScript package under `web/` that
