@@ -95,6 +95,11 @@ enum Command {
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
     },
+    /// Register installed database provider helpers for this Quarry configuration.
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommand,
+    },
     Schema {
         db: String,
         table: String,
@@ -346,6 +351,26 @@ enum WorkspaceCommand {
     },
     Remove {
         dir: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Verify a local helper and register its authorized database catalog.
+    Register {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        origin: url::Url,
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        executable: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
     },
 }
 #[derive(Subcommand)]
@@ -853,6 +878,30 @@ async fn run_with_prefix(
         host.catalog()?.skill_links(&skill)?;
     }
     let result = match cli.command {
+        Command::Provider {
+            action:
+                ProviderCommand::Register {
+                    id,
+                    label,
+                    origin,
+                    profile,
+                    owner,
+                    executable,
+                    args,
+                },
+        } => {
+            let identity = federation::ProviderIdentity {
+                id,
+                label,
+                origin: origin.to_string(),
+                profile,
+                owner,
+            };
+            let helper = federation::ProviderHelper { executable, args };
+            let federation = Federation::new(&host.config_path)?;
+            let count = federation.register(&identity, &helper).await?;
+            output(json!({"registered": count}))
+        }
         Command::Exec {
             db,
             sql,

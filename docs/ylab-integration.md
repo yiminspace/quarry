@@ -28,9 +28,10 @@ connections can read them. A physical copy can preserve those values, so
 review the source and environment before linking.
 
 The desktop workbench accepts a short-lived, one-use launch code and exchanges
-it for a loopback browser session. Quarry calls the installed YLab helper with
-a bounded database operation and resource ID. YLab reads and refreshes its
-own credentials. The hosted gateway continues to authorize every operation.
+it for a loopback browser session. YLab uses the [local provider protocol](database-providers.md).
+Quarry calls the installed helper with a bounded database operation and resource
+ID. YLab reads and refreshes its own credentials. The hosted gateway continues
+to authorize every operation.
 
 Local drafts and history stay available across cloud account changes. Cloud
 records keep their original account and target scope. A disconnected target

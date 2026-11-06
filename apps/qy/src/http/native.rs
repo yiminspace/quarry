@@ -684,7 +684,7 @@ pub(super) fn session_required() -> Failure {
     Failure {
         status: StatusCode::UNAUTHORIZED.as_u16(),
         code: "workbench_session_required".into(),
-        message: "Open this local workbench from ylab db gui.".into(),
+        message: "Open this local workbench from its terminal command.".into(),
     }
 }
 
@@ -827,8 +827,12 @@ impl CloudResource {
         groups: &mut Vec<Value>,
         provider: &crate::federation::ProviderIdentity,
     ) {
+        let provider_label = format!(
+            "{} · {} · {}",
+            provider.label, provider.origin, provider.profile
+        );
         let mut entry = json!({"env":route_key(&self.id),"display_env":self.env,"source":"cloud","key":self.id,"resourceId":self.id,
-            "targetId":self.id,"providerLabel":format!("YLab · {} · {}",provider.origin,provider.profile),
+            "targetId":self.id,"providerLabel":provider_label,
             "sourceStatus":self.status,"engine":self.engine,"production":self.production,"region":null,"ssh":false,"proxied":false});
         if let Some(association) = &self.association {
             for group in groups.iter_mut() {
@@ -846,7 +850,6 @@ impl CloudResource {
             }
         }
         // Project and database display names can collide across providers or with local names.
-        let provider_label = format!("YLab · {} · {}", provider.origin, provider.profile);
         let group_id = opaque_key("cloud-group", &(provider.scope_id(), &self.project));
         let db_id = opaque_key("cloud-db", &(&group_id, &self.db));
         let group = if let Some(index) = groups.iter().position(|group| group["group"] == group_id)
@@ -918,9 +921,13 @@ mod tests {
 
     #[test]
     fn federation_only_merges_explicit_endpoint_bound_associations() {
-        let provider =
-            crate::federation::ProviderIdentity::ylab("https://ylab.example/", "default", "alice")
-                .unwrap();
+        let provider = crate::federation::ProviderIdentity {
+            id: "fixture".into(),
+            label: "Fixture Cloud".into(),
+            origin: "https://lab.example/".into(),
+            profile: "default".into(),
+            owner: "alice".into(),
+        };
         let mut groups = vec![json!({"group":"demo","ws":"/workspace","items":[
             {"db":"notes","engine":"sqlite","envs":[{"env":"dev","key":"dev","targetId":"local:original"}]}
         ]})];
@@ -938,6 +945,10 @@ mod tests {
         resource.add_to(&mut groups);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[1]["items"][0]["label"], "notes");
+        assert_eq!(
+            groups[1]["items"][0]["envs"][0]["providerLabel"],
+            "Fixture Cloud · https://lab.example/ · default"
+        );
         assert_eq!(groups[0]["items"][0]["envs"].as_array().unwrap().len(), 1);
         groups.pop();
         resource.association = Some(crate::federation::LocalTarget {

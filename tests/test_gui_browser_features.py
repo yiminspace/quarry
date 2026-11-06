@@ -15,7 +15,9 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -277,12 +279,12 @@ def _console_clean(request):
     """Invariant: no page JS errors during any test in this module."""
     # Keep the legacy Postgres requirement, but do not gate SQLite's standalone
     # browser coverage on a server it never connects to.
-    if not {"page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language"}.intersection(request.fixturenames) and not DB_OK:
+    if not {"page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language", "page_registered_providers"}.intersection(request.fixturenames) and not DB_OK:
         pytest.skip("quarry_test Postgres not reachable")
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language")
+                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language", "page_registered_providers")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -4213,6 +4215,83 @@ def test_row_record_link_ordinary_string_key_omits_escape_prefix(page_clip, pg_e
 def _select_sqlite(page):
     page.locator('.dbrow[data-db="notes"]').click()
     page.locator('#tbl-panel [data-t="entries"]').wait_for()
+
+
+@pytest.fixture()
+def page_registered_providers(_pw_browser, tmp_path, monkeypatch):
+    binary = os.environ.get("QUARRY_RUST_BINARY")
+    if not binary:
+        pytest.skip("provider registration requires the native Quarry binary")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    helper = tmp_path / "provider.py"
+    helper.write_text('''
+import json
+import sys
+
+provider = sys.argv[1]
+request = json.load(sys.stdin)
+assert request["version"] == 1
+assert request["provider"]["id"] == provider
+assert request["provider"]["owner"] == "alice"
+path = request["path"]
+if path == "/identity":
+    value = {"id": "alice"}
+elif path == "/api/platform":
+    value = {"principal": {"id": "alice"}, "resources": [{
+        "id": "shared-notes", "project": "Demo", "db": "notes", "env": "dev",
+        "engine": "sqlite", "production": True,
+    }]}
+elif path == "/api/tables":
+    assert dict(request["pairs"])["resourceId"] == "shared-notes"
+    value = {"engine": "sqlite", "tables": [provider + "_entries"], "capped": False}
+elif path == "/api/health":
+    value = {"ok": True}
+elif path == "/api/query":
+    assert request["body"]["resourceId"] == "shared-notes"
+    value = {"columns": [{"name": "note", "type": None}], "rows": [{"note": provider}],
+             "rowCount": 1, "truncated": False, "elapsedMs": 1, "engine": "sqlite",
+             "sql": request["body"]["sql"], "downloadBytes": 16, "sizeIsEstimated": False}
+else:
+    raise AssertionError(path)
+print(json.dumps({"value": value}))
+''', encoding="utf-8")
+    config = tmp_path / "config.toml"
+    for provider, label in [("alpha", "Alpha Cloud"), ("beta", "Beta Cloud")]:
+        result = subprocess.run([
+            binary, "--config", str(config), "provider", "register", "--id", provider,
+            "--label", label, "--origin", "https://provider.example", "--profile", "dev",
+            "--owner", "alice", "--executable", sys.executable, "--", str(helper), provider,
+        ], check=True, capture_output=True, text=True, timeout=10)
+        assert json.loads(result.stdout) == {"registered": 1}
+
+    with sqlite3.connect(tmp_path / "notes.db") as db:
+        db.executescript("CREATE TABLE entries(note TEXT); INSERT INTO entries VALUES ('local row');")
+    connections = '[notes_dev]\ndb="notes"\nenv="dev"\nurl="sqlite:///notes.db"\n'
+    with _running_gui(tmp_path, connections_toml=connections, federated_launch=True) as launch_url:
+        ctx, page = _mk_page(_pw_browser, launch_url)
+        try:
+            yield page
+        finally:
+            ctx.close()
+
+
+def test_registered_providers_keep_same_name_database_routes_separate(page_registered_providers):
+    from playwright.sync_api import expect
+
+    page = page_registered_providers
+    _select_sqlite(page)
+    _run_sql(page, "SELECT note FROM entries")
+    expect(page.locator('#grid td[data-v="local row"]')).to_be_visible()
+
+    for provider, label in [("alpha", "Alpha Cloud"), ("beta", "Beta Cloud")]:
+        group = page.locator("[data-grp]", has_text=label).locator("..")
+        group.locator(".dbrow", has_text="notes").click()
+        expect(page.locator("#esw .cloud-source-badge")).to_contain_text(label)
+        expect(page.locator(f'#tbl-panel [data-t="{provider}_entries"]')).to_be_visible()
+        _run_sql(page, "SELECT 'marker' AS note")
+        expect(page.locator(f'#grid td[data-v="{provider}"]')).to_be_visible()
 
 
 def _route_native_cloud_catalog(page, cloud_status, *, configured_dev=True):
