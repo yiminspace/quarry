@@ -22,6 +22,10 @@ main 及 2.x 发布由 Rust 接管；Python 1.11.0 保存在原标签和受保�
 `archive/python-1.x` 分支。2.x 不再提供 Python import API；源码中的旧实现仅用于开发验收。
 配置、保存查询和助手历史继续沿用。GUI 默认只读，CLI/MCP 写入需要显式授权。
 
+在另一个终端运行 `qy gui stop` 可以正常关闭独立运行的本机 GUI。
+如果启动时指定了 `--config`、`--workspace`、`--host` 或 `--port`，关闭时也传入相同参数。
+如果用 `--port 0` 启动，关闭时传入 GUI 启动网址中显示的实际端口。
+
 SSH、Docker 和 PostgreSQL schema sync 分别按需使用系统工具；普通查询使用原生驱动。
 类库按 core/runtime/local/assistant/service 分层，供宿主 CLI 直接共用。
 
