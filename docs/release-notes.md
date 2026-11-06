@@ -1,7 +1,11 @@
-Quarry 2.1.0 brings local and authorized cloud connections into one catalog.
+Quarry 2.2.0 brings local and authorized cloud connections into one catalog.
 Open `ylab db gui` to register your YLab connections, then discover them in
 `qy connections` or `qy gui`. Cloud queries use YLab's current credentials,
 and cloud drafts and history stay scoped to the signed-in account.
+
+Use `qy connections reconcile` to verify PostgreSQL connections that reach the
+same database. Add `--apply` to group confirmed routes under the local name.
+Existing sources can register again using the shared provider protocol.
 
 The standalone workbench can reopen the matching running session and can be
 stopped with `qy gui stop`.
