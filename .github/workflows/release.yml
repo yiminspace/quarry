@@ -111,7 +111,7 @@ jobs:
       - run: python scripts/validate_release.py "$RELEASE_TAG"
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
