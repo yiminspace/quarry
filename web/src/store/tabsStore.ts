@@ -2,7 +2,7 @@ import { PLATFORM_MODE, personalStorage } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
-import { displayConnectionEnvironment, useConnStore } from "./connStore";
+import { cloudRouteVisible, connectionTargetId, displayConnectionEnvironment, federatedRoute, useConnStore } from "./connStore";
 
 export type TabId = string;
 
@@ -16,6 +16,7 @@ export type Tab = {
   db: string | null;
   env: string | null;
   workspace?: string | null;
+  targetId?: string;
   visited?: number;
   savedQueryId?: string;
   /** Independent from the tab lifetime; durable history lives on the backend. */
@@ -32,7 +33,7 @@ export function workspaceFor(db: string | null): string | null {
 }
 
 export function sameTabGroup(a: Tab, b: Tab): boolean {
-  return a.db === b.db && a.env === b.env && (a.workspace ?? null) === (b.workspace ?? null);
+  return a.db === b.db && a.env === b.env && a.targetId === b.targetId && (a.workspace ?? null) === (b.workspace ?? null);
 }
 
 export function mostRecent(tabs: Tab[]): Tab | undefined {
@@ -55,6 +56,7 @@ export type TabResultSnapshot = {
   queryDb: string | null;
   queryEnv: string | null;
   querySql: string | null;
+  targetId?: string;
 };
 
 // Exactly the legacy GUI's storage keys AND value formats (qy_tabs is a flat
@@ -107,10 +109,11 @@ function newId(): TabId {
 }
 
 type StoredTab = Partial<Tab>;
-type StoredResult = { db?: string | null; env?: string | null; res?: (QueryResult & { _sql?: string }) | null } | null;
+type StoredResult = { db?: string | null; env?: string | null; targetId?: string; res?: (QueryResult & { _sql?: string }) | null } | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
-  return { id: newId(), title: null, sql: "", db: seed?.db ?? null, env: seed?.env ?? null, workspace: workspaceFor(seed?.db ?? null) };
+  return { id: newId(), title: null, sql: "", db: seed?.db ?? null, env: seed?.env ?? null, workspace: workspaceFor(seed?.db ?? null),
+    targetId: connectionTargetId(seed?.db ?? null, seed?.env ?? null) };
 }
 
 function readStoredTabs(): StoredTab[] {
@@ -136,12 +139,14 @@ function readStoredResults(tabs: Tab[], ati: number): Record<TabId, TabResultSna
   const accept = (entry: StoredResult, tab: Tab): void => {
     if (!entry?.res) return;
     if (entry.db !== tab.db || (entry.env ?? null) !== (tab.env ?? null)) return;
+    if (entry.targetId !== tab.targetId) return;
     const { _sql, ...result } = entry.res;
     out[tab.id] = {
       result: result as QueryResult,
       queryDb: entry.db ?? null,
       queryEnv: entry.env ?? null,
       querySql: _sql ?? null,
+      targetId: entry.targetId,
     };
   };
   try {
@@ -176,6 +181,7 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     db: tb.db ?? null,
     env: tb.env ?? null,
     workspace: tb.workspace,
+    targetId: typeof tb.targetId === "string" ? tb.targetId : undefined,
     visited: Number.isFinite(tb.visited) ? tb.visited : 0,
     savedQueryId: typeof tb.savedQueryId === "string" ? tb.savedQueryId : undefined,
     conversationId: typeof tb.conversationId === "string" ? tb.conversationId : undefined,
@@ -190,7 +196,7 @@ function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
     personalStorage.setItem(
       TABS_KEY,
-      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision }))),
+      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, targetId: tb.targetId, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision }))),
     );
     personalStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
@@ -206,7 +212,7 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
     const snap = results[tab.id];
     if (!snap?.result) return null;
     const res = snap.querySql ? { ...snap.result, _sql: snap.querySql } : snap.result;
-    return { db: snap.queryDb, env: snap.queryEnv, res };
+    return { db: snap.queryDb, env: snap.queryEnv, targetId: snap.targetId, res };
   };
   const packed: StoredResult[] = tabs.map(() => null);
   let remaining = MAX_PERSISTED_RESULTS_BYTES;
@@ -216,7 +222,7 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
   );
   for (const i of order) {
     const snap = results[tabs[i].id];
-    if (!snap?.result || !isResultSnapshotPersistable(snap)) continue;
+    if (!snap?.result || federatedRoute(snap.queryEnv) || !isResultSnapshotPersistable(snap)) continue;
     const bytes = snap.result.downloadBytes;
     if (typeof bytes === "number" && Number.isFinite(bytes)) {
       if (bytes > remaining) continue;
@@ -290,6 +296,7 @@ export type TabsState = {
   /** Keyed by tab id (stable across reorder/close); persisted index-aligned. */
   results: Record<TabId, TabResultSnapshot>;
   claimWorkspaces: () => void;
+  showAvailableTabs: () => void;
   selectGroup: (db: string, env: string | null) => void;
   addTab: (seed?: { db?: string | null; env?: string | null }) => void;
   openSavedTab: (query: SavedQuery, db: string, env: string | null) => boolean;
@@ -320,15 +327,49 @@ export const useTabsStore = create<TabsState>((set, get) => {
 
     claimWorkspaces: () => {
       const s = get();
-      const tabs = s.tabs.map((tab) => tab.workspace === undefined
-        ? { ...tab, workspace: workspaceFor(tab.db) } : tab);
-      saveTabs(tabs, s.activeId);
-      set({ tabs });
+      const results = { ...s.results };
+      const tabs = s.tabs.map((tab) => {
+        // An explicit association can change the display group without
+        // changing a provider's exact target. Retain the route and its data.
+        if (federatedRoute(tab.env) || tab.targetId?.startsWith("local:")) {
+          for (const group of useConnStore.getState().groups) {
+            const item = group.items.find((item) => item.envs.some((entry) =>
+              tab.targetId ? entry.targetId === tab.targetId : entry.env === tab.env));
+            const match = item?.envs.find((entry) => tab.targetId ? entry.targetId === tab.targetId : entry.env === tab.env);
+            if (!item || !match) continue;
+            const snapshot = results[tab.id];
+            if (snapshot && snapshot.queryEnv === tab.env && snapshot.targetId === tab.targetId) {
+              results[tab.id] = { ...snapshot, queryDb: item.db, queryEnv: match.env };
+            }
+            return { ...tab, db: item.db, env: match.env, workspace: group.ws, targetId: match.targetId };
+          }
+          return tab;
+        }
+        const workspace = workspaceFor(tab.db);
+        const targetId = tab.targetId ?? (tab.workspace === undefined || tab.workspace === workspace
+          ? connectionTargetId(tab.db, tab.env) : undefined);
+        if (!results[tab.id]?.targetId && targetId && results[tab.id]) {
+          results[tab.id] = { ...results[tab.id], targetId };
+        }
+        return { ...tab, workspace: tab.workspace === undefined ? workspace : tab.workspace, targetId };
+      });
+      saveTopology(tabs, s.activeId, results);
+      set({ tabs, results });
+    },
+
+    showAvailableTabs: () => {
+      const s = get();
+      const { groups } = useConnStore.getState();
+      const active = s.tabs.find((tab) => tab.id === s.activeId);
+      if (cloudRouteVisible(groups, active?.env)) return;
+      const activeId = mostRecent(s.tabs.filter((tab) => cloudRouteVisible(groups, tab.env)))?.id ?? "";
+      saveTabs(s.tabs, activeId);
+      set({ activeId });
     },
 
     selectGroup: (db, env) => {
       const s = get();
-      const target = { db, env, workspace: workspaceFor(db) } as Tab;
+      const target = { db, env, workspace: workspaceFor(db), targetId: connectionTargetId(db, env) } as Tab;
       const existing = mostRecent(s.tabs.filter((tab) => sameTabGroup(tab, target)));
       if (existing) { get().switchTab(existing.id); return; }
       if (s.emptyGroups.includes(tabGroupKey(target))) {
@@ -374,6 +415,7 @@ export const useTabsStore = create<TabsState>((set, get) => {
     switchTab: (id) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id) || id === s.activeId) return;
+      if (!cloudRouteVisible(useConnStore.getState().groups, s.tabs.find((tab) => tab.id === id)?.env)) return;
       const tabs = visit(s.tabs, id);
       saveTabs(tabs, id);
       set({ tabs, activeId: id });
@@ -433,6 +475,10 @@ export const useTabsStore = create<TabsState>((set, get) => {
       let tabs = s.tabs.map((t) => (t.id === id ? { ...t, ...patch,
         sqlRevision: "sql" in patch && patch.sql !== t.sql ? (t.sqlRevision ?? 0) + 1 : t.sqlRevision,
         ...("db" in patch ? { workspace: workspaceFor(patch.db ?? null) } : {}),
+        ...("db" in patch || "env" in patch ? { targetId: connectionTargetId(
+          "db" in patch ? patch.db ?? null : t.db,
+          "env" in patch ? patch.env ?? null : t.env,
+        ) } : {}),
       } : t));
       if (id === s.activeId && ("db" in patch || "env" in patch)) tabs = visit(tabs, id);
       // SQL input is the hot path: never reserialize unchanged result payloads
@@ -455,7 +501,7 @@ export const useTabsStore = create<TabsState>((set, get) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id)) return; // tab closed while in flight
       const results = { ...s.results };
-      if (snapshot) results[id] = snapshot;
+      if (snapshot) results[id] = { ...snapshot, targetId: snapshot.targetId ?? connectionTargetId(snapshot.queryDb, snapshot.queryEnv) };
       else delete results[id];
       persistResults(s.tabs, s.activeId, results);
       set({ results });

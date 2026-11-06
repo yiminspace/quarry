@@ -13,6 +13,7 @@ import "./App.css";
 
 const root = document.getElementById("root")!;
 const native = document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") === "native";
+const entry = document.querySelector('meta[name="quarry-workbench-entry"]')?.getAttribute("content");
 async function openNativeSession(): Promise<boolean> {
   const fragment = new URLSearchParams(location.hash.slice(1));
   const code = fragment.get("quarry_workbench");
@@ -33,9 +34,10 @@ async function openNativeSession(): Promise<boolean> {
   }
 }
 if (native && !await openNativeSession()) {
+  const command = entry === "quarry" ? "qy gui" : "ylab db gui";
   root.textContent = navigator.language.startsWith("zh")
-    ? "请通过 ylab db connect 打开本机 Quarry。"
-    : "Open this local Quarry workbench with ylab db connect.";
+    ? `请通过 ${command} 打开本机 Quarry。`
+    : `Open this local Quarry workbench with ${command}.`;
 } else {
   await initializePlatform();
   await initializeNativeRecords();

@@ -1,9 +1,13 @@
+pub mod federated_cli;
+pub mod federation;
 mod gui_launch;
 pub mod http;
 mod mcp;
 mod service;
 mod updater;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use federated_cli::{Catalog, Selector, Source, Target};
+use federation::Federation;
 use quarry_core::{CancellationToken, Engine, QueryOutcome, QueryRequest};
 use quarry_runtime::{QueryParameter, QueryStore, RuntimeConfig, SavedQuery};
 use quarry_service::MetadataOperation;
@@ -38,11 +42,15 @@ struct QueryOptions {
     #[arg(long)]
     env: Option<String>,
     #[arg(long)]
+    source: Option<Source>,
+    #[arg(long)]
     write: bool,
     #[arg(long)]
     yes: bool,
     #[arg(long, default_value_t = 500)]
     max_rows: usize,
+    #[arg(long, default_value_t = 0)]
+    offset: usize,
     #[arg(long,value_parser=clap::value_parser!(u64).range(1..))]
     timeout: Option<u64>,
     #[arg(long, default_value = "json", value_parser=["json","ndjson","csv","table"])]
@@ -67,6 +75,9 @@ enum Command {
     },
     Run {
         name: String,
+        /// Select a compatible execution target from `qy connections`.
+        #[arg(long)]
+        target: Option<String>,
         #[arg(trailing_var_arg = true)]
         params: Vec<String>,
         #[arg(long)]
@@ -89,6 +100,8 @@ enum Command {
         table: String,
         #[arg(long)]
         env: Option<String>,
+        #[arg(long)]
+        source: Option<Source>,
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
     },
@@ -98,7 +111,18 @@ enum Command {
         table: String,
         #[arg(long)]
         env: Option<String>,
+        #[arg(long)]
+        source: Option<Source>,
         #[arg(long, default_value="json", value_parser=["json","text","table"])]
+        format: String,
+    },
+    Tables {
+        db: String,
+        #[arg(long)]
+        env: Option<String>,
+        #[arg(long)]
+        source: Option<Source>,
+        #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
     },
     Ping {
@@ -107,6 +131,8 @@ enum Command {
         all: bool,
         #[arg(long)]
         env: Option<String>,
+        #[arg(long)]
+        source: Option<Source>,
         #[arg(long)]
         timeout: Option<u64>,
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
@@ -255,6 +281,22 @@ enum ConnectionCommand {
         key: String,
         #[arg(long)]
         env: Option<String>,
+        #[arg(long)]
+        source: Option<Source>,
+    },
+    /// List possible associations between hosted resources and local connections.
+    Candidates,
+    /// Associate one or more pairs of exact cloud and local IDs.
+    Link {
+        #[arg(required = true, num_args = 2.., value_names = ["CLOUD_ID", "LOCAL_ID"])]
+        targets: Vec<String>,
+        /// Apply a reviewed batch without an interactive prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove an explicit association without removing either resource.
+    Unlink {
+        cloud: String,
     },
 }
 #[derive(Args)]
@@ -638,7 +680,15 @@ fn metadata_text(value: &Value) -> String {
             let mut rows = Vec::new();
             for item in group["items"].as_array().into_iter().flatten() {
                 for env in item["envs"].as_array().into_iter().flatten() {
-                    rows.push(json!({"database":item["db"],"environment":env["env"],"engine":env["engine"],"key":env["key"],"region":env["region"],"ssh":env["ssh"],"proxy":env["proxied"],"production":env["production"]}));
+                    let mut row = json!({"database":item["db"],"environment":env["env"],"engine":env["engine"],"key":env["key"],"region":env["region"],"ssh":env["ssh"],"proxy":env["proxied"],"production":env["production"]});
+                    if let Some(id) = env.get("resourceId") {
+                        row["id"] = id.clone();
+                        row["source"] = env["source"].clone();
+                    }
+                    if let Some(status) = env.get("status") {
+                        row["status"] = status.clone();
+                    }
+                    rows.push(row);
                 }
             }
             out.push_str(&text_table(&rows));
@@ -781,15 +831,7 @@ async fn run_with_prefix(
     native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
     standalone_updates: bool,
 ) -> Result<()> {
-    let config_path = match cli.config {
-        Some(path) => path,
-        None => home()?.join(".config/quarry/config.toml"),
-    };
-    let config_path = quarry_runtime::absolute(&config_path, &std::env::current_dir()?)?;
-    let state_dir = config_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("rust-runtime");
+    let config_path = resolve_config_path(cli.config)?;
     if let Command::InternalKeeper { state_dir } = cli.command {
         let workspace = cli
             .workspace
@@ -806,13 +848,7 @@ async fn run_with_prefix(
     {
         return Ok(quarry_local::serve_neptune(state_dir, port, fixture).await?);
     }
-    let host = Host::new(config_path.clone(), cli.workspace, state_dir)
-        .with_local_tools(
-            std::env::var_os("QUARRY_PSQL").map(PathBuf::from),
-            std::env::var_os("QUARRY_PG_DUMP").map(PathBuf::from),
-        )
-        .with_neptune_launcher(host_launcher(&launcher_prefix, "internal-neptune")?)
-        .with_keeper_launcher(host_launcher(&launcher_prefix, "internal-keeper")?);
+    let host = create_host(config_path, cli.workspace, &launcher_prefix)?;
     if let Some(skill) = cli.skill_dir {
         host.catalog()?.skill_links(&skill)?;
     }
@@ -825,10 +861,30 @@ async fn run_with_prefix(
             options,
         } => {
             params.extend(options.parameters.clone());
-            execute(&host, &db, read_sql(sql, file)?, params, &options).await
+            let sql = read_sql(sql, file)?;
+            let parameters = self::params(&params)?;
+            let federation = target_federation(&host, options.source, Some(&db))?;
+            let target = select_target(
+                &host,
+                federation.as_ref(),
+                &db,
+                options.env.as_deref(),
+                options.source,
+            )
+            .await?;
+            execute_target(
+                &host,
+                federation.as_ref(),
+                &target,
+                sql,
+                parameters,
+                &options,
+            )
+            .await
         }
         Command::Run {
             name,
+            target,
             mut params,
             mut options,
             limit,
@@ -839,16 +895,83 @@ async fn run_with_prefix(
             let query = store.describe(&name, None)?;
             params.extend(options.parameters.clone());
             let parameters = query.parameters(&self::params(&params)?)?;
-            let record =
-                host.resolve_related(&query.db, options.env.as_deref(), &query.workspace)?;
-            if strict {
-                let mut request = QueryRequest::new(format!("EXPLAIN {}", query.sql));
-                request.parameters = parameters.clone();
-                request.policy.timeout_ms = execution_timeout(&record, options.timeout)?;
-                host.execute_with_proxy(&record, request, options.no_proxy.then_some(false))
-                    .await?;
+            let federation = target_federation(&host, options.source, target.as_deref())?;
+            let target = if let Some(reference) = target {
+                let target = select_target(
+                    &host,
+                    federation.as_ref(),
+                    &reference,
+                    options.env.as_deref(),
+                    options.source,
+                )
+                .await?;
+                if !target.supports_saved_query(&host, &query.db, &query.workspace)? {
+                    return Err(Failure::invalid(
+                        "Saved query belongs to a different database",
+                    ));
+                }
+                target
+            } else if let Some(federation) = federation.as_ref() {
+                let catalog = Catalog::for_saved(
+                    &host,
+                    federation,
+                    &query.db,
+                    options.env.as_deref(),
+                    &query.workspace,
+                    options.source,
+                )
+                .await?;
+                catalog
+                    .select(&Selector {
+                        target: &query.db,
+                        source: options.source,
+                        env: options.env.as_deref(),
+                        workspace: None,
+                    })?
+                    .clone()
+            } else if options.source == Some(Source::Cloud) {
+                return Err(Failure::invalid("No cloud database provider is configured"));
+            } else {
+                Target::local(host.resolve_related(
+                    &query.db,
+                    options.env.as_deref(),
+                    &query.workspace,
+                )?)
+            };
+            if full && target.source() == Source::Cloud {
+                return Err(Failure::invalid("--full applies to local connections"));
             }
-            let engine = record.spec()?.engine;
+            if strict {
+                let explain = format!("EXPLAIN {}", query.sql);
+                match &target {
+                    Target::Local { record, .. } => {
+                        let mut request = QueryRequest::new(explain);
+                        request.parameters = parameters.clone();
+                        request.policy.timeout_ms = execution_timeout(record, options.timeout)?;
+                        host.execute_with_proxy(record, request, options.no_proxy.then_some(false))
+                            .await?;
+                    }
+                    Target::Cloud(_) => {
+                        validate_cloud_query(&options)?;
+                        let sql = quarry_core::policy::substitute(
+                            target.engine()?,
+                            &explain,
+                            &parameters,
+                        )?;
+                        target
+                            .execute(
+                                &host,
+                                federation.as_ref(),
+                                &sql,
+                                1,
+                                0,
+                                &uuid::Uuid::new_v4().to_string(),
+                            )
+                            .await?;
+                    }
+                }
+            }
+            let engine = target.engine()?;
             let sql = if full {
                 options.max_rows = 0;
                 quarry_core::policy::strip_outer_limit(&query.sql, engine)?
@@ -858,14 +981,12 @@ async fn run_with_prefix(
             } else {
                 query.sql.clone()
             };
-            execute_record(
+            execute_target(
                 &host,
-                &record,
+                federation.as_ref(),
+                &target,
                 sql,
-                parameters
-                    .into_iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect(),
+                parameters,
                 &options,
             )
             .await
@@ -875,51 +996,76 @@ async fn run_with_prefix(
             db,
             table,
             env,
+            source,
             format,
         }
         | Command::DescribeTable {
             db,
             table,
             env,
+            source,
             format,
         } => {
-            let c = host.resolve(&db, env.as_deref(), None)?;
-            metadata_output(host.columns(&c, &table).await?, &format)
+            let federation = target_federation(&host, source, Some(&db))?;
+            let target =
+                select_target(&host, federation.as_ref(), &db, env.as_deref(), source).await?;
+            metadata_output(
+                target.columns(&host, federation.as_ref(), &table).await?,
+                &format,
+            )
+        }
+        Command::Tables {
+            db,
+            env,
+            source,
+            format,
+        } => {
+            let federation = target_federation(&host, source, Some(&db))?;
+            let target =
+                select_target(&host, federation.as_ref(), &db, env.as_deref(), source).await?;
+            metadata_output(target.tables(&host, federation.as_ref()).await?, &format)
         }
         Command::Ping {
             key,
             all,
             env,
+            source,
             timeout,
             format,
         } => {
+            let federation =
+                target_federation(&host, source, if all { None } else { key.as_deref() })?;
             let connections = if all {
-                host.catalog()?.connections()?
+                Catalog::new(&host, federation.as_ref())
+                    .await?
+                    .resources()
+                    .iter()
+                    .filter(|target| source.is_none_or(|source| source == target.source()))
+                    .cloned()
+                    .collect::<Vec<_>>()
             } else {
-                vec![
-                    host.resolve(
-                        key.as_deref()
-                            .ok_or_else(|| Failure::invalid("Provide a database or --all"))?,
-                        env.as_deref(),
-                        None,
-                    )?,
-                ]
+                let key = key
+                    .as_deref()
+                    .ok_or_else(|| Failure::invalid("Provide a database or --all"))?;
+                vec![select_target(&host, federation.as_ref(), key, env.as_deref(), source).await?]
             };
             let deadline = timeout.map(seconds_to_millis).transpose()?;
             let mut statuses = vec![];
-            for c in connections {
-                let status = host
-                    .metadata(
-                        &c,
-                        MetadataOperation::Ping,
-                        deadline,
-                        CancellationToken::new(),
-                    )
-                    .await;
-                statuses.push(match status {
-                    Ok(v) => json!({"db":c.logical_db(),"env":c.env,"result":v}),
-                    Err(e) => json!({"db":c.logical_db(),"env":c.env,"ok":false,"error":e.message}),
-                });
+            for target in connections {
+                let env = match &target {
+                    Target::Local { record, .. } => Some(record.env.as_str()),
+                    Target::Cloud(_) => target.env(),
+                };
+                let status = target.health(&host, federation.as_ref(), deadline).await;
+                let mut result = match status {
+                    Ok(v) => json!({"db":target.db(),"env":env,"result":v}),
+                    Err(e) => json!({"db":target.db(),"env":env,"ok":false,"error":e.message}),
+                };
+                if federation.is_some() {
+                    result["resourceId"] = json!(target.id());
+                    result["source"] = json!(target.source().as_str());
+                }
+                statuses.push(result);
             }
             let failed = statuses
                 .iter()
@@ -1094,8 +1240,16 @@ async fn run_with_prefix(
                 }
                 return Ok(());
             }
+            let federation = (standalone_updates && std::env::var_os("HOME").is_some())
+                .then(|| federation::Federation::new(&host.config_path))
+                .transpose()?;
+            let protected = federation
+                .as_ref()
+                .map(|backend| backend.registry().has_providers())
+                .transpose()?
+                .unwrap_or(false);
             let launch = if standalone_updates {
-                gui_launch::standalone(&host, &bind, port).await?
+                gui_launch::standalone(&host, &bind, port, !protected).await?
             } else {
                 let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
                 gui_launch::Launch::Start(listener, None)
@@ -1115,19 +1269,23 @@ async fn run_with_prefix(
             let bound = listener.local_addr()?;
             let port = bound.port();
             let url = format!("http://{bound}/quarry/");
-            let native = native.map(|(cloud, history)| {
-                http::NativeWorkbench::new(
+            let native = match native {
+                Some((cloud, history)) => Some(http::NativeWorkbench::new(
                     cloud,
-                    history.unwrap_or_else(|| {
-                        http::NativeHistory::new(
-                            host.state_dir.join("personal.sqlite3"),
-                            "local".into(),
-                            "local".into(),
-                        )
-                    }),
-                )
-            });
-            let launch_url = native.as_ref().map(|workbench| workbench.launch_url(&url));
+                    history.unwrap_or_else(|| http::NativeHistory::for_host(&host)),
+                )),
+                None => federation.map(|federation| {
+                    http::NativeWorkbench::standalone(
+                        federation,
+                        http::NativeHistory::for_host(&host),
+                        protected,
+                    )
+                }),
+            };
+            let launch_url = native
+                .as_ref()
+                .filter(|workbench| workbench.requires_session())
+                .map(|workbench| workbench.launch_url(&url));
             let a = assistant(&host)?;
             let http_shutdown = quarry_core::CancellationToken::new();
             eprintln!(
@@ -1205,31 +1363,154 @@ async fn run_with_prefix(
     host.tunnels.close_all().await?;
     result
 }
-async fn execute(
-    host: &Host,
-    db: &str,
-    sql: String,
-    values: Vec<String>,
-    options: &QueryOptions,
-) -> Result<()> {
-    let c = host.resolve(db, options.env.as_deref(), None)?;
-    execute_record(host, &c, sql, values, options).await
+fn resolve_config_path(config: Option<PathBuf>) -> Result<PathBuf> {
+    let path = match config {
+        Some(path) => path,
+        None => home()?.join(".config/quarry/config.toml"),
+    };
+    Ok(quarry_runtime::absolute(&path, &std::env::current_dir()?)?)
 }
-async fn execute_record(
+
+/// Initialize the same local runtime used by the standalone CLI and workbench.
+pub fn local_host(
+    config: Option<PathBuf>,
+    workspaces: Vec<PathBuf>,
+    launcher_prefix: &[String],
+) -> Result<quarry_service::QuarryService> {
+    create_host(resolve_config_path(config)?, workspaces, launcher_prefix)
+}
+
+fn create_host(
+    config: PathBuf,
+    workspaces: Vec<PathBuf>,
+    launcher_prefix: &[String],
+) -> Result<Host> {
+    let state = config
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("rust-runtime");
+    Ok(Host::new(config, workspaces, state)
+        .with_local_tools(
+            std::env::var_os("QUARRY_PSQL").map(PathBuf::from),
+            std::env::var_os("QUARRY_PG_DUMP").map(PathBuf::from),
+        )
+        .with_neptune_launcher(host_launcher(launcher_prefix, "internal-neptune")?)
+        .with_keeper_launcher(host_launcher(launcher_prefix, "internal-keeper")?))
+}
+
+fn cli_federation(host: &Host, source: Option<Source>) -> Result<Option<Federation>> {
+    if source == Some(Source::Local) || std::env::var_os("HOME").is_none() {
+        return Ok(None);
+    }
+    let federation = Federation::new(&host.config_path)?;
+    Ok(federation.registry().has_providers()?.then_some(federation))
+}
+
+fn target_federation(
     host: &Host,
-    c: &quarry_runtime::ConnectionRecord,
+    source: Option<Source>,
+    reference: Option<&str>,
+) -> Result<Option<Federation>> {
+    let source = source.or_else(|| {
+        reference
+            .filter(|id| federated_cli::is_local_id(id))
+            .map(|_| Source::Local)
+    });
+    cli_federation(host, source)
+}
+
+async fn select_target(
+    host: &Host,
+    federation: Option<&Federation>,
+    db: &str,
+    env: Option<&str>,
+    source: Option<Source>,
+) -> Result<Target> {
+    if federation.is_none() && source == Some(Source::Cloud) {
+        return Err(Failure::invalid("No cloud database provider is configured"));
+    }
+    if federation.is_none() && !federated_cli::is_local_id(db) && !federated_cli::is_cloud_id(db) {
+        return Ok(Target::local(host.resolve(db, env, None)?));
+    }
+    let catalog = match federation {
+        Some(federation) if source == Some(Source::Cloud) || federated_cli::is_cloud_id(db) => {
+            Catalog::cloud_only(federation).await?
+        }
+        _ => Catalog::new(host, federation).await?,
+    };
+    Ok(catalog
+        .select(&Selector {
+            target: db,
+            source,
+            env,
+            workspace: None,
+        })?
+        .clone())
+}
+
+fn validate_cloud_query(options: &QueryOptions) -> Result<()> {
+    if options.write {
+        return Err(Failure::invalid("Cloud database queries are read-only"));
+    }
+    if options.no_proxy || options.timeout.is_some() {
+        return Err(Failure::invalid(
+            "--no-proxy and --timeout apply to local connections",
+        ));
+    }
+    if !(1..=5000).contains(&options.max_rows) {
+        return Err(Failure::invalid(
+            "Cloud max-rows must be between 1 and 5000",
+        ));
+    }
+    Ok(())
+}
+
+async fn execute_target(
+    host: &Host,
+    federation: Option<&Federation>,
+    target: &Target,
     sql: String,
-    values: Vec<String>,
+    parameters: BTreeMap<String, String>,
     options: &QueryOptions,
 ) -> Result<()> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let Target::Local { record: c, .. } = target else {
+        validate_cloud_query(options)?;
+        let rendered = quarry_core::policy::substitute(target.engine()?, &sql, &parameters)?;
+        let result = target
+            .execute(
+                host,
+                federation,
+                &rendered,
+                options.max_rows,
+                options.offset,
+                &request_id,
+            )
+            .await;
+        record_query(host, target, &sql, &request_id).await;
+        let result = result?;
+        let rows = result["rows"]
+            .as_array()
+            .ok_or_else(|| Failure::invalid("Invalid cloud query rows"))?;
+        let columns = result["columns"]
+            .as_array()
+            .ok_or_else(|| Failure::invalid("Invalid cloud query columns"))?;
+        let names = quarry_core::unique_names(
+            columns
+                .iter()
+                .map(|column| column["name"].as_str().unwrap_or_default()),
+        );
+        return format_rows(rows, &names, result["truncated"] == true, &options.format);
+    };
     if options.write && c.production {
         confirmation("Allow a write to this production connection", options.yes)?;
     }
-    let mut r = QueryRequest::new(sql);
-    r.parameters = params(&values)?;
+    let mut r = QueryRequest::new(&sql);
+    r.parameters = parameters;
     r.policy.allow_write = options.write;
     r.policy.confirm_production = options.yes || options.write && c.production;
     r.policy.max_rows = Some(options.max_rows).filter(|n| *n > 0);
+    r.policy.offset = options.offset;
     r.policy.timeout_ms = execution_timeout(c, options.timeout)?;
     let cancellation = r.cancellation.clone();
     let interrupt = tokio::spawn(async move {
@@ -1240,22 +1521,37 @@ async fn execute_record(
         .execute_with_proxy(c, r, options.no_proxy.then_some(false))
         .await;
     interrupt.abort();
+    record_query(host, target, &sql, &request_id).await;
     format_result(&outcome?, &options.format)
+}
+
+async fn record_query(host: &Host, target: &Target, sql: &str, request_id: &str) {
+    if target
+        .record_history(&http::NativeHistory::for_host(host), sql, request_id)
+        .await
+        .is_err()
+    {
+        eprintln!("Query attempted, but local Quarry history could not be saved");
+    }
 }
 fn format_result(out: &QueryOutcome, format: &str) -> Result<()> {
     let rows = out.rows_json();
+    let names = quarry_core::unique_names(out.columns.iter().map(|c| c.name.as_str()));
+    format_rows(&rows, &names, out.truncated, format)
+}
+
+fn format_rows(rows: &[Value], names: &[String], truncated: bool, format: &str) -> Result<()> {
     match format {
         "json" => output(json!(rows))?,
         "ndjson" => {
             for row in rows {
-                output(row)?;
+                output(row.clone())?;
             }
         }
         "csv" => {
-            let names = quarry_core::unique_names(out.columns.iter().map(|c| c.name.as_str()));
             let mut writer = csv::Writer::from_writer(io::stdout());
             writer
-                .write_record(&names)
+                .write_record(names)
                 .map_err(|e| Failure::invalid(e.to_string()))?;
             for row in rows {
                 writer
@@ -1269,7 +1565,6 @@ fn format_result(out: &QueryOutcome, format: &str) -> Result<()> {
             writer.flush()?;
         }
         "table" => {
-            let names = quarry_core::unique_names(out.columns.iter().map(|c| c.name.as_str()));
             println!("{}", names.join(" | "));
             for row in rows {
                 println!(
@@ -1287,29 +1582,116 @@ fn format_result(out: &QueryOutcome, format: &str) -> Result<()> {
         }
         _ => return Err(Failure::invalid("Unknown output format")),
     };
-    if out.truncated {
+    if truncated {
         eprintln!("Result truncated by execution limits");
     }
     Ok(())
 }
 async fn connections(host: &Host, action: Option<ConnectionCommand>, format: &str) -> Result<()> {
-    let catalog = host.catalog()?;
     match action {
-        None => metadata_output(host.connections().await?, format),
-        Some(ConnectionCommand::List { format: inner }) => metadata_output(
-            host.connections().await?,
-            inner.as_deref().unwrap_or(format),
-        ),
-        Some(ConnectionCommand::Test { key, env }) => {
-            let c = host.resolve(&key, env.as_deref(), None)?;
+        None | Some(ConnectionCommand::List { .. }) => {
+            let format = match &action {
+                Some(ConnectionCommand::List {
+                    format: Some(inner),
+                }) => inner,
+                _ => format,
+            };
+            let federation = cli_federation(host, None)?;
+            let catalog = Catalog::new(host, federation.as_ref()).await?;
+            metadata_output(catalog.connections_json(host).await?, format)
+        }
+        Some(ConnectionCommand::Test { key, env, source }) => {
+            let federation = target_federation(host, source, Some(&key))?;
+            let target =
+                select_target(host, federation.as_ref(), &key, env.as_deref(), source).await?;
+            output(target.health(host, federation.as_ref(), None).await?)
+        }
+        Some(ConnectionCommand::Candidates) => {
+            let federation = Federation::new(&host.config_path)?;
+            let catalog = federation.catalog().await?;
+            let candidates =
+                federation::association_candidates(&catalog, &host.catalog()?.connections()?);
+            metadata_output(
+                json!(
+                    candidates
+                        .into_iter()
+                        .map(|candidate| json!({
+                            "resource_id":candidate.resource_id,
+                            "local_id":candidate.local.id,
+                            "local":candidate.local,
+                            "evidence":candidate.evidence,
+                        }))
+                        .collect::<Vec<_>>()
+                ),
+                format,
+            )
+        }
+        Some(ConnectionCommand::Link { targets, yes }) => {
+            let (pairs, unmatched) = targets.as_chunks::<2>();
+            if !unmatched.is_empty() {
+                return Err(Failure::invalid("Pass one local ID after each cloud ID"));
+            }
+            let federation = Federation::new(&host.config_path)?;
+            let catalog = federation.catalog().await?;
+            let mut entries = Vec::new();
+            let mut linked = Vec::new();
+            let mut selected = std::collections::HashSet::new();
+            for [cloud, local] in pairs {
+                if !selected.insert(cloud) {
+                    return Err(Failure::invalid(
+                        "A cloud target can only have one association",
+                    ));
+                }
+                let resource = catalog
+                    .resources
+                    .iter()
+                    .find(|resource| {
+                        resource.id == *cloud && resource.status == federation::Status::Connected
+                    })
+                    .ok_or_else(|| {
+                        Failure::invalid("Select an available cloud resource by exact ID")
+                    })?;
+                let record = federated_cli::resolve_local_target(host, local)?;
+                if record.spec()?.engine != resource.engine {
+                    return Err(Failure::invalid(
+                        "Connections must use the same database engine",
+                    ));
+                }
+                entries.push((
+                    cloud.clone(),
+                    federation::LocalTarget {
+                        id: local.clone(),
+                        workspace: record.workspace,
+                        key: record.key,
+                    },
+                ));
+                linked.push(json!({"resourceId":cloud,"localId":local,"linked":true}));
+            }
+            if entries.len() > 1 {
+                confirmation(
+                    &format!(
+                        "Link {} cloud resources to the selected local connections",
+                        entries.len()
+                    ),
+                    yes,
+                )?;
+            }
+            federation.registry().associate_many(&entries)?;
+            if linked.len() == 1 {
+                output(linked.remove(0))
+            } else {
+                output(json!({"associations":linked}))
+            }
+        }
+        Some(ConnectionCommand::Unlink { cloud }) => {
+            let federation = Federation::new(&host.config_path)?;
             output(
-                host.metadata(&c, MetadataOperation::Ping, None, CancellationToken::new())
-                    .await?,
+                json!({"resourceId":cloud,"unlinked":federation.registry().disassociate(&cloud)?}),
             )
         }
         Some(ConnectionCommand::Remove { key, yes }) => {
             confirmation("Remove connection", yes)?;
-            output(json!({"removed":catalog.remove_connection(&primary(host)?,&key)?}))
+            output(json!({"removed":host.catalog()?.remove_connection(&primary(host)?,&key)?}))
         }
         Some(ConnectionCommand::Add(fields)) => put_connection(host, fields, false).await,
         Some(ConnectionCommand::Set(fields)) => put_connection(host, fields, true).await,

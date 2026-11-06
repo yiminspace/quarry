@@ -95,6 +95,7 @@ async fn probe(
     address: SocketAddr,
     instance: Instance,
     timeout: Duration,
+    include_protected: bool,
 ) -> Option<bool> {
     let challenge = Uuid::new_v4();
     let proof = instance.proof(host, challenge, ProofPurpose::Discover)?;
@@ -106,7 +107,8 @@ async fn probe(
         .await
         .ok()?;
     Some(
-        response.status() == reqwest::StatusCode::OK
+        (response.status() == reqwest::StatusCode::OK
+            || include_protected && response.status() == reqwest::StatusCode::NO_CONTENT)
             && response
                 .headers()
                 .get(PROOF_HEADER)
@@ -130,6 +132,7 @@ async fn matches_instance(
                 address,
                 instance,
                 deadline.saturating_duration_since(Instant::now()),
+                false,
             )
             .await
         {
@@ -183,13 +186,22 @@ async fn find_instance(
     host: &Host,
     addresses: &[IpAddr],
     port: u16,
+    include_protected: bool,
 ) -> Option<(SocketAddr, Instance)> {
     // A workbench can still use a fallback port after the requested port is free.
     for candidate in port..=last_port(port) {
         for &ip in addresses {
             let address = SocketAddr::new(ip, candidate);
             if let Some(instance) = Instance::read(&Instance::path(host, address))
-                && probe(client, host, address, instance, Duration::from_millis(250)).await
+                && probe(
+                    client,
+                    host,
+                    address,
+                    instance,
+                    Duration::from_millis(250),
+                    include_protected,
+                )
+                .await
                     == Some(true)
             {
                 return Some((address, instance));
@@ -207,7 +219,8 @@ pub(crate) async fn stop(host: &Host, bind: &str, port: u16) -> Result<Option<So
     }
     let addresses = loopback_addresses(bind).await?;
     let client = local_client().map_err(|error| Failure::invalid(error.to_string()))?;
-    let Some((address, instance)) = find_instance(&client, host, &addresses, port).await else {
+    let Some((address, instance)) = find_instance(&client, host, &addresses, port, true).await
+    else {
         return Ok(None);
     };
     let challenge = Uuid::new_v4();
@@ -234,12 +247,12 @@ pub(crate) async fn stop(host: &Host, bind: &str, port: u16) -> Result<Option<So
     }
 }
 
-pub(crate) async fn standalone(host: &Host, bind: &str, port: u16) -> Result<Launch> {
+pub(crate) async fn standalone(host: &Host, bind: &str, port: u16, reuse: bool) -> Result<Launch> {
     let addresses = loopback_addresses(bind).await?;
     let end = last_port(port);
-    let client = (port != 0).then(|| local_client().ok()).flatten();
+    let client = (reuse && port != 0).then(|| local_client().ok()).flatten();
     if let Some(client) = &client
-        && let Some((address, _)) = find_instance(client, host, &addresses, port).await
+        && let Some((address, _)) = find_instance(client, host, &addresses, port, false).await
     {
         return Ok(Launch::Reuse(address));
     }

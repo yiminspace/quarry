@@ -23,7 +23,7 @@ import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
 import { anyModalOpen } from "./modalStack";
-import { NATIVE_MODE } from "./nativeRecords";
+import { NATIVE_MODE, restoreNativeScope } from "./nativeRecords";
 import { decodeFocus, decodeQueryLink, encodeFocusSearch, encodeQueryLink, focusTitle, type QueryLinkPayload } from "./queryLink";
 import { focusRestorePlan, previewSql, tableClickPlan } from "./tablePreview";
 import Sidebar, { type PanelData } from "./Sidebar";
@@ -34,7 +34,7 @@ import SqlAssistant from "./SqlAssistant";
 import { useSqlAssistant } from "./useSqlAssistant";
 import { getConversation } from "./assistantApi";
 import RunControls from "./RunControls";
-import { connectionEnvLabel, defaultEnvFor, displayConnectionEnvironment, useConnStore } from "./store/connStore";
+import { ambiguousConnection, cloudRouteVisible, connectionEnvLabel, connectionTargetId, defaultEnvFor, displayConnectionEnvironment, federatedRoute, localTargetRoute, needsLocalTargetChoice, useConnStore } from "./store/connStore";
 import {
   isResultSnapshotPersistable,
   mostRecent,
@@ -54,7 +54,7 @@ type Row = Record<string, unknown>;
 type SortState = { i: number; dir: 1 | -1 } | null;
 type SelectedCell = { ri: number; ci: number } | null;
 type ModalState =
-  | { type: "cell"; value: unknown }
+  | { type: "cell"; value: unknown; env: string | null }
   | { type: "row"; row: Row; columns: QueryColumn[]; db: string | null; env: string | null; sql: string }
   | { type: "explain"; plan: string; db: string; env: string | null }
   | null;
@@ -62,10 +62,17 @@ type ModalState =
 /** Snapshot of the connection a request was fired against — used to route the
  * response back to its issuing tab and drop it if that tab was re-pointed to
  * another connection while the request was in flight. */
-type ReqCtx = { tabId: TabId; requestId: string; seq: number; db: string; env: string | null };
+type ReqCtx = { tabId: TabId; requestId: string; seq: number; db: string; env: string | null; targetId?: string };
+
+function tabMatchesTarget(tab: Tab, ctx: ReqCtx): boolean {
+  return tab.db === ctx.db && tab.env === ctx.env && tab.targetId === ctx.targetId &&
+    cloudRouteVisible(useConnStore.getState().groups, ctx.env) &&
+    connectionTargetId(ctx.db, ctx.env) === ctx.targetId;
+}
 
 function canAutoRun(): boolean {
   const current = useConnStore.getState().current;
+  if (current?.sourceStatus && current.sourceStatus !== "connected") return false;
   return autoRunEnabled(current ? { ...current, workspace: workspaceFor(current.db) } : null,
     useUiStore.getState().autoRunPreferences);
 }
@@ -144,7 +151,8 @@ function download(name: string, text: string, type: string): void {
 export default function ResultWorkbench() {
   const groups = useConnStore((s) => s.groups);
   const loaded = useConnStore((s) => s.loaded);
-  const current = useConnStore((s) => s.current);
+  const selected = useConnStore((s) => s.current);
+  const current = cloudRouteVisible(groups, selected?.env) ? selected : null;
   const currentTable = useConnStore((s) => s.currentTable);
   const reloadToken = useConnStore((s) => s.reloadToken);
   const maxRows = useUiStore((s) => s.maxRows);
@@ -155,7 +163,8 @@ export default function ResultWorkbench() {
   const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
 
   const tabs = useTabsStore((s) => s.tabs);
-  const activeTabId = useTabsStore((s) => s.activeId);
+  const storedActiveTabId = useTabsStore((s) => s.activeId);
+  const activeTabId = cloudRouteVisible(groups, tabs.find((tab) => tab.id === storedActiveTabId)?.env) ? storedActiveTabId : "";
   const results = useTabsStore((s) => s.results);
   const updateActiveTab = useTabsStore((s) => s.updateActiveTab);
   const updateTab = useTabsStore((s) => s.updateTab);
@@ -182,6 +191,7 @@ export default function ResultWorkbench() {
   const [panel, setPanel] = useState<PanelData>(EMPTY_PANEL);
   const [panelOpen, setPanelOpen] = useState(true);
   const [filter, setFilter] = useState("");
+  const [pendingLocalDb, setPendingLocalDb] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState>(null);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
   const [columnWidths, setColumnWidths] = useState<Record<number, number>>({});
@@ -203,7 +213,10 @@ export default function ResultWorkbench() {
   const loading = pendingByTab[activeTabId] ?? false;
   const gridError = errorByTab[activeTabId] ?? null;
 
-  const activeSnapshot: TabResultSnapshot | undefined = results[activeTabId];
+  const snapshot = results[activeTabId] as TabResultSnapshot | undefined;
+  const activeSnapshot = !pendingLocalDb && snapshot && snapshot.queryDb === activeTab?.db && snapshot.queryEnv === activeTab.env &&
+    snapshot.targetId === activeTab.targetId && (!snapshot.targetId || snapshot.targetId === connectionTargetId(snapshot.queryDb, snapshot.queryEnv))
+    ? snapshot : undefined;
   const result = activeSnapshot?.result ?? null;
   const queryDb = activeSnapshot?.queryDb ?? null;
   const queryEnv = activeSnapshot?.queryEnv ?? null;
@@ -288,6 +301,7 @@ export default function ResultWorkbench() {
     state.setCurrentTable(null);
     setPanel(EMPTY_PANEL);
     panelKeyRef.current = null;
+    setPendingLocalDb(null);
   }, []);
   const selectDb = useCallback(
     (db: string, env: string | null, opts?: { viaPill?: boolean; force?: boolean }): void => {
@@ -299,7 +313,7 @@ export default function ResultWorkbench() {
         return;
       }
       const item = findItem(db);
-      if (missingCloudTarget(item, env)) {
+      if (missingCloudTarget(item, env) || !cloudRouteVisible(state.groups, env)) {
         clearCurrentSelection();
         return;
       }
@@ -319,7 +333,17 @@ export default function ResultWorkbench() {
         item.envs.some((e) => e.env === tab.env)));
       const explicit = env !== null || ((opts?.viaPill || opts?.force) &&
         item.envs.some((entry) => entry.env === null));
+      if (!explicit && !recent && needsLocalTargetChoice(item)) {
+        clearCurrentSelection();
+        setPendingLocalDb(item.db);
+        return;
+      }
       const realEnv = explicit ? env : recent ? recent.env : defaultEnvFor(item);
+      if (ambiguousConnection(db, realEnv)) {
+        clearCurrentSelection();
+        toast(t("connection_ambiguous"), false);
+        return;
+      }
       const target = item.envs.find((entry) => entry.env === realEnv);
       const engine = target?.engine ?? item.engine;
       const existed = tabsState.tabs.some((tab) => tab.db === db && tab.env === realEnv && tab.workspace === workspaceFor(db));
@@ -330,16 +354,21 @@ export default function ResultWorkbench() {
       if (!opts?.force && next) {
         // Empty destination editors inherit SQL on an explicit environment switch.
         // Existing drafts and deliberately closed groups retain their own state.
-        if (!next.sql.trim() && environmentSwitch && source?.sql.trim()) {
+        if (!next.sql.trim() && environmentSwitch && source?.sql.trim() &&
+            !federatedRoute(source.env) && !federatedRoute(realEnv) &&
+            !localTargetRoute(source.env) && !localTargetRoute(realEnv)) {
           nextState.updateActiveTab({ sql: source.sql });
-        } else if (!existed && !next.sql.trim() && sourceTable) {
+        } else if (!existed && !next.sql.trim() && sourceTable && !federatedRoute(source?.env) && !federatedRoute(realEnv) &&
+                   !localTargetRoute(source?.env) && !localTargetRoute(realEnv)) {
           nextState.updateActiveTab({ sql: previewSql(sourceTable, engine) });
         } else if (engine === "neptune" && !next.sql.trim()) {
           nextState.updateActiveTab({ sql: NEPTUNE_STARTER_SQL });
         }
-        previewNavigationRef.current = { tabId: next.id, environmentSwitch };
+        if (!localTargetRoute(realEnv)) previewNavigationRef.current = { tabId: next.id, environmentSwitch };
       }
-      state.setCurrent({ db, env: realEnv, engine, isRedis: engine === "redis", production: target?.production, source: target?.source });
+      state.setCurrent({ db, env: realEnv, engine, isRedis: engine === "redis", production: target?.production, source: target?.source,
+        targetId: target?.targetId, sourceStatus: target?.sourceStatus });
+      setPendingLocalDb(null);
       state.setCurrentTable(null);
       setFilter("");
       setPanelOpen(true);
@@ -359,20 +388,36 @@ export default function ResultWorkbench() {
   useEffect(() => {
     let cancelled = false;
     let revision = 0;
+    let refreshing = false;
     const loadConnections = (refresh = false): void => {
+      refreshing = true;
       const seq = ++revision;
       fetchConnections()
         .then((data) => {
           if (cancelled || seq !== revision) return;
           const conn = useConnStore.getState();
+          const gainedCloudScope = refresh && conn.loaded && data.groups.some((group) => group.items.some((item) =>
+            item.envs.some((env) => federatedRoute(env.env) && !cloudRouteVisible(conn.groups, env.env))));
           if (refresh && data.workspace === conn.workspace &&
             JSON.stringify(data.workspaces) === JSON.stringify(conn.workspaces) &&
             JSON.stringify(data.groups) === JSON.stringify(conn.groups)) {
             conn.setCloudStatus(data.cloudStatus);
             return;
           }
+          const revoked = useTabsStore.getState().tabs.filter((tab) =>
+            cloudRouteVisible(conn.groups, tab.env) && !cloudRouteVisible(data.groups, tab.env));
+          if (revoked.length) {
+            for (const tab of revoked) {
+              reqSeqRef.current[tab.id] = (reqSeqRef.current[tab.id] ?? 0) + 1;
+              delete reqIdsRef.current[tab.id];
+            }
+            setPendingByTab((pending) => Object.fromEntries(Object.entries(pending).filter(([id]) =>
+              !revoked.some((tab) => tab.id === id))));
+          }
           conn.setConnMeta(data.workspace, data.workspaces, data.groups, data.cloudStatus);
           useTabsStore.getState().claimWorkspaces();
+          useTabsStore.getState().showAvailableTabs();
+          if (gainedCloudScope) void restoreNativeScope();
           // Paint health dots instantly from the backend cache, without probing.
           for (const g of data.groups) {
             for (const item of g.items) {
@@ -390,19 +435,22 @@ export default function ResultWorkbench() {
           if (cancelled || seq !== revision) return;
           if (refresh) useConnStore.getState().setCloudStatus("unavailable");
           else useConnStore.getState().setConnMeta("", [], []);
-        });
+        }).finally(() => { if (seq === revision) refreshing = false; });
     };
+    const federated = document.querySelector('meta[name="quarry-federated"]') !== null;
     const refreshOnFocus = (): void => {
-      if (useConnStore.getState().cloudStatus) loadConnections(true);
+      if (!refreshing && (federated || useConnStore.getState().cloudStatus)) loadConnections(true);
     };
     loadConnections();
     window.addEventListener("focus", refreshOnFocus);
+    const timer = federated ? window.setInterval(refreshOnFocus, 6000) : undefined;
     fetchQueries()
       .then((qs) => !cancelled && setSavedQueries(qs))
       .catch(() => !cancelled && setSavedQueries([]));
     return () => {
       cancelled = true;
       window.removeEventListener("focus", refreshOnFocus);
+      if (timer !== undefined) window.clearInterval(timer);
     };
   }, [reloadToken]);
 
@@ -437,6 +485,14 @@ export default function ResultWorkbench() {
     // against the stale tree would miss a just-removed workspace)
     if (restoredRef.current === loadSeq) return;
     restoredRef.current = loadSeq;
+    if (useConnStore.getState().current?.source === "cloud" &&
+        !cloudRouteVisible(groups, useConnStore.getState().current?.env)) {
+      setModal(null);
+      setHistoryOpen(false);
+      setParamModal(null);
+      setConnInfoOpen(false);
+      clearCurrentSelection();
+    }
     // a just-created local env takes precedence over restoring the tab's
     // previous connection (the legacy `loadSide(); selectDb(db,'local')`)
     const pending = pendingSelectRef.current;
@@ -451,7 +507,8 @@ export default function ResultWorkbench() {
       clearCurrentSelection();
       return;
     }
-    if (tab?.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
+    if (tab?.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db) &&
+        tab.targetId === connectionTargetId(tab.db, tab.env)) selectDb(tab.db, tab.env ?? null, { force: true });
     else if (tab?.db && !PLATFORM_MODE) unbindActiveTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, loadSeq]);
@@ -465,7 +522,7 @@ export default function ResultWorkbench() {
     reqIdsRef.current[tabId] = cancellable ? requestId : undefined;
     setPendingByTab((prev) => ({ ...prev, [tabId]: true }));
     setErrorByTab((prev) => ({ ...prev, [tabId]: null }));
-    return { tabId, requestId, seq, db: target.db, env: target.env };
+    return { tabId, requestId, seq, db: target.db, env: target.env, targetId: connectionTargetId(target.db, target.env) };
   };
   const isCurrentReq = (ctx: ReqCtx): boolean => reqSeqRef.current[ctx.tabId] === ctx.seq;
   const endReq = (ctx: ReqCtx): void => {
@@ -476,7 +533,7 @@ export default function ResultWorkbench() {
     if (!isCurrentReq(ctx)) return;
     const tab = useTabsStore.getState().tabs.find((tb) => tb.id === ctx.tabId);
     if (!tab) return; // tab closed while in flight
-    if (tab.db !== ctx.db || (tab.env ?? null) !== (ctx.env ?? null)) return;
+    if (!tabMatchesTarget(tab, ctx)) return;
     setErrorByTab((prev) => ({ ...prev, [ctx.tabId]: String((e as Error)?.message ?? e) }));
   };
   /** Applies a fresh result to its origin tab — but only if that request is
@@ -492,8 +549,8 @@ export default function ResultWorkbench() {
     const state = useTabsStore.getState();
     const tab = state.tabs.find((tb) => tb.id === ctx.tabId);
     if (!tab) return; // tab closed while in flight
-    if (tab.db !== ctx.db || (tab.env ?? null) !== (ctx.env ?? null)) return;
-    setTabResult(ctx.tabId, build());
+    if (!tabMatchesTarget(tab, ctx)) return;
+    setTabResult(ctx.tabId, { ...build(), targetId: ctx.targetId });
     if (opts?.resetSort !== false && state.activeId === ctx.tabId) {
       setSortState(null);
       setSelectedCell(null);
@@ -510,6 +567,8 @@ export default function ResultWorkbench() {
     const tabState = useTabsStore.getState();
     const fixed = tabState.tabs.find((tab) => tab.id === tabState.activeId);
     if (fixed?.savedQueryId && overrideSql === undefined) {
+      const current = useConnStore.getState().current;
+      if (!current || current.db !== fixed.db || current.env !== fixed.env || current.targetId !== fixed.targetId) return;
       const saved = savedQueries.find((q) => (q.queryId ?? JSON.stringify([q.ws ?? null, q.name, q.db])) === fixed.savedQueryId);
       if (!saved) { toast(t("saved_missing"), false); return; }
       if (saved.params.length) setParamModal(saved);
@@ -521,11 +580,12 @@ export default function ResultWorkbench() {
     // an explicit SQL is passed by call sites that just called setSql() — the
     // store update hasn't re-rendered into sqlRef yet
     const currentSql = (overrideSql ?? sqlRef.current).trim();
-    if (!target || !currentSql) return;
+    if (!target || !currentSql || ambiguousConnection(target.db, target.env) || !cloudRouteVisible(state.groups, target.env) ||
+        (fixed?.targetId && fixed.targetId !== connectionTargetId(target.db, target.env))) return;
     pushHist(currentSql, target.db, target.env);
     const ctx = startReq(useTabsStore.getState().activeId, target);
     try {
-      const data = await runQuery({ db: target.db, env: target.env, sql: currentSql, maxRows, requestId: ctx.requestId });
+      const data = await runQuery({ db: target.db, env: target.env, sql: currentSql, maxRows, requestId: ctx.requestId, target: ctx.targetId });
       applyTabResult(ctx, () => ({
         result: data,
         queryDb: target.db,
@@ -561,7 +621,7 @@ export default function ResultWorkbench() {
     const payload = deepLinkRef.current;
     if (!payload) {
       const focus = decodeFocus(window.location.search);
-      if (focus) {
+      if (focus && (!focus.targetId || focus.targetId === connectionTargetId(focus.db, focus.env))) {
         const item = findItem(focus.db);
         if (item) {
           const tabsState = useTabsStore.getState();
@@ -594,6 +654,11 @@ export default function ResultWorkbench() {
           selectDb(focus.db, focus.env, { force: true });
         }
       }
+      setSessionReady(true);
+      return;
+    }
+    if (payload.targetId && payload.targetId !== connectionTargetId(payload.db, payload.env)) {
+      toast(t("share_link_env_missing"), false);
       setSessionReady(true);
       return;
     }
@@ -653,6 +718,7 @@ export default function ResultWorkbench() {
         sql: currentSql,
         maxRows,
         requestId: ctx.requestId,
+        target: ctx.targetId,
       })
         .then((data) => {
           applyTabResult(ctx, () => ({
@@ -710,14 +776,14 @@ export default function ResultWorkbench() {
     const db = current?.db ?? null;
     const env = current?.env ?? null;
     const table = currentTable ?? parseMainTable(sql);
-    const search = encodeFocusSearch({ db, env, table });
+    const search = encodeFocusSearch({ db, env, table, targetId: current?.targetId });
     const url = new URL(window.location.href);
     const pathname = "/quarry/";
     if (url.search !== search || url.pathname !== pathname) {
       window.history.replaceState(null, "", `${pathname}${search}${url.hash}`);
     }
-    document.title = focusTitle({ db, env: db && current?.source === "cloud" ? displayConnectionEnvironment(db, env) : env, table });
-  }, [sessionReady, current, currentTable, sql]);
+    document.title = focusTitle({ db: db && (findItem(db)?.label ?? db), env: db && (current?.source === "cloud" || localTargetRoute(env)) ? displayConnectionEnvironment(db, env) : env, table });
+  }, [sessionReady, current, currentTable, sql, findItem]);
 
   const handleTableClick = (table: string, altKey: boolean): void => {
     const cur = useConnStore.getState().current;
@@ -777,11 +843,27 @@ export default function ResultWorkbench() {
     if (!q) return;
     const cur = useConnStore.getState().current;
     const nv = q.sql || `-- ${q.name}`;
-    const item = groups.flatMap((group) => group.items).find((item) =>
-      item.envs.some((env) => env.key === q.db)) ?? findItem(q.db);
-    if (!item) { toast(t("saved_missing"), false); return; }
-    const pinnedEnv = q.db !== item.db ? item.envs.find((e) => e.key === q.db) : undefined;
-    const env = pinnedEnv ? pinnedEnv.env : item.envs.some((e) => e.env === cur?.env) ? cur!.env : defaultEnvFor(item);
+    const related = groups.flatMap((group) => group.items.map((item) => ({ item, workspace: group.ws })));
+    const matching = related.flatMap(({ item, workspace }) => item.envs.filter((env) => {
+      if (q.targetIds) {
+        if (env.source === "cloud") return !!env.associatedTargetId && !!q.ownerTargetIds?.includes(env.associatedTargetId);
+        return !!env.targetId && q.targetIds.includes(env.targetId);
+      }
+      // Older local servers don't expose exact target IDs for saved queries.
+      return (!q.ws || q.ws === workspace || q.ws === env.workspaceLabel) &&
+        (item.db === q.db || (item.label === q.db && env.source !== "cloud") || env.key === q.db);
+    }).map((env) => ({ item, env })));
+    const current = matching.find(({ item, env }) => item.db === cur?.db && env.env === cur?.env && env.targetId === cur?.targetId);
+    const local = matching.filter(({ env }) => env.source !== "cloud");
+    const owned = local.filter(({ env }) => env.targetId && q.ownerTargetIds?.includes(env.targetId));
+    const defaults = owned.length ? owned : local.length ? local : matching;
+    const pinned = defaults.find(({ env }) => env.key === q.db);
+    const defaultItem = defaults[0]?.item;
+    const defaultEnv = defaultItem && defaultEnvFor({ ...defaultItem, envs: defaults.map(({ env }) => env) });
+    const selected = current ?? pinned ?? defaults.find(({ env }) => env.env === defaultEnv);
+    if (!selected) { toast(t("saved_missing"), false); return; }
+    const { item } = selected;
+    const env = selected.env.env;
     const state = useTabsStore.getState();
     const created = state.openSavedTab({ ...q, sql: nv }, item.db, env);
     selectDb(item.db, env, { force: true });
@@ -804,14 +886,19 @@ export default function ResultWorkbench() {
   const runSavedQuery = async (name: string, params: Record<string, string>): Promise<void> => {
     const meta = savedQueries.find((x) => (x.queryId ?? x.name) === name);
     const cur = useConnStore.getState().current;
-    const tabId = useTabsStore.getState().activeId;
-    const ctx = startReq(tabId, { db: cur?.db ?? "", env: cur?.env ?? null });
+    const { activeId: tabId, tabs } = useTabsStore.getState();
+    const pinned = tabs.find((tab) => tab.id === tabId);
+    if (!cur || !pinned || pinned.db !== cur.db || pinned.env !== cur.env || pinned.targetId !== cur.targetId ||
+        !cloudRouteVisible(useConnStore.getState().groups, cur.env) ||
+        connectionTargetId(cur.db, cur.env) !== cur.targetId) return;
+    const ctx = startReq(tabId, cur);
     try {
-      const data = await runSaved(meta?.name ?? name, cur?.env ?? null, params, maxRows, meta?.queryId, ctx.requestId);
+      const data = await runSaved(meta?.name ?? name, cur.env, params, maxRows, meta?.queryId, ctx.requestId, ctx.targetId, cur.db);
       if (!isCurrentReq(ctx)) return;
       const state = useTabsStore.getState();
       const tab = state.tabs.find((tb) => tb.id === tabId);
       if (!tab) return; // tab closed while in flight
+      if (federatedRoute(ctx.env) && !tabMatchesTarget(tab, ctx)) return;
       const { db: resDb, env: resEnv, ...clean } = data;
       const db = resDb ?? meta?.db ?? tab.db;
       const env = resEnv ?? null;
@@ -873,7 +960,7 @@ export default function ResultWorkbench() {
     try {
       const prefix = cur.engine === "sqlite" ? "EXPLAIN QUERY PLAN" : "EXPLAIN";
       const explainSql = `${prefix} ${trimmed.replace(/^\s*explain\s+(?:query\s+plan\s+)?/i, "")}`;
-      const data = await runQuery({ db: cur.db, env: cur.env, sql: explainSql, maxRows, requestId: ctx.requestId });
+      const data = await runQuery({ db: cur.db, env: cur.env, sql: explainSql, maxRows, requestId: ctx.requestId, target: ctx.targetId });
       if (data.columns.length > 1) {
         applyTabResult(ctx, () => ({
           result: data,
@@ -887,7 +974,7 @@ export default function ResultWorkbench() {
       const state = useTabsStore.getState();
       const tab = state.tabs.find((tb) => tb.id === ctx.tabId);
       if (!tab || state.activeId !== ctx.tabId) return; // switched away mid-flight
-      if (tab.db !== ctx.db || (tab.env ?? null) !== (ctx.env ?? null)) return; // re-pointed
+      if (!tabMatchesTarget(tab, ctx)) return;
       const col = data.columns[0]?.name;
       const plan = col ? data.rows.map((r) => String(r[col] ?? "")).join("\n") : t("empty_plan");
       setModal({ type: "explain", plan, db: ctx.db, env: ctx.env });
@@ -905,11 +992,12 @@ export default function ResultWorkbench() {
     (tab: Tab | undefined): void => {
       if (!tab) return;
       const snap = useTabsStore.getState().results[tab.id];
-      if (snap?.result && (snap.queryDb !== tab.db || (snap.queryEnv ?? null) !== (tab.env ?? null))) {
+      if (snap?.result && (snap.queryDb !== tab.db || (snap.queryEnv ?? null) !== (tab.env ?? null) || snap.targetId !== tab.targetId)) {
         setTabResult(tab.id, null);
       }
       if (tab.db && missingCloudTarget(findItem(tab.db), tab.env)) clearCurrentSelection();
-      else if (tab.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db)) selectDb(tab.db, tab.env ?? null, { force: true });
+      else if (tab.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db) &&
+        tab.targetId === connectionTargetId(tab.db, tab.env)) selectDb(tab.db, tab.env ?? null, { force: true });
       else if (tab.db) unbindActiveTab();
       else clearCurrentSelection();
     },
@@ -918,6 +1006,7 @@ export default function ResultWorkbench() {
 
   const handleTabSwitch = useCallback(
     (tab: Tab): void => {
+      if (!cloudRouteVisible(useConnStore.getState().groups, tab.env)) return;
       useTabsStore.getState().switchTab(tab.id);
       revalidateTab(tab);
       const group = useConnStore.getState().groups.find((g) => g.items.some((item) => item.db === tab.db));
@@ -1016,6 +1105,7 @@ export default function ResultWorkbench() {
         maxRows,
         offset: prevRows.length,
         requestId: ctx.requestId,
+        target: ctx.targetId,
       });
       applyTabResult(
         ctx,
@@ -1045,22 +1135,22 @@ export default function ResultWorkbench() {
     }
   };
 
-  const openCell = (v: unknown): void => {
-    setModal({ type: "cell", value: v });
-  };
+  const openCell = useCallback((value: unknown, env: string | null): void => {
+    setModal({ type: "cell", value, env });
+  }, []);
 
   const onCellDblClick = (v: unknown): void => {
-    if (cellOpensInspector(v)) openCell(v);
+    if (cellOpensInspector(v)) openCell(v, queryEnv);
     else copy(cellText(v) ?? "");
   };
 
   // Grid keyboard navigation: arrows move the selected cell, Enter inspects,
   // Cmd/Ctrl+C copies — only while not typing and no modal is open.
-  const gridNavRef = useRef({ shownRows, selectedCell, result });
-  gridNavRef.current = { shownRows, selectedCell, result };
+  const gridNavRef = useRef({ shownRows, selectedCell, result, queryEnv });
+  gridNavRef.current = { shownRows, selectedCell, result, queryEnv };
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      const { shownRows: rows, selectedCell: sel, result: res } = gridNavRef.current;
+      const { shownRows: rows, selectedCell: sel, result: res, queryEnv: env } = gridNavRef.current;
       if (!sel || !res) return;
       const typing = /INPUT|TEXTAREA/.test((document.activeElement as HTMLElement)?.tagName || "");
       if ((e.metaKey || e.ctrlKey) && e.key === "c" && !typing && !String(getSelection())) {
@@ -1085,12 +1175,12 @@ export default function ResultWorkbench() {
       else if (e.key === "Enter") {
         e.preventDefault();
         const v = cellText(rows[sel.ri]?.[res.columns[sel.ci]?.name]) ?? "";
-        openCell(v);
+        openCell(v, env);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [openCell]);
 
   const startColResize = (e: React.MouseEvent, i: number): void => {
     e.preventDefault();
@@ -1172,6 +1262,7 @@ export default function ResultWorkbench() {
       db: activeTab.db,
       env: activeTab?.env ?? null,
       sql: activeTab.sql,
+      targetId: activeTab.targetId,
     });
     copy(link);
   };
@@ -1186,9 +1277,9 @@ export default function ResultWorkbench() {
 
   /* ---- render ---- */
 
-  const item = current ? findItem(current.db) : undefined;
+  const item = current ? findItem(current.db) : pendingLocalDb ? findItem(pendingLocalDb) : undefined;
   const envs = item?.envs ?? [];
-  const showEnv = envs.length > 1 || envs.some((env) => env.source === "cloud");
+  const showEnv = envs.length > 1 || envs.some((env) => env.source === "cloud" || env.workspaceLabel);
   const isProduction = current?.production === true;
   const showStatus = !!result && !gridError;
   const resultWillPersist = activeSnapshot ? isResultSnapshotPersistable(activeSnapshot) : true;
@@ -1233,28 +1324,35 @@ export default function ResultWorkbench() {
         <div className="vg-qhead qhead">
           <div className="connection-context">
           <span className="vg-qtitle qtitle" id="qtitle">
-            {current?.db ?? t("no_conn")}
+            {item?.label ?? current?.db ?? pendingLocalDb ?? t("no_conn")}
           </span>
           <span className="vg-runon runon" id="runon" style={{ display: showEnv ? undefined : "none" }}>
-            {t("runs_on")}
+            {t(pendingLocalDb ? "choose_local_target" : "runs_on")}
           </span>
           <span className="vg-esw esw" id="esw">
-            {current &&
+            {item &&
               showEnv &&
               envs.map((e) => (
                 <span
                   key={e.env ?? ""}
-                  className={`vg-ep ep${e.env === current.env ? " on" : ""}${e.production ? " prod" : ""}`}
+                  className={`vg-ep ep${current && e.env === current.env ? " on" : ""}${e.production ? " prod" : ""}`}
                   data-env={e.env ?? ""}
-                  onClick={() => selectDb(current.db, e.env ?? null, { viaPill: true })}
+                  role="button" tabIndex={0} aria-pressed={current?.env === e.env}
+                  title={e.providerLabel ? `${e.providerLabel}${e.sourceStatus ? ` · ${t(`cloud_${e.sourceStatus}`)}` : ""}` : undefined}
+                  onClick={() => selectDb(item.db, e.env ?? null, { viaPill: true })}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    selectDb(item.db, e.env ?? null, { viaPill: true });
+                  }}
                 >
                   {connectionEnvLabel(e)}
-                  {e.source === "cloud" && <span className="cloud-source-badge">{t("cloud_source")}</span>}
+                  {e.source === "cloud" && <span className="cloud-source-badge">{e.providerLabel ?? t("cloud_source")}</span>}
                   {e.proxied && (
                     <span
                       className="vg-proxy-badge proxy-badge"
                       data-testid="proxy-badge"
-                      data-db={current.db}
+                      data-db={item.db}
                       data-env={e.env ?? ""}
                       title={t("proxy_badge_title")}
                     >
@@ -1278,8 +1376,8 @@ export default function ResultWorkbench() {
         </div>
         <TabBar isProduction={isProduction} onSwitch={handleTabSwitch} onClose={handleTabClose} />
         {activeTab ? <>
-        <EditorWorkspace open={!!assistantSession.open && current?.source !== "cloud"}
-          unavailableReason={current?.source === "cloud" ? t("assistant_native_cloud_unavailable") : undefined}
+        <EditorWorkspace open={!!assistantSession.open && current?.source !== "cloud" && !localTargetRoute(current?.env)}
+          unavailableReason={current?.source === "cloud" ? t("assistant_native_cloud_unavailable") : localTargetRoute(current?.env) ? t("assistant_exact_workspace_unavailable") : undefined}
           onOpen={() => void assistant.open(activeTab)} onClose={() => assistant.close(activeTabId)}
           assistant={<SqlAssistant key={activeTabId} session={assistantSession} currentSql={activeTab.sql}
             onDraftChange={(update) => assistant.setDraft(activeTabId, update)}
@@ -1523,7 +1621,7 @@ export default function ResultWorkbench() {
               )}
               <span style={{ flex: 1 }} />
               <span id="statusTarget" title={t("result_target_tip")}>
-                {queryDb}
+                {queryDb && (findItem(queryDb)?.label ?? queryDb)}
                 {queryEnv ? `@${displayConnectionEnvironment(queryDb || "", queryEnv)}` : ""} · {result.engine}
               </span>
             </>
@@ -1542,11 +1640,11 @@ export default function ResultWorkbench() {
         )}
       </section>
 
-      {modal?.type === "cell" && <CellModal value={modal.value} onClose={() => setModal(null)} />}
-      {modal?.type === "row" && (
+      {modal?.type === "cell" && cloudRouteVisible(groups, modal.env) && <CellModal value={modal.value} onClose={() => setModal(null)} />}
+      {modal?.type === "row" && cloudRouteVisible(groups, modal.env) && (
         <RowDetailModal key={activeTabId} row={modal.row} columns={modal.columns} db={modal.db} env={modal.env} sql={modal.sql} onClose={() => setModal(null)} />
       )}
-      {modal?.type === "explain" && (
+      {modal?.type === "explain" && cloudRouteVisible(groups, modal.env) && (
         <ExplainModal
           plan={modal.plan}
           db={modal.db}

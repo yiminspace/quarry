@@ -1,5 +1,6 @@
 //! Local HTTP workbench. The library facade is separate from transport DTOs.
 mod native;
+use crate::federated_cli::Target;
 use crate::gui_launch::{
     CHALLENGE_HEADER, Instance, PROOF_HEADER, ProofPurpose, STOP_HEADER, STOP_PATH,
 };
@@ -113,6 +114,42 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
     if method == axum::http::Method::GET && !path.starts_with("/api/") {
         return static_file(path, state.native.as_deref());
     }
+    let challenge = req
+        .headers()
+        .get(CHALLENGE_HEADER)
+        .and_then(|value| uuid::Uuid::try_parse_ascii(value.as_bytes()).ok());
+    if method == axum::http::Method::POST && path == STOP_PATH {
+        let proof = challenge.and_then(|challenge| {
+            state
+                .gui_instance?
+                .proof(&state.host, challenge, ProofPurpose::Stop)
+        });
+        if !proof.is_some_and(|proof| {
+            req.headers()
+                .get(STOP_HEADER)
+                .is_some_and(|value| value == proof.as_str())
+        }) {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        state.shutdown.cancel();
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if method == axum::http::Method::GET
+        && path == "/api/version"
+        && state
+            .native
+            .as_ref()
+            .is_some_and(|native| native.requires_session())
+        && let Some(proof) = challenge
+            .and_then(|challenge| {
+                state
+                    .gui_instance?
+                    .proof(&state.host, challenge, ProofPurpose::Discover)
+            })
+            .and_then(|proof| header::HeaderValue::from_str(&proof).ok())
+    {
+        return (StatusCode::NO_CONTENT, [(PROOF_HEADER, proof)]).into_response();
+    }
     if let Some(native) = &state.native {
         if req
             .headers()
@@ -121,7 +158,10 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
         {
             return native::session_required().into_response();
         }
-        if path == "/api/workbench/session" && method == axum::http::Method::POST {
+        if native.requires_session()
+            && path == "/api/workbench/session"
+            && method == axum::http::Method::POST
+        {
             let code = match to_bytes(req.into_body(), 256).await {
                 Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
                 Err(_) => None,
@@ -143,36 +183,19 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
                 Err(error) => error.into_response(),
             };
         }
-        if !native.authorized(req.headers(), state.port) {
+        if native.requires_session() && !native.authorized(req.headers(), state.port) {
             return native::session_required().into_response();
         }
-        if path == "/api/workbench/session" && method == axum::http::Method::GET {
+        if native.requires_session()
+            && path == "/api/workbench/session"
+            && method == axum::http::Method::GET
+        {
             return (
                 StatusCode::NO_CONTENT,
                 [(header::CACHE_CONTROL, "no-store")],
             )
                 .into_response();
         }
-    }
-    let challenge = req
-        .headers()
-        .get(CHALLENGE_HEADER)
-        .and_then(|value| uuid::Uuid::try_parse_ascii(value.as_bytes()).ok());
-    if method == axum::http::Method::POST && path == STOP_PATH {
-        let proof = challenge.and_then(|challenge| {
-            state
-                .gui_instance?
-                .proof(&state.host, challenge, ProofPurpose::Stop)
-        });
-        if !proof.is_some_and(|proof| {
-            req.headers()
-                .get(STOP_HEADER)
-                .is_some_and(|value| value == proof.as_str())
-        }) {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-        state.shutdown.cancel();
-        return StatusCode::NO_CONTENT.into_response();
     }
     let query: BTreeMap<String, String> =
         url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
@@ -195,7 +218,7 @@ async fn dispatch(State(state): State<WebState>, req: Request) -> Response {
     let body = if method == axum::http::Method::POST {
         let limit = if state.native.is_some() && path == "/api/personal" {
             // Allow the full SQLite document plus the value/revision envelope.
-            quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES + 128
+            quarry_platform::PersonalStore::MAX_DOCUMENT_BYTES + 131_072
         } else {
             262_144
         };
@@ -278,9 +301,25 @@ fn static_file(path: &str, native: Option<&NativeWorkbench>) -> Response {
     };
     match UI.get_file(relative) {
         Some(file) if native.is_some() && relative == "index.html" => {
-            let scope = native.unwrap().storage_scope();
-            let html = String::from_utf8_lossy(file.contents())
-                .replacen("<head>", &format!("<head><meta name=\"quarry-mode\" content=\"native\"><meta name=\"quarry-workbench-scope\" content=\"{scope}\">"), 1);
+            let native = native.expect("native workbench");
+            let mode = if native.shared_records() {
+                let entry = if native.is_standalone() {
+                    "quarry"
+                } else {
+                    "ylab"
+                };
+                format!(
+                    "<meta name=\"quarry-mode\" content=\"native\"><meta name=\"quarry-workbench-entry\" content=\"{entry}\"><meta name=\"quarry-workbench-scope\" content=\"{}\">",
+                    native.storage_scope()
+                )
+            } else {
+                String::new()
+            };
+            let html = String::from_utf8_lossy(file.contents()).replacen(
+                "<head>",
+                &format!("<head><meta name=\"quarry-federated\" content=\"true\">{mode}"),
+                1,
+            );
             Response::builder()
                 .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
                 .header(header::CACHE_CONTROL, "no-store")
@@ -394,6 +433,77 @@ fn pagination(body: &Value, request: &mut QueryRequest) -> Result<()> {
     request.policy.offset = number(body, "offset", 0)?;
     Ok(())
 }
+
+fn local_target(
+    host: &Host,
+    db: &str,
+    env: Option<&str>,
+    workspace: Option<&Path>,
+    target: Option<&str>,
+) -> Result<quarry_runtime::ConnectionRecord> {
+    if let Some(id) = env.and_then(|env| env.strip_prefix(native::LOCAL_ROUTE_PREFIX)) {
+        if !id.starts_with("local:") || target.is_some_and(|target| target != id) {
+            return Err(Failure::invalid(
+                "Connection target changed. Refresh the connection list.",
+            ));
+        }
+        let record = crate::federated_cli::resolve_local_target(host, id)?;
+        if record.logical_db() != db && record.key != db && !db.starts_with("local-db:") {
+            return Err(Failure::invalid(
+                "Connection target changed. Refresh the connection list.",
+            ));
+        }
+        return Ok(record);
+    }
+    if let Some(target) = target {
+        let record = crate::federated_cli::resolve_local_target(host, target)?;
+        if (record.logical_db() != db && record.key != db) || record.display_env() != env {
+            return Err(Failure::invalid(
+                "Connection target changed. Refresh the connection list.",
+            ));
+        }
+        return Ok(record);
+    }
+    host.resolve(db, env, workspace)
+}
+
+fn cloud_workbench(state: &WebState) -> Result<&NativeWorkbench> {
+    state
+        .native
+        .as_deref()
+        .filter(|native| native.requires_session())
+        .ok_or_else(|| Failure::invalid("Cloud connection is unavailable"))
+}
+
+async fn record_local(
+    native: &NativeWorkbench,
+    record: &quarry_runtime::ConnectionRecord,
+    sql: &str,
+    request_id: Option<&str>,
+) {
+    let id = crate::federated_cli::local_target_id(record);
+    let target = json!({"db":record.logical_db(),"env":record.display_env(),"placement":"local","workspace":record.workspace,"key":record.key});
+    native
+        .history
+        .record(target, Some(&id), sql, request_id)
+        .await;
+}
+
+async fn record_cloud(
+    native: &NativeWorkbench,
+    db: &str,
+    env: Option<&str>,
+    id: &str,
+    sql: &str,
+    request_id: Option<&str>,
+) {
+    let target = json!({"db":db,"env":env,"placement":"remote"});
+    native
+        .history
+        .record(target, Some(id), sql, request_id)
+        .await;
+}
+
 async fn get(state: &WebState, path: &str, q: &BTreeMap<String, String>) -> Result<Value> {
     let host = &state.host;
     match path {
@@ -405,20 +515,36 @@ async fn get(state: &WebState, path: &str, q: &BTreeMap<String, String>) -> Resu
                 None => Ok(local),
             }
         }
-        "/api/history" if state.native.is_some() => {
-            state.native.as_ref().unwrap().history.read().await
+        "/api/history"
+            if state
+                .native
+                .as_ref()
+                .is_some_and(|native| native.shared_records()) =>
+        {
+            state.native.as_ref().unwrap().read_history().await
         }
-        "/api/personal" if state.native.is_some() => {
-            state.native.as_ref().unwrap().history.workbench(None).await
+        "/api/personal"
+            if state
+                .native
+                .as_ref()
+                .is_some_and(|native| native.shared_records()) =>
+        {
+            state.native.as_ref().unwrap().workbench(None).await
         }
         "/api/workspaces" => host.workspaces(),
         "/api/queries" => queries(host),
         "/api/tables" | "/api/columns" | "/api/health" | "/api/conninfo" | "/api/inspect" => {
             let db = arg(q, "db").ok_or_else(|| Failure::invalid("Missing database"))?;
-            if let (Some(native), Some(id)) = (&state.native, cloud_id(arg(q, "env"))) {
-                return native.get(path, id, q).await;
+            if let Some(id) = cloud_id(arg(q, "env")) {
+                return cloud_workbench(state)?.get(path, id, q).await;
             }
-            let record = host.resolve(db, arg(q, "env"), arg(q, "workspace").map(Path::new))?;
+            let record = local_target(
+                host,
+                db,
+                arg(q, "env"),
+                arg(q, "workspace").map(Path::new),
+                arg(q, "target"),
+            )?;
             if path == "/api/conninfo" {
                 return host.info(&record, arg(q, "reveal") == Some("1"));
             }
@@ -494,34 +620,45 @@ async fn standalone_update_info(host: &Host) -> Value {
 async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
     let host = &state.host;
     match path {
-        "/api/personal" if state.native.is_some() => {
-            state
+        "/api/personal"
+            if state
                 .native
                 .as_ref()
-                .unwrap()
-                .history
-                .workbench(Some(body))
-                .await
+                .is_some_and(|native| native.shared_records()) =>
+        {
+            state.native.as_ref().unwrap().workbench(Some(body)).await
         }
         "/api/query" => {
             let db = req(&body, "db")?;
             let env = body["env"].as_str();
             let sql = req(&body, "sql")?;
             let request_id = body["requestId"].as_str();
-            if let (Some(native), Some(id)) = (&state.native, cloud_id(env)) {
+            if let Some(id) = cloud_id(env) {
+                let native = cloud_workbench(state)?;
                 let result = native.post(path, id, body.clone()).await?;
-                native
-                    .history
-                    .record(db, env, sql, result["requestId"].as_str().or(request_id))
-                    .await;
+                record_cloud(
+                    native,
+                    db,
+                    env,
+                    id,
+                    sql,
+                    result["requestId"].as_str().or(request_id),
+                )
+                .await;
                 return Ok(result);
             }
-            let record = host.resolve(db, env, body["workspace"].as_str().map(Path::new))?;
+            let record = local_target(
+                host,
+                db,
+                env,
+                body["workspace"].as_str().map(Path::new),
+                body["target"].as_str(),
+            )?;
             let mut request = QueryRequest::new(sql);
             pagination(&body, &mut request)?;
             let result = host.execute(&record, request).await?.to_legacy_json();
             if let Some(native) = &state.native {
-                native.history.record(db, env, sql, request_id).await;
+                record_local(native, &record, sql, request_id).await;
             }
             Ok(result)
         }
@@ -556,44 +693,71 @@ async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
                 })
                 .unwrap_or_default();
             let params = query.parameters(&params)?;
-            if let (Some(native), Some(id)) = (&state.native, cloud_id(env)) {
+            if let Some(id) = cloud_id(env) {
+                let native = cloud_workbench(state)?;
                 let resource = native.resource(id)?;
-                let sql = resource.saved_sql(&query.db, &query.sql, &params)?;
+                let (db, sql) =
+                    resource.saved_sql(host, &query.db, &query.workspace, &query.sql, &params)?;
                 let mut out = native.post("/api/query", id, json!({"sql":sql,"maxRows":body["maxRows"],"offset":body["offset"],"requestId":body["requestId"]})).await?;
-                native
-                    .history
-                    .record(&query.db, env, &query.sql, out["requestId"].as_str())
-                    .await;
+                record_cloud(native, &db, env, id, &query.sql, out["requestId"].as_str()).await;
                 // Match local execution's parameter privacy at browser persistence boundaries.
                 if !params.is_empty() {
                     out["sql"] = json!(query.sql);
                 }
-                out["db"] = json!(query.db);
+                out["db"] = json!(
+                    body["db"]
+                        .as_str()
+                        .filter(|db| db.starts_with("local-db:"))
+                        .unwrap_or(&db)
+                );
                 out["env"] = json!(env);
                 return Ok(out);
             }
-            let record = host.resolve_related(&query.db, env, &query.workspace)?;
+            let target = body["target"].as_str();
+            let record = if target.is_some()
+                || env.is_some_and(|env| env.starts_with(native::LOCAL_ROUTE_PREFIX))
+            {
+                let record = local_target(host, &query.db, env, None, target)?;
+                if !Target::local(record.clone()).supports_saved_query(
+                    host,
+                    &query.db,
+                    &query.workspace,
+                )? {
+                    return Err(Failure::invalid(
+                        "Saved query belongs to a different database",
+                    ));
+                }
+                record
+            } else {
+                host.resolve_related(&query.db, env, &query.workspace)?
+            };
             let mut request = QueryRequest::new(&query.sql);
             request.parameters = params;
             pagination(&body, &mut request)?;
             let mut out = host.execute(&record, request).await?.to_legacy_json();
-            out["db"] = json!(record.logical_db());
-            out["env"] = json!(record.display_env());
+            out["db"] = json!(
+                body["db"]
+                    .as_str()
+                    .filter(|db| db.starts_with("local-db:"))
+                    .unwrap_or(record.logical_db())
+            );
+            out["env"] = json!(
+                env.filter(|env| env.starts_with(native::LOCAL_ROUTE_PREFIX))
+                    .or_else(|| record.display_env())
+            );
             if let Some(native) = &state.native {
-                native
-                    .history
-                    .record(
-                        record.logical_db(),
-                        record.display_env(),
-                        out["sql"].as_str().unwrap_or(&query.sql),
-                        body["requestId"].as_str(),
-                    )
-                    .await;
+                record_local(
+                    native,
+                    &record,
+                    out["sql"].as_str().unwrap_or(&query.sql),
+                    body["requestId"].as_str(),
+                )
+                .await;
             }
             Ok(out)
         }
         "/api/cancel" if state.native.is_some() => {
-            let native = state.native.as_ref().unwrap();
+            let native = cloud_workbench(state)?;
             let id = cloud_id(body["env"].as_str())
                 .ok_or_else(|| Failure::invalid("Missing cloud query target"))?
                 .to_owned();
@@ -601,10 +765,16 @@ async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
             native.post(path, &id, body).await
         }
         "/api/record-link" => {
-            if let (Some(native), Some(id)) = (&state.native, cloud_id(body["env"].as_str())) {
-                return native.post(path, id, body.clone()).await;
+            if let Some(id) = cloud_id(body["env"].as_str()) {
+                return cloud_workbench(state)?.post(path, id, body.clone()).await;
             }
-            let record = host.resolve(req(&body, "db")?, body["env"].as_str(), None)?;
+            let record = local_target(
+                host,
+                req(&body, "db")?,
+                body["env"].as_str(),
+                None,
+                body["target"].as_str(),
+            )?;
             Ok(host
                 .metadata(
                     &record,
@@ -763,9 +933,37 @@ fn query_id(q: &quarry_runtime::SavedQuery) -> String {
     )
 }
 fn queries(host: &Host) -> Result<Value> {
-    let inventory = QueryStore::new(host.catalog()?).scan()?;
+    let catalog = host.catalog()?;
+    let connections = catalog.connections()?;
+    let inventory = QueryStore::new(catalog).scan()?;
     crate::warn_query_issues(&inventory);
-    Ok(json!(inventory.queries.iter().map(|q|json!({"name":q.name,"db":q.db,"desc":q.desc,"sql":q.sql,"ws":crate::service::display_path(&q.workspace),"queryId":query_id(q),"params":q.params})).collect::<Vec<_>>()))
+    let mut scopes = BTreeMap::new();
+    let mut queries = Vec::with_capacity(inventory.queries.len());
+    for query in &inventory.queries {
+        let key = (&query.workspace, &query.db);
+        let (target_ids, owner_target_ids) = match scopes.entry(key) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let mut targets = Vec::new();
+                let mut owners = Vec::new();
+                for record in connections
+                    .iter()
+                    .filter(|record| record.logical_db() == query.db || record.key == query.db)
+                {
+                    let target = Target::local(record.clone());
+                    if target.supports_saved_query(host, &query.db, &query.workspace)? {
+                        targets.push(target.id().to_owned());
+                        if record.workspace == query.workspace {
+                            owners.push(target.id().to_owned());
+                        }
+                    }
+                }
+                entry.insert((targets, owners))
+            }
+        };
+        queries.push(json!({"name":query.name,"db":query.db,"desc":query.desc,"sql":query.sql,"ws":crate::service::display_path(&query.workspace),"queryId":query_id(query),"params":query.params,"targetIds":target_ids,"ownerTargetIds":owner_target_ids}));
+    }
+    Ok(json!(queries))
 }
 fn version_gt(a: &str, b: &str) -> bool {
     semver::Version::parse(a.trim_start_matches('v'))
@@ -964,6 +1162,71 @@ mod native_http_tests {
         assert_eq!(result.1["env"], Value::Null);
     }
     #[tokio::test]
+    async fn exact_saved_query_target_respects_owner_and_allows_related_environment() {
+        let (dir, mut state) = fixture();
+        let mut workspaces = Vec::new();
+        for (name, group, environment) in [
+            ("owner", "Product", "dev"),
+            ("unrelated", "Other", "dev"),
+            ("sibling", "Product", "local"),
+        ] {
+            let workspace = dir.path().join(name);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(workspace.join("connections.toml"), format!("[notes_{environment}]\ndb='notes'\nenv='{environment}'\ngroup='{group}'\nurl='sqlite:///notes.db'\n")).unwrap();
+            let db = rusqlite::Connection::open(workspace.join("notes.db")).unwrap();
+            db.execute("CREATE TABLE entries (owner TEXT)", []).unwrap();
+            db.execute("INSERT INTO entries VALUES (?)", [name])
+                .unwrap();
+            workspaces.push(std::fs::canonicalize(workspace).unwrap());
+        }
+        std::fs::create_dir(workspaces[0].join("queries")).unwrap();
+        std::fs::write(
+            workspaces[0].join("queries/recent.sql"),
+            "-- @name: recent\n-- @db: notes\nSELECT owner FROM entries\n",
+        )
+        .unwrap();
+        state.host = Host::new(
+            dir.path().join("config.toml"),
+            workspaces.clone(),
+            dir.path().join("state"),
+        );
+        let ids: Vec<_> = workspaces
+            .iter()
+            .zip(["dev", "dev", "local"])
+            .map(|(workspace, env)| {
+                state
+                    .host
+                    .resolve("notes", Some(env), Some(workspace))
+                    .unwrap()
+                    .target_id()
+            })
+            .collect();
+        let (status, queries) = send(&state, "/api/queries", None, "localhost:8765", None).await;
+        assert_eq!(status, 200);
+        let query = &queries[0];
+        assert_eq!(query["ownerTargetIds"], json!([ids[0]]));
+        let targets = query["targetIds"].as_array().unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&json!(ids[0])) && targets.contains(&json!(ids[2])));
+        let execute = |env: String, target: Option<&str>| {
+            let body = json!({"queryId":query["queryId"],"env":env,"target":target});
+            send(&state, "/api/run", Some(body), "localhost:8765", None)
+        };
+        assert_eq!(execute("dev".into(), Some(&ids[1])).await.0, 400);
+        assert_eq!(
+            execute(format!("{}{}", native::LOCAL_ROUTE_PREFIX, ids[1]), None)
+                .await
+                .0,
+            400
+        );
+        for (index, env, name) in [(0, "dev", "owner"), (2, "local", "sibling")] {
+            let (status, result) = execute(env.into(), Some(&ids[index])).await;
+            assert_eq!(status, 200);
+            assert_eq!(result["rows"][0]["owner"], name);
+        }
+    }
+
+    #[tokio::test]
     async fn cloud_saved_query_sends_parameters_but_keeps_them_out_of_personal_sql() {
         struct TestCloud;
         #[async_trait::async_trait]
@@ -1018,7 +1281,7 @@ mod native_http_tests {
         .await
         .unwrap();
         assert_eq!(output["sql"], "SELECT :'key'");
-        let history = native.history.read().await.unwrap();
+        let history = native.read_history().await.unwrap();
         assert_eq!(history["history"][0]["sql"], "SELECT :'key'");
     }
     #[tokio::test]

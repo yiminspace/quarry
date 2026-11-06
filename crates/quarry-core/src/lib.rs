@@ -190,6 +190,11 @@ impl ConnectionSpec {
             Ok(self.url.clone())
         }
     }
+
+    /// The database location parsed by the driver, excluding authentication data.
+    pub fn transport_identity(&self) -> Option<JsonValue> {
+        drivers::transport_identity(self)
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

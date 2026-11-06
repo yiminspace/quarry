@@ -133,6 +133,37 @@ fn run_scopes_saved_query_and_overrides_or_removes_outer_limit() {
     .unwrap();
     let normal = success(run(dir.path(), &[&first, &second], &["run", "in_second"]));
     assert_eq!(normal.as_array().unwrap().len(), 1);
+    let catalog = success(run(
+        dir.path(),
+        &[&first, &second],
+        &["connections", "--format", "json"],
+    ));
+    let target_for = |workspace: &Path| {
+        let workspace = workspace.canonicalize().unwrap();
+        catalog["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["workspace"].as_str() == workspace.to_str())
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+    };
+    let rejected = run(
+        dir.path(),
+        &[&first, &second],
+        &["run", "in_second", "--target", target_for(&first)],
+    );
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("different database"));
+    assert_eq!(
+        success(run(
+            dir.path(),
+            &[&first, &second],
+            &["run", "in_second", "--target", target_for(&second)],
+        )),
+        normal
+    );
     let full = success(run(
         dir.path(),
         &[&first, &second],

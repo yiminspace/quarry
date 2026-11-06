@@ -541,19 +541,16 @@ mod tests {
     }
     #[tokio::test]
     async fn persistent_server_passes_arguments_to_the_host_selected_entrypoint() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("feature-host");
         let args = dir.path().join("args");
-        std::fs::write(
+        write_executable_fixture(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 70\n",
                 args.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let manager = LocalManager::new(
             RuntimeConfig::load(dir.path().join("config.toml")).unwrap(),
             dir.path().join("state"),

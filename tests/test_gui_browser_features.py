@@ -3562,6 +3562,13 @@ def test_tabs_do_not_move_between_workspaces_with_same_db(page_envset):
     response = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     for group in response['groups']:
         group['ws'] = '/different/workspace'
+        for item in group['items']:
+            for env in item['envs']:
+                env['workspace'] = group['ws']
+                if 'targetId' in env:
+                    # Distinct from the original target. Fixture IDs stay in
+                    # the browser while metadata uses the seeded test server.
+                    env['targetId'] = f"fixture-replacement:{env['targetId']}"
     page.route('**/api/connections', lambda route: route.fulfill(json=response))
     page.goto(page.url.split('?')[0], wait_until='networkidle')
     assert page.locator('#sql').input_value() == 'select 88 as old_workspace_draft'
@@ -4069,12 +4076,18 @@ def test_saved_queries_stay_in_owning_workspace(page_noparam):
     page = page_noparam
     tree = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     item = next(i for g in tree['groups'] for i in g['items'] if i['db'] == 'testpg')
+    target = item['envs'][0].setdefault('targetId', 'fixture-testpg')
     tree['groups'] = [dict(ws='/ws/one', group='One', items=[item]),
                       dict(ws='/ws/two', group='Two', items=[])]
     tree['workspaces'] = ['/ws/one', '/ws/two', '/ws/only-queries']
     queries = [dict(name='same', db='testpg', ws=f'/ws/{ws}', queryId=ws,
                     desc='', sql=f'SELECT {n}', params=[])
                for n, ws in enumerate(['one', 'two', 'only-queries'], 1)]
+    # The mock allows workspace two to use a validated sibling in workspace
+    # one. Keep the workspace with no eligible connection listed in the sidebar.
+    queries[0].update(targetIds=[target], ownerTargetIds=[target])
+    queries[1].update(targetIds=[target], ownerTargetIds=[])
+    queries[2].update(targetIds=[], ownerTargetIds=[])
     # Exercise the modal path as well as direct execution with identical names.
     queries[1]['params'] = [dict(name='x', type=None, required=False, default='1')]
     page.route('**/api/connections', lambda r: r.fulfill(json=tree))
@@ -4109,10 +4122,12 @@ def test_saved_queries_stay_in_owning_workspace(page_noparam):
     page.locator('.modal input').first.press('Enter')
     page.wait_for_function('document.querySelector("#grid table") !== null')
     assert runs[-1]['queryId'] == 'two'
+    assert runs[-1]['target'] == target
     one.click()
     with page.expect_response('**/api/run'):
         q1.click()
     assert runs[-1]['queryId'] == 'one'
+    assert runs[-1]['target'] == target
 
 
 def test_row_record_link_uses_result_context_and_does_not_execute(page_clip):
@@ -4352,6 +4367,88 @@ def test_native_cloud_outage_preserves_drafts_and_local_queries(page_sqlite):
     cloud.click()
     expect(page.locator("#sql")).to_have_value("select 'keep cloud draft' as note")
     assert len(queries) == 1
+
+
+def test_federated_account_change_keeps_local_result_and_rejects_old_inflight_result(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    owner = {'value': 'Alice'}
+    routes = {'Alice': 'cloud:f:' + 'a' * 64, 'Bob': 'cloud:f:' + 'b' * 64}
+    held = []
+    remote_queries = []
+
+    def catalog(route):
+        data = route.fetch().json()
+        data['cloudStatus'] = 'connected'
+        notes = next(item for group in data['groups'] for item in group['items'] if item['db'] == 'notes')
+        target = routes[owner['value']]
+        notes['envs'].append({
+            'env': target, 'display_env': 'dev', 'source': 'cloud', 'key': target, 'targetId': target[6:],
+            'providerLabel': 'YLab ' + owner['value'], 'sourceStatus': 'connected', 'production': True,
+            'engine': 'sqlite', 'region': None, 'ssh': False, 'proxied': False,
+        })
+        route.fulfill(json=data)
+
+    def result(sql, note):
+        return {'columns': [{'name': 'note', 'type': None}], 'rows': [{'note': note}], 'rowCount': 1,
+                'truncated': False, 'elapsedMs': 1, 'engine': 'sqlite', 'sql': sql,
+                'downloadBytes': 32, 'sizeIsEstimated': False}
+
+    def query(route):
+        body = route.request.post_data_json
+        if body['env'] not in routes.values():
+            route.continue_()
+            return
+        remote_queries.append(body['env'])
+        if 'late_alice' in body['sql']:
+            held.append(route)
+        else:
+            route.fulfill(json=result(body['sql'], 'private Alice result'))
+
+    def tables(route):
+        env = parse_qs(urlparse(route.request.url).query).get('env', [None])[0]
+        if env in routes.values():
+            route.fulfill(json={'engine': 'sqlite', 'tables': ['cloud_entries'], 'capped': False})
+        else:
+            route.continue_()
+
+    page.route('**/api/connections', catalog)
+    page.route('**/api/query', query)
+    page.route('**/api/tables?*', tables)
+    page.reload(wait_until='domcontentloaded')
+    _select_sqlite(page)
+    _run_sql(page, 'select note from entries where id = 1')
+    expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
+
+    alice = page.locator(f'#esw [data-env="{routes["Alice"]}"]')
+    alice.click()
+    _run_sql(page, "select 'private Alice history' as note")
+    expect(page.locator('#grid td[data-v="private Alice result"]')).to_be_visible()
+    draft = 'select 1 as late_alice_private_draft'
+    _set_sql(page, draft)
+    page.locator('#runBtn').click()
+    expect(page.locator('#grid .spin')).to_be_visible()
+
+    owner['value'] = 'Bob'
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(alice).to_have_count(0)
+    expect(page.locator('#sql')).to_have_value('select note from entries where id = 1')
+    expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
+    page.locator('#histBtn').click()
+    expect(page.get_by_text('private Alice history', exact=False)).to_have_count(0)
+    page.keyboard.press('Escape')
+
+    owner['value'] = 'Alice'
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(alice).to_be_visible()
+    alice.click()
+    expect(page.locator('#sql')).to_have_value(draft)
+    assert len(held) == 1
+    held[0].fulfill(json=result(draft, 'late private result'))
+    expect(page.locator('#grid td[data-v="private Alice result"]')).to_be_visible()
+    expect(page.locator('#grid td[data-v="late private result"]')).to_have_count(0)
+    assert remote_queries == [routes['Alice'], routes['Alice']]
 
 
 def test_sqlite_browse_structure_quoted_tables_and_file_info(page_sqlite, tmp_path):
@@ -4605,6 +4702,68 @@ def test_sqlite_workspaces_resolve_same_relative_path_and_restore_own_results(pa
     for owner in ('brain', 'yiminlab'):
         own_tabs = [tab for tab in tabs if tab['db'] == f'{owner}_notes']
         assert own_tabs and all(tab['workspace'] == str((tmp_path / owner).resolve()) for tab in own_tabs)
+
+
+@pytest.mark.skipif(not os.environ.get('QUARRY_RUST_BINARY'), reason='Exact workspace routes require the Rust workbench')
+def test_duplicate_workspace_targets_are_selectable_and_survive_label_changes(page_sqlite_workspaces, tmp_path):
+    from playwright.sync_api import expect
+
+    page = page_sqlite_workspaces
+    for owner in ('brain', 'yiminlab'):
+        path = tmp_path / owner / 'connections.toml'
+        path.write_text(path.read_text().replace(f'db = "{owner}_notes"', 'db = "notes"')
+                        .replace(f'group = "{owner}"', 'group = "Shared"'))
+    page.reload(wait_until='networkidle')
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json)
+            if req.method == 'POST' and req.url.endswith('/api/query') else None)
+    page.locator('.dbrow[data-db="notes"]').click()
+    expect(page.locator('#runon')).to_have_text('Choose a workspace')
+    expect(page.locator('#esw .ep.on')).to_have_count(0)
+    assert not requests
+    for owner in ('brain', 'yiminlab'):
+        target = page.locator('#esw .ep').filter(has_text=str(tmp_path / owner))
+        target.press('Enter')
+        expect(target).to_have_class(re.compile(r'\bon\b'))
+        expect(page.locator('#sql')).to_have_value('')
+        _run_sql(page, 'select note from records')
+        expect(page.locator(f'#grid td[data-v="{owner} own data"]')).to_be_visible()
+    assert len(requests) == 2 and requests[0]['target'] != requests[1]['target']
+
+    page.locator('#esw .ep').filter(has_text=str(tmp_path / 'brain')).click()
+    _set_sql(page, 'select 7 as preserved_draft')
+    path = tmp_path / 'brain' / 'connections.toml'
+    path.write_text(path.read_text().replace('db = "notes"', 'db = "renamed_notes"'))
+    page.reload(wait_until='networkidle')
+    expect(page.locator('#qtitle')).to_have_text('renamed_notes')
+    expect(page.locator('#sql')).to_have_value('select 7 as preserved_draft')
+    expect(page.locator('#grid td[data-v="brain own data"]')).to_be_visible()
+    assert len(requests) == 2
+
+
+@pytest.mark.skipif(not os.environ.get('QUARRY_RUST_BINARY'), reason='Exact saved query routes require the Rust workbench')
+def test_saved_query_prefers_owner_over_same_name_selected_workspace(page_sqlite_workspaces, tmp_path):
+    from playwright.sync_api import expect
+
+    page = page_sqlite_workspaces
+    for owner in ('brain', 'yiminlab'):
+        path = tmp_path / owner / 'connections.toml'
+        path.write_text(path.read_text().replace(f'db = "{owner}_notes"', 'db = "notes"')
+                        .replace(f'group = "{owner}"', 'group = "Shared"'))
+    (tmp_path / 'brain' / 'queries' / 'owned-notes.sql').write_text(
+        '-- @name: owned-notes\n-- @db: notes\nselect note from records\n')
+    page.reload(wait_until='networkidle')
+    page.locator('.dbrow[data-db="notes"]').click()
+    page.locator('#esw .ep').filter(has_text=str(tmp_path / 'yiminlab')).click()
+    _run_sql(page, 'select note from records')
+    expect(page.locator('#grid td[data-v="yiminlab own data"]')).to_be_visible()
+
+    with page.expect_request(lambda req: req.method == 'POST' and req.url.endswith('/api/run')) as sent:
+        page.locator('.qname[data-q="owned-notes"]').first.click()
+    expect(page.locator('#grid td[data-v="brain own data"]')).to_be_visible()
+    expect(page.locator('#esw .ep.on')).to_contain_text(str(tmp_path / 'brain'))
+    assert sent.value.post_data_json['target'] == page.evaluate(
+        "JSON.parse(localStorage.qy_tabs)[Number(localStorage.qy_ati)].targetId")
 
 
 def test_sqlite_saved_query_parameters_do_not_persist_in_browser_storage(page_sqlite, tmp_path):
@@ -7155,7 +7314,7 @@ def test_platform_builtin_cli_handoff_opens_fresh_browser_without_login_form(pag
         assert not state['local_requests']
         assert 'handoff_browser_document' in json.dumps(_browser_records(page))
     else:
-        page.get_by_text('The automatic sign-in link expired or belongs to another account. Run ylab db connect again.', exact=True).wait_for()
+        page.get_by_text('The automatic sign-in link expired or belongs to another account. Reopen the workbench from the Console.', exact=True).wait_for()
         assert not state['local_requests']
         assert page.get_by_label('Pairing code', exact=True).count() == 0
 

@@ -2,6 +2,7 @@ import { t } from "./i18n";
 import { useState, useSyncExternalStore } from "react";
 import { hostedConfig, signOut } from "./hostedAuth";
 import { NATIVE_MODE, exportNativeRecovery, loadSavedNativeRecords, nativeRecordsError, subscribeNativeRecords } from "./nativeRecords";
+import { cloudRouteVisible, federatedRoute, useConnStore } from "./store/connStore";
 import { PLATFORM_MODE, platformSnapshot, recoveryDownload, subscribePlatform } from "./platform";
 
 function NativeRecoveryStatus() {
@@ -14,7 +15,8 @@ function NativeRecoveryStatus() {
     <div className="platform-status" role="region" aria-label={t("native_records_warning")}>
       <span className="platform-error" role="status">{error}</span>
       <div className="platform-actions">
-        <button className="vg-btn btn" onClick={exportNativeRecovery}>{t("platform_export")}</button>
+        <button className="vg-btn btn" onClick={() => exportNativeRecovery((env) =>
+          federatedRoute(env) && cloudRouteVisible(useConnStore.getState().groups, env))}>{t("platform_export")}</button>
         <button className="vg-btn btn" onClick={() => {
           if (window.confirm(t("native_records_confirm_reload"))) void loadSavedNativeRecords();
         }}>{t("native_records_reload")}</button>

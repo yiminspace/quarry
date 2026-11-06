@@ -1,14 +1,16 @@
 import { t } from "./i18n";
 
 type Values = Record<string, string>;
-type Document = { values: Values; revision: number };
-type Recovery = Document & { dirty: true };
+type Document = { values: Values; revision: number; cloudIds: string[] };
+type Recovery = Omit<Document, "cloudIds"> & { dirty: true };
 type Persistence = "ready" | "unavailable" | "conflict";
 export const NATIVE_MODE = typeof document !== "undefined" && document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") === "native";
 const scope = NATIVE_MODE ? document.querySelector('meta[name="quarry-workbench-scope"]')?.getAttribute("content") : null;
 const recoveryKey = scope ? `qy_native:${encodeURIComponent(scope)}:recovery` : null;
+const STANDALONE_SHARED = NATIVE_MODE && document.querySelector('meta[name="quarry-workbench-entry"]')?.getAttribute("content") === "quarry";
 const path = "/api/personal";
 let values: Values = {};
+let editableCloudIds = new Set<string>();
 let revision = 0;
 let edits = 0;
 let dirty = false;
@@ -74,20 +76,46 @@ function withoutResultSnapshots(snapshot: Values): Values {
   return copy;
 }
 
+function filterCloudRecords(snapshot: Values, visible: (env: string) => boolean): Values {
+  const copy = { ...snapshot };
+  const allowed = (entry: { env?: string | null } | null) => !entry?.env ||
+    ((!entry.env.startsWith("cloud:") && !entry.env.startsWith("remote:")) || visible(entry.env));
+  try {
+    const tabs = JSON.parse(copy.qy_tabs ?? "[]") as { env?: string }[];
+    const results = JSON.parse(copy.qy_tabres ?? "[]") as ({ env?: string } | null)[];
+    const keep = tabs.map((tab, index) => allowed(tab) ? index : -1).filter((index) => index !== -1);
+    if (Object.hasOwn(copy, "qy_tabs")) {
+      copy.qy_ati = String(keep.indexOf(Number(copy.qy_ati ?? 0)));
+      copy.qy_tabs = JSON.stringify(keep.map((index) => tabs[index]));
+    }
+    if (Object.hasOwn(copy, "qy_tabres")) copy.qy_tabres = JSON.stringify(keep.map((index) => allowed(results[index]) ? results[index] : null));
+  } catch { delete copy.qy_tabs; delete copy.qy_tabres; delete copy.qy_ati; }
+  try {
+    if (Object.hasOwn(copy, "qy_hist")) copy.qy_hist = JSON.stringify(JSON.parse(copy.qy_hist).filter(allowed));
+  } catch { delete copy.qy_hist; }
+  for (const key of ["qy_ui", "qy_result"]) {
+    try { if (!allowed(JSON.parse(copy[key] ?? "null"))) delete copy[key]; }
+    catch { delete copy[key]; }
+  }
+  return copy;
+}
+
 function saveBody(): string | null {
   let document = JSON.stringify({ values });
   if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) {
     document = JSON.stringify({ values: withoutResultSnapshots(values) });
     if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) return null;
   }
-  return `{"value":${document},"revision":${revision}}`;
+  return `{"value":${document},"revision":${revision},"cloudIds":${JSON.stringify([...editableCloudIds])}}`;
 }
 
 function saveRecovery(): void {
   try {
     if (!recoveryKey) throw new Error("Native workbench storage scope is missing");
     if (dirty) {
-      let copy = { ...values };
+      // Browser recovery spans account changes on this loopback origin. Cloud
+      // drafts belong to the SQLite workbench; never put their SQL or rows here.
+      let copy = filterCloudRecords(values, () => false);
       const document = () => JSON.stringify({ values: copy, revision, dirty });
       let raw = document();
       if (raw.length > BROWSER_LIMIT) {
@@ -115,12 +143,14 @@ function saveRecovery(): void {
 }
 
 async function loadSaved(): Promise<Document> {
-  const response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(3000) });
+  const response = await fetch(path, { cache: "no-store", signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error("Cannot load native records");
   const data = await response.json();
   const loaded = data?.value === null ? {} : parseValues(data?.value?.values);
   if (!loaded || !validRevision(data?.revision)) throw new Error("Invalid native records");
-  return { values: loaded, revision: data.revision };
+  const cloudIds = Array.isArray(data.cloudIds) ? data.cloudIds.filter((id: unknown): id is string =>
+    typeof id === "string" && /^f:[a-f0-9]{64}$/.test(id)) : [];
+  return { values: loaded, revision: data.revision, cloudIds };
 }
 
 export async function initializeNativeRecords(): Promise<void> {
@@ -136,6 +166,17 @@ export async function initializeNativeRecords(): Promise<void> {
     if (!recovered) {
       values = saved.values;
       revision = saved.revision;
+      editableCloudIds = new Set(saved.cloudIds);
+      if (STANDALONE_SHARED && revision === 0) {
+        // The first federated launch can reuse the drafts from this browser's
+        // existing standalone origin when there is no shared document yet.
+        const legacy = Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.startsWith("qy_")));
+        const imported = filterCloudRecords(legacy, () => false);
+        if (Object.keys(imported).length) {
+          values = imported;
+          changed();
+        }
+      }
       return;
     }
     const sameValues = Object.keys(values).length === Object.keys(saved.values).length &&
@@ -212,6 +253,15 @@ export const nativePersonalStorage = {
   getItem(key: string): string | null { return values[key] ?? null; },
   setItem(key: string, value: string): void {
     if (values[key] === value) return;
+    if (key === "qy_tabs") {
+      try {
+        for (const tab of JSON.parse(value)) {
+          if (typeof tab.env === "string" && /^cloud:f:[a-f0-9]{64}$/.test(tab.env)) {
+            editableCloudIds.add(tab.env.slice("cloud:".length));
+          }
+        }
+      } catch { /* A malformed value cannot claim a cloud scope. */ }
+    }
     values[key] = value;
     changed();
   },
@@ -222,14 +272,21 @@ export const nativePersonalStorage = {
   },
 };
 
-export function exportNativeRecovery(): void {
-  const blob = new Blob([JSON.stringify({ values }, null, 2)], { type: "application/json" });
+export function exportNativeRecovery(visible: (env: string) => boolean): void {
+  const blob = new Blob([JSON.stringify({ values: filterCloudRecords(values, visible) }, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = "quarry-workbench-recovery.json";
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+export async function restoreNativeScope(): Promise<void> {
+  if (!NATIVE_MODE || persistence !== "ready") return;
+  for (let i = 0; saving && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  await flushNativeRecords();
+  if (!dirty && !saving && persistence === "ready") location.reload();
 }
 
 export async function loadSavedNativeRecords(): Promise<void> {
