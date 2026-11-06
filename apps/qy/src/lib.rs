@@ -1,3 +1,4 @@
+mod gui_launch;
 pub mod http;
 mod mcp;
 mod service;
@@ -1068,7 +1069,24 @@ async fn run_with_prefix(
             if !matches!(bind.as_str(), "127.0.0.1" | "localhost" | "::1") {
                 return Err(Failure::invalid("Local GUI must bind a loopback host"));
             }
-            let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
+            let launch = if standalone_updates {
+                gui_launch::standalone(&host, &bind, port).await?
+            } else {
+                let listener = tokio::net::TcpListener::bind((bind.as_str(), port)).await?;
+                gui_launch::Launch::Start(listener, None)
+            };
+            let (listener, gui_instance) = match launch {
+                gui_launch::Launch::Start(listener, instance) => (listener, instance),
+                gui_launch::Launch::Reuse(address) => {
+                    let url = format!("http://{address}/quarry/");
+                    eprintln!("Quarry GUI → {url}");
+                    eprintln!("Reusing the running Quarry GUI.");
+                    if !no_browser {
+                        open_gui(&url);
+                    }
+                    return Ok(());
+                }
+            };
             let bound = listener.local_addr()?;
             let port = bound.port();
             let url = format!("http://{bound}/quarry/");
@@ -1085,6 +1103,8 @@ async fn run_with_prefix(
                 )
             });
             let launch_url = native.as_ref().map(|workbench| workbench.launch_url(&url));
+            let a = assistant(&host)?;
+            let http_shutdown = quarry_core::CancellationToken::new();
             eprintln!(
                 "Quarry GUI → {}",
                 if no_browser {
@@ -1094,16 +1114,8 @@ async fn run_with_prefix(
                 }
             );
             if !no_browser {
-                let _ = std::process::Command::new(if cfg!(target_os = "macos") {
-                    "open"
-                } else {
-                    "xdg-open"
-                })
-                .arg(launch_url.as_deref().unwrap_or(&url))
-                .spawn();
+                open_gui(launch_url.as_deref().unwrap_or(&url));
             }
-            let a = assistant(&host)?;
-            let http_shutdown = quarry_core::CancellationToken::new();
             let state = http::WebState {
                 host: host.clone(),
                 assistant: a.clone(),
@@ -1112,6 +1124,7 @@ async fn run_with_prefix(
                 native,
                 standalone_updates,
                 managed_install: standalone_updates && updater::is_managed_install(),
+                gui_instance,
             };
             let shutdown = a.clone();
             let served = axum::serve(listener, http::router(state))
@@ -1615,6 +1628,16 @@ async fn generate(
         );
         Ok(())
     }
+}
+
+fn open_gui(url: &str) {
+    let _ = std::process::Command::new(if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    })
+    .arg(url)
+    .spawn();
 }
 
 async fn keepalive(host: &Host, enabled: Option<bool>) -> Result<Value> {
