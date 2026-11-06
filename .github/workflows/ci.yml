@@ -22,6 +22,9 @@ jobs:
   native:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     services:
       postgres:
         image: postgres:16
@@ -61,6 +64,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.checkout_ref || github.sha }}
+          fetch-depth: 0
+      - name: Check browser coverage rules
+        run: python3 -m unittest discover -s tests -p test_ci_browser_scope.py
+      - name: Determine browser coverage
+        id: browser-scope
+        continue-on-error: true
+        env:
+          CI_JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          CI_CHECKOUT_REF: ${{ inputs.checkout_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_browser_scope.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -98,18 +112,33 @@ jobs:
           cargo run -p quarry-core --example embedded_sqlite --locked
           cargo run -p quarry-service --example embedded_host --locked
       - uses: actions/setup-python@v5
+        if: >-
+          ${{ success() &&
+              (steps.browser-scope.outcome != 'success' || steps.browser-scope.outputs.browser_required != 'false') }}
         with:
           python-version: '3.12'
       - name: Prepare native browser verification
         id: browser-prepare
-        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        if: >-
+          ${{ success() &&
+              (steps.browser-scope.outcome != 'success' || steps.browser-scope.outputs.browser_required != 'false') }}
         run: |
+          # Prefer Ubuntu's HTTPS archive and keep Azure as a fallback on this runner image.
+          mirrors=/etc/apt/apt-mirrors.txt
+          if [[ -r "$mirrors" ]] &&
+             grep -Fxq $'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1' "$mirrors" &&
+             grep -Fxq $'https://archive.ubuntu.com/ubuntu/\tpriority:2' "$mirrors"; then
+            sudo sed -i \
+              -e '/^http:\/\/azure\.archive\.ubuntu\.com\/ubuntu\/[[:blank:]]/s/priority:1$/priority:2/' \
+              -e '/^https:\/\/archive\.ubuntu\.com\/ubuntu\/[[:blank:]]/s/priority:2$/priority:1/' \
+              "$mirrors"
+          fi
           make install
           python -m playwright install --with-deps chromium
           psql "$QUARRY_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE quarry_browser'
           psql "$QUARRY_TEST_DB_URL" -v ON_ERROR_STOP=1 -f tests/seed.sql
       - name: Existing workbench matrix against the native server
-        if: ${{ !cancelled() && steps.browser-prepare.outcome == 'success' }}
+        if: ${{ success() && steps.browser-prepare.outcome == 'success' }}
         run: >-
           python -m pytest tests/test_gui_browser.py tests/test_gui_react_app.py
           tests/test_gui_browser_features.py tests/test_gui_visual.py
