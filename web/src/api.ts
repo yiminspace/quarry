@@ -161,7 +161,7 @@ export type LocalUpResponse = {
 
 export type LocalSyncResponse = { from: string; prev?: string | null; [key: string]: unknown };
 
-export type UpdateInfo = { current: string; latest: string | null; available: boolean };
+export type UpdateInfo = { current: string; latest: string | null; available: boolean; managed?: boolean };
 
 export type ChangelogVersion = { version: string; date: string; entries: string[] };
 

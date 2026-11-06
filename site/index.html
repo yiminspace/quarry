@@ -226,7 +226,7 @@
       <p class="sub">One native database kernel for people, scripts and agents. Use the CLI, GUI or MCP locally, embed the Rust libraries, or bring an IAM-protected workbench into your platform.</p>
       <div class="cta-row">
         <div class="install">
-          <span class="dollar">$</span><span id="pipcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
+          <span class="dollar">$</span><span id="installcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
           <button onclick="navigator.clipboard.writeText('curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="Copy">⧉</button>
         </div>
         <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">Native downloads and checksums</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">Install / upgrade / Python archive</a></p>
@@ -409,7 +409,7 @@
   <div class="wrap">
     <div class="eyebrow">Engines &amp; footprint</div>
     <h2>Nearly zero dependencies</h2>
-    <p class="lede">A native Rust executable with embedded GUI and database drivers. Install macOS/Linux arm64 or x86_64 binaries, or the same executable through pip/pipx. SSH, Docker and schema sync use system tools when needed.</p>
+    <p class="lede">A native Rust executable with embedded GUI and database drivers. Install on macOS or Linux on arm64 and x86_64. The installer-managed binary updates with <code>qy update</code>. SSH, Docker and schema sync use system tools when needed.</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · native SQLx</span>
       <span class="engine"><b>MySQL</b> · native SQLx</span>
@@ -442,7 +442,7 @@
       <div class="rm"><b>Column types</b> in the result contract for all engines</div>
       <div class="rm"><b>Cross-env diff</b> compare schema &amp; data across environments</div>
       <div class="rm"><b>Write audit log</b> who ran what, where, when</div>
-      <div class="rm"><b>Available in 2.0</b> native binaries and platform wheels</div>
+      <div class="rm"><b>Quarry 2</b> native binaries and embedded GUI</div>
       <div class="rm"><b>Shared SQL &amp; cross-device sync</b> not available in hosted integration</div>
     </div>
     <div class="cta-row" style="margin-top:40px">

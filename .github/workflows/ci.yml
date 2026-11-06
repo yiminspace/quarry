@@ -104,7 +104,7 @@ jobs:
         id: browser-prepare
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         run: |
-          python -m pip install pytest pytest-cov playwright "pymysql[rsa]" hatchling
+          make install
           python -m playwright install --with-deps chromium
           psql "$QUARRY_TEST_POSTGRES_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE quarry_browser'
           psql "$QUARRY_TEST_DB_URL" -v ON_ERROR_STOP=1 -f tests/seed.sql
@@ -113,7 +113,7 @@ jobs:
         run: >-
           python -m pytest tests/test_gui_browser.py tests/test_gui_react_app.py
           tests/test_gui_browser_features.py tests/test_gui_visual.py
-          -m browser -k 'not wheel and not sdist' -q
+          -m browser -q
 
   minimum-rust:
     runs-on: ubuntu-latest

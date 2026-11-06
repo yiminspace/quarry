@@ -1,6 +1,7 @@
 pub mod http;
 mod mcp;
 mod service;
+mod updater;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use quarry_core::{CancellationToken, Engine, QueryOutcome, QueryRequest};
 use quarry_runtime::{QueryParameter, QueryStore, RuntimeConfig, SavedQuery};
@@ -174,6 +175,8 @@ enum Command {
     },
     Up,
     Down,
+    /// Install the latest verified native release.
+    Update,
     Status {
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
@@ -412,39 +415,73 @@ pub async fn run_gui_from(
     run_embedded(args, launcher_prefix, Some((cloud, history))).await
 }
 
-async fn run_embedded(
-    args: Vec<std::ffi::OsString>,
-    launcher_prefix: Vec<String>,
-    native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
-) -> Result<()> {
+fn parse_cli(args: &[std::ffi::OsString], standalone: bool) -> Result<Option<Cli>> {
     let program = args
         .first()
         .and_then(|a| a.to_str())
         .unwrap_or("qy")
         .to_owned();
-    let parsed = Cli::command()
-        .bin_name(program)
+    let mut command = Cli::command().bin_name(program);
+    if !standalone {
+        command = command.mut_subcommand("update", |command| command.hide(true));
+    }
+    let parsed = command
         .try_get_matches_from(args)
         .and_then(|m| Cli::from_arg_matches(&m));
-    let cli = match parsed {
-        Ok(cli) => cli,
+    match parsed {
+        Ok(cli) => Ok(Some(cli)),
         Err(error) => {
             if matches!(
                 error.kind(),
                 clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
             ) {
                 error.print()?;
-                return Ok(());
+                return Ok(None);
             }
-            return Err(Failure::invalid(error.to_string()));
+            Err(Failure::invalid(error.to_string()))
         }
+    }
+}
+
+/// Standalone executable entry point. Hosts using Quarry as a library keep
+/// ownership of their own installation and updates.
+pub fn run_standalone(args: Vec<std::ffi::OsString>) -> Result<()> {
+    if let Some(result) = updater::internal_command(&args) {
+        return result;
+    }
+    let Some(cli) = parse_cli(&args, true)? else {
+        return Ok(());
     };
+    match &cli.command {
+        Command::Update => return updater::update_now(),
+        Command::InternalKeeper { .. } | Command::InternalNeptune { .. } => {}
+        _ => updater::on_start(&args),
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_with_prefix(cli, Vec::new(), None, true))
+}
+
+async fn run_embedded(
+    args: Vec<std::ffi::OsString>,
+    launcher_prefix: Vec<String>,
+    native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
+) -> Result<()> {
+    let Some(cli) = parse_cli(&args, false)? else {
+        return Ok(());
+    };
+    if matches!(cli.command, Command::Update) {
+        return Err(Failure::invalid(
+            "Update Quarry through the application that embeds it",
+        ));
+    }
     if native.is_some() && !matches!(cli.command, Command::Gui { .. }) {
         return Err(Failure::invalid(
             "Cloud workbench integration requires the GUI command",
         ));
     }
-    run_with_prefix(cli, launcher_prefix, native).await
+    run_with_prefix(cli, launcher_prefix, native, false).await
 }
 
 fn home() -> Result<PathBuf> {
@@ -729,6 +766,7 @@ async fn run_with_prefix(
     cli: Cli,
     launcher_prefix: Vec<String>,
     native: Option<(Arc<dyn http::CloudBackend>, Option<http::NativeHistory>)>,
+    standalone_updates: bool,
 ) -> Result<()> {
     let config_path = match cli.config {
         Some(path) => path,
@@ -1072,6 +1110,8 @@ async fn run_with_prefix(
                 port,
                 shutdown: http_shutdown.clone(),
                 native,
+                standalone_updates,
+                managed_install: standalone_updates && updater::is_managed_install(),
             };
             let shutdown = a.clone();
             let served = axum::serve(listener, http::router(state))
@@ -1117,7 +1157,9 @@ async fn run_with_prefix(
             }
             metadata_output(json!({"db":db,"samples":values}), &format)
         }
-        Command::InternalKeeper { .. } | Command::InternalNeptune { .. } => unreachable!(),
+        Command::Update | Command::InternalKeeper { .. } | Command::InternalNeptune { .. } => {
+            unreachable!()
+        }
     };
     host.tunnels.close_all().await?;
     result

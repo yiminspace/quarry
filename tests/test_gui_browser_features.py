@@ -3192,7 +3192,7 @@ def test_server_upgrade_prompts_reload_banner(_pw_browser, tmp_path, monkeypatch
 
 # ---------------------------------------------------------------------------
 # update-check badge (GET /api/update) — driven by a mocked API response, so
-# these never depend on real PyPI reachability or the background checker's
+# these never depend on GitHub reachability or the background checker's
 # throttle (both unit-tested against mocks in test_gui_backend.py).
 # ---------------------------------------------------------------------------
 
@@ -3218,7 +3218,7 @@ def test_update_badge_hidden_when_no_new_version(_pw_browser, gui_url):
 
 
 def test_update_badge_visible_and_dot_uses_accent_token_in_both_themes(_pw_browser, gui_url):
-    """A new PyPI release makes the header badge appear; its dot resolves to
+    """A new release makes the header badge appear; its dot resolves to
     the --accent design token in both themes (dark default, then light)."""
     ctx, page = _mk_update_page(
         _pw_browser, gui_url, {"current": "0.5.1", "latest": "9.9.9", "available": True})
@@ -3237,17 +3237,26 @@ def test_update_badge_visible_and_dot_uses_accent_token_in_both_themes(_pw_brows
         ctx.close()
 
 
-def test_update_panel_shows_versions_and_upgrade_command(_pw_browser, gui_url):
+@pytest.mark.parametrize("managed", [True, False], ids=["native-managed", "unmanaged"])
+def test_update_panel_shows_upgrade_path_for_install(_pw_browser, gui_url, managed):
     ctx, page = _mk_update_page(
-        _pw_browser, gui_url, {"current": "0.5.1", "latest": "9.9.9", "available": True})
+        _pw_browser, gui_url,
+        {"current": "0.5.1", "latest": "9.9.9", "available": True, "managed": managed})
     try:
         page.wait_for_selector("#updateBadge")
         page.locator("#updateBadge").click()
         page.wait_for_selector("#updbox")
         text = page.locator("#updbox").inner_text()
         assert "0.5.1" in text and "9.9.9" in text
-        assert page.locator("#updCmd").inner_text() == "pipx upgrade quarry-db"
-        assert page.locator("#upgradeGuide").get_attribute("href").endswith("/docs/install.md")
+        command = page.locator("#updCmd")
+        if managed:
+            assert command.inner_text() == "qy update"
+        else:
+            assert command.count() == 0
+        guide = page.locator("#upgradeGuide")
+        assert guide.inner_text() == "Native installation and upgrade guide"
+        assert guide.get_attribute("href").endswith("/docs/install.md")
+        assert guide.get_attribute("target") == "_blank"
         release_link = page.locator("#updbox a[href*='/releases/tag/']")
         assert release_link.get_attribute("href") == (
             "https://github.com/yiminspace/quarry/releases/tag/v9.9.9")

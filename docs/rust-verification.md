@@ -36,12 +36,12 @@ QUARRY_TEST_REDIS_URL=redis://127.0.0.1:PORT \
 QUARRY_RUST_BINARY="$PWD/target/debug/qy" \
   python3 -m pytest tests/test_gui_browser.py tests/test_gui_react_app.py \
   tests/test_gui_browser_features.py tests/test_gui_visual.py \
-  -m browser -k 'not wheel and not sdist'
+  -m browser
 ```
 
 Build `web/` before Cargo; initialize the disposable browser database from
-`tests/seed.sql`. The three Python wheel/sdist packaging tests remain baseline
-checks, not native acceptance. Native process tests never import Python.
+`tests/seed.sql`. The release workflow verifies the actual native archives,
+including their embedded GUI assets and changelog.
 
 ## Evidence collected locally
 

@@ -1,14 +1,13 @@
 # Testing
 
-## Rust candidate
+## Rust runtime
 
-The Rust candidate has its own native library/process/real-engine suite; see
+The Rust runtime has a native library/process/real-engine suite; see
 [commands and evidence](docs/rust-verification.md). Set `QUARRY_RUST_BINARY` to
 run the existing browser matrix against an actual Rust HTTP process. The
 frontend feature rows below retain their meaning; transport-specific backend
-stubs do not count as native engine verification. The Python wheel/sdist tests
-remain checks of the rollback release, not the Rust binary. No Rust coverage
-percentage is inferred from the legacy Python coverage badge.
+stubs provide a development baseline. The release workflow verifies the
+workbench and its assets from the native GitHub archives.
 
 Quarry has a layered test suite so failures are easy to localize and the whole
 thing stays green on a laptop with nothing installed (engine-dependent tests skip
@@ -43,10 +42,9 @@ environment header showing which engines were detected.
 ## One-time setup
 
 ```bash
-make install                                   # pip install -e ".[dev]"
-make seed                                       # create + seed the quarry_test database
-# for the browser suite:
-pip install -e ".[e2e]" && make browser-install # installs Playwright + headless Chromium
+make install          # install test dependencies
+make seed             # create + seed the quarry_test database
+make browser-install  # download headless Chromium for Playwright
 ```
 
 Override the database URL with `QUARRY_TEST_DB_URL` (defaults to
@@ -62,36 +60,34 @@ so the number reflects what the fast in-process suites alone exercise. The
 frontend lives in `web/` (React + TypeScript) and is covered by the `browser`
 suite (behaviorally), not by Python line coverage. Genuinely
 unreachable defensive code (blocking `serve_forever`, `# unreachable` lines after
-`err(...)`) is excluded via `[tool.coverage.report]` in `pyproject.toml`.
+`err(...)`) is excluded via `[report]` in `.coveragerc`.
 
 ## CI
 
-`.github/workflows/ci.yml` runs four kinds of jobs: the layered suite on the
-boundary Python versions 3.11 and 3.13 (with Postgres + MySQL + Redis services), a
-`coverage` gate job on 3.12 that also runs the e2e layer (so no version×layer
-combination runs twice), a `browser` job (headless Chromium, cached between
-runs), and a package `build` check. Every job builds the React shell (`web/`,
-`npm ci && npm run build`) before Python tests so `/quarry` assets are present.
+`.github/workflows/ci.yml` builds the React shell before the Rust applications
+and runs Cargo checks, real-engine tests (Postgres, MySQL and Redis), and the
+browser matrix against native `qy` in headless Chromium. A separate check
+compiles the workspace with the declared minimum Rust version.
 
 ## The React frontend (`/quarry`)
 
 The GUI frontend is a Vite + React + TypeScript package under `web/` that
-builds into `src/quarry/web_dist/` and is served by `gui.py` at `/quarry` — the
-default landing page (`/` redirects there). Node is dev/CI-only; the built
-assets ship in the wheel. **The browser suite tests the built bundle: run
+builds into `src/quarry/web_dist/`. Both Rust binaries embed the assets and
+serve the workbench at `/quarry/`. Node is needed for the build.
+**The browser suite tests the built bundle: run
 `cd web && npm run build` after changing `web/src`.**
 
 The React app is a drop-in replacement for the retired embedded-JS GUI: same
 DOM (ids/classes), same i18n strings, same localStorage keys and value formats
 — so the feature-matrix suite below, originally written against the embedded
-GUI, pins the React app unchanged. Packaging and React-only features live in
+GUI, also covers the React app. React-only features live in
 `test_gui_react_app.py`; visual design-token pins live in `test_gui_visual.py`:
 
 | # | Area | Feature | Covered by | ✓ |
 |---|------|---------|------------|---|
 | R1 | react | `/quarry/` mounts the app directly (not only via the `/` redirect) | test_gui_react_app:test_react_app_mounts_at_app_path, test_gui_api:test_quarry_route_has_no_workspace_segment | ✅ |
 | R2 | react | `/api/version` JSON endpoint; `/` redirects to `/quarry/` | test_gui_react_app:test_api_version, test_gui_api:test_root_redirects_to_react_app | ✅ |
-| R3 | react | wheel includes `quarry/web_dist/index.html` and every hashed `/quarry/assets/*` file referenced by that index; sdist excludes node_modules | test_gui_react_app:test_wheel_includes_web_dist, test_sdist_excludes_node_modules, CI build job | ✅ |
+| R3 | react | the native release binary serves `/quarry/` and each bundled asset referenced by its index | scripts/verify_gui_install.py, release.yml native verification | ✅ |
 | R4 | react | table-structure browser (issue #11): double-click a sidebar table name → modal lists column names + types (incl. quoted special-char table names) | test_gui_react_app:test_table_structure_modal_shows_columns_and_types, test_table_structure_quoted_special_char_table | ✅ |
 | R5 | react | switching tables replaces the structure modal's columns — latest-wins even when the first table's /api/columns response lands late | test_gui_react_app:test_table_structure_modal_switching_tables_replaces_columns | ✅ |
 | R6 | react | a stale /api/tables response for a connection the user switched away from never repaints the table panel | test_gui_react_app:test_stale_tables_response_does_not_overwrite | ✅ |
@@ -255,8 +251,8 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 94 | toolbar/tabs | query deep links: copy current `db/env/sql` as a shareable URL; opening it reuses an identical tab or creates one, restores SQL/connection, runs only when the destination Auto-run preference is enabled, and guards invalid link targets with an explicit toast (no silent auto-run failure) | F:test_copy_query_link_copies_db_env_sql, F:test_query_deeplink_opens_existing_tab_and_autoruns, F:test_query_deeplink_invalid_env_shows_notice_and_skips_autorun, F:test_query_deeplink_respects_auto_run_preference_and_production_default | ✅ |
 | 95 | app shell | live workspace refresh: `/api/events` SSE + backend file watcher — editing `connections.toml` / `queries/**/*.sql` on disk refreshes the sidebar without a manual reload (+ confirmation toast) | F:test_workspace_file_change_refreshes_sidebar_live (toast unasserted; watcher + SSE framing unit-covered in test_gui_backend.py) | ✅ |
 | 96 | app shell | upgrade-reload banner: after the backend restarts with a new version, the EventSource reconnect re-checks `/api/version` and shows a persistent "reload page" banner | F:test_server_upgrade_prompts_reload_banner | ✅ |
-| 97 | header | update-check badge: `GET /api/update` (native adapter uses the GitHub stable release API with a 30-minute cache, `QUARRY_UPDATE_CHECK=0` disables it, editable installs skip it, network failures stay silent) drives a header badge only when a newer release exists; its panel shows current/latest version, the `pipx upgrade quarry-db` command, installer-specific native/pip upgrade instructions and the canonical `yiminspace/quarry` release-notes link opening in a new tab | F:test_update_badge_hidden_when_no_new_version, F:test_update_badge_visible_and_dot_uses_accent_token_in_both_themes, F:test_update_panel_shows_versions_and_upgrade_command; backend throttle/semver/disable/editable/silent-failure unit-covered in test_gui_backend.py, `/api/update` HTTP-covered in test_gui_api.py | ✅ |
-| 98 | header | What's New panel: `GET /api/changelog` serves CHANGELOG.md (shipped in the wheel) parsed into version sections; a `__version__` change from the `qy_last_seen_version` recorded in localStorage auto-shows the panel with the entries for the new version(s), marks it seen immediately, and never reappears on a plain reload (a first-ever load with no recorded version just sets the baseline silently) | F:test_whats_new_hidden_on_first_ever_load, F:test_whats_new_shows_entries_after_upgrade_then_stays_hidden_on_reload, F:test_whats_new_background_uses_bg1_token_in_both_themes; CHANGELOG parsing unit-covered in test_gui_backend.py, `/api/changelog` HTTP-covered in test_gui_api.py, wheel packaging covered by test_wheel_includes_changelog | ✅ |
+| 97 | header | `GET /api/update` checks GitHub stable releases for standalone `qy` with a 30-minute cache; `QUARRY_UPDATE_CHECK=0` disables the notice, and embedded workbenches follow the host release. The badge opens current/latest versions, `qy update` for managed installs, the native installation guide and release notes in new tabs | F:test_update_badge_hidden_when_no_new_version, F:test_update_badge_visible_and_dot_uses_accent_token_in_both_themes, F:test_update_panel_shows_upgrade_path_for_install; Rust HTTP contract embedded_workbench_hides_standalone_updates | ✅ |
+| 98 | header | What's New panel: `GET /api/changelog` serves the embedded CHANGELOG.md parsed into version sections; a version change from the `qy_last_seen_version` recorded in localStorage auto-shows the panel with the entries for the new version(s), marks it seen immediately, and stays hidden on reload (the first load sets the baseline silently) | F:test_whats_new_hidden_on_first_ever_load, F:test_whats_new_shows_entries_after_upgrade_then_stays_hidden_on_reload, F:test_whats_new_background_uses_bg1_token_in_both_themes; Rust changelog parsing test, scripts/verify_gui_install.py native archive check | ✅ |
 | 99 | header | env switcher shows a proxy badge (`data-testid="proxy-badge"`) only for connections with a currently-live SSH tunnel that's actually routed through the proxy right now (an observed tunnel-pool fact, not a prediction) — server-computed, not guessed client-side; hidden when the workspace toggle is off, nothing was discovered, or no tunnel has been established for that connection yet | F:test_proxy_badge_shown_only_on_the_tunneled_env_when_proxy_active, F:test_proxy_badge_hidden_when_workspace_toggle_off, F:test_proxy_badge_hidden_when_nothing_discovered, F:test_proxy_badge_follows_server_state_across_reload; `/api/connections`'s `proxied` field unit-covered in test_gui_api.py; Rust runtime: `proxy_badge_requires_exact_live_tunnel_including_shared_owner` covers unopened/missing-key connections, shared live owners, changed target/proxy dimensions and stale PID rejection | ✅ |
 | 100 | header | workspace manager shows each registered workspace's proxy toggle state and the currently discovered proxy address (`data-testid="ws-proxy-status"`) | F:test_workspace_manager_shows_proxy_status_per_workspace, F:test_workspace_manager_shows_proxy_off_when_toggle_disabled; `/api/workspaces`'s `proxyEnabled`/`proxyDiscovered` fields unit-covered in test_gui_api.py | ✅ |
 | 101 | header | compact tunnel keep-alive control: single clickable status badge (`down`/`up`/`reconnecting`) toggles start/stop with mouse, Enter or Space; action tooltip and pressed state; no separate play/stop icon backed by `/api/keepalive*`, matching `qy status` semantics across GUI/keeper locale and timezone differences; unverifiable legacy PID and tunnel records fail closed | F:test_header_keepalive_badge_and_toggle, F:test_header_keepalive_badge_tracks_background_state, V:test_keeper_control_tokens; U:test_process_identity_is_independent_of_caller_locale_and_timezone, test_legacy_keeper_identity_needs_pid_file_start_time_proof, test_legacy_reused_pid_never_signalled_even_if_ps_text_matches, test_pre_v2_registry_identity_is_not_reused_even_with_open_port; `/api/keepalive`, `/api/keepalive/up`, `/api/keepalive/down` unit-covered in test_gui_api.py | ✅ |
@@ -1162,11 +1158,18 @@ fail on Query/Parse/COM_QUERY, catching a return to the former multi-round-trip 
 budget covers a TCP peer that never finishes authentication and rejects zero budgets.
 
 
-Release migration audit: the update panel now links to installer-specific native
-and pip upgrade instructions. Its existing version/release-note/command state
-is unchanged; the new anchor has no state writes. Existence: upgradeGuide maps
-to the update-panel browser contract. Capability: native installations have an
-upgrade path in addition to pipx. Shared-state: no new store or writer.
+Native update audit for row 97:
+
+- **Existence.** `useEvents` reads `/api/update` and updates `uiStore.updateInfo`
+  on load and `update_available`. The header badge, upgrade guide, release
+  notes, and modal dismissal use the existing bindings. The panel adds a
+  conditional command based on `managed`.
+- **Capability.** The panel shows a runnable command for managed native
+  installs and the migration guide for other standalone installs. Embedded
+  workbenches defer to the host's updater.
+- **Shared-state.** The header reads `updateInfo.available` and passes the same
+  response to the panel. The managed and unmanaged cases exercise that flow
+  without adding a writer or storage key.
 
 
 ### 2026-11-04 hosted/local integration audits

@@ -36,6 +36,8 @@ pub struct WebState {
     pub port: u16,
     pub shutdown: quarry_core::CancellationToken,
     pub(crate) native: Option<Arc<NativeWorkbench>>,
+    pub(crate) standalone_updates: bool,
+    pub(crate) managed_install: bool,
 }
 trait FailureResponse {
     fn into_response(self) -> Response;
@@ -279,7 +281,7 @@ fn events(state: WebState) -> Response {
               }
               if tokio::time::Instant::now()>=next_update {
                   next_update=tokio::time::Instant::now()+Duration::from_secs(1800);
-                  if let Ok(info)=update_info(&state.host).await && info["available"]==true && info["latest"].as_str()!=announced.as_deref() {
+                  if let Ok(info)=update_info(&state).await && info["available"]==true && info["latest"].as_str()!=announced.as_deref() {
                       announced=info["latest"].as_str().map(String::from);
                       if tx.send(json!({"type":"update_available"})).await.is_err(){break;}
                   }
@@ -398,7 +400,7 @@ async fn get(state: &WebState, path: &str, q: &BTreeMap<String, String>) -> Resu
             .await
         }
         "/api/keepalive" => crate::keepalive(host, None).await,
-        "/api/update" => update_info(host).await,
+        "/api/update" => update_info(state).await,
         "/api/changelog" => Ok(changelog()),
         "/api/assistant/config" => Ok(state.assistant.config().status()),
         "/api/assistant/preferences" => Ok(state.assistant.config().preferences()?),
@@ -416,15 +418,21 @@ async fn get(state: &WebState, path: &str, q: &BTreeMap<String, String>) -> Resu
         }),
     }
 }
-async fn update_info(host: &Host) -> Result<Value> {
-    if std::env::var("QUARRY_UPDATE_CHECK").as_deref() == Ok("0") {
+async fn update_info(state: &WebState) -> Result<Value> {
+    if !state.standalone_updates || std::env::var("QUARRY_UPDATE_CHECK").as_deref() == Ok("0") {
         return Ok(json!({"current":env!("CARGO_PKG_VERSION"),"latest":null,"available":false}));
     }
+    let mut value = standalone_update_info(&state.host).await;
+    value["managed"] = json!(state.managed_install);
+    Ok(value)
+}
+
+async fn standalone_update_info(host: &Host) -> Value {
     if let Some(value) = host
         .cache
         .get("release-update", env!("CARGO_PKG_VERSION"), Some(1800))
     {
-        return Ok(value);
+        return value;
     }
     let result = reqwest::Client::new()
         .get("https://api.github.com/repos/yiminspace/quarry/releases/latest")
@@ -443,7 +451,7 @@ async fn update_info(host: &Host) -> Result<Value> {
     let value = json!({"current":env!("CARGO_PKG_VERSION"),"available":latest.as_ref().is_some_and(|v|version_gt(v,env!("CARGO_PKG_VERSION"))),"latest":latest});
     host.cache
         .put("release-update", env!("CARGO_PKG_VERSION"), &value);
-    Ok(value)
+    value
 }
 async fn post(state: &WebState, path: &str, body: Value) -> Result<Value> {
     let host = &state.host;
@@ -846,8 +854,24 @@ mod native_http_tests {
                 port: 8765,
                 shutdown: quarry_core::CancellationToken::new(),
                 native: None,
+                standalone_updates: true,
+                managed_install: false,
             },
         )
+    }
+    #[tokio::test]
+    async fn embedded_workbench_hides_standalone_updates() {
+        let (_dir, mut state) = fixture();
+        state.standalone_updates = false;
+        state.host.cache.put(
+            "release-update",
+            env!("CARGO_PKG_VERSION"),
+            &json!({"current":env!("CARGO_PKG_VERSION"),"latest":"99.0.0","available":true}),
+        );
+        let (status, info) = send(&state, "/api/update", None, "localhost:8765", None).await;
+        assert_eq!(status, 200);
+        assert_eq!(info["available"], false);
+        assert_eq!(info["latest"], Value::Null);
     }
     #[test]
     fn released_notes_parse_both_formats_and_fold_wrapped_bullets() {

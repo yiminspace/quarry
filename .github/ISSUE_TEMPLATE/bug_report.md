@@ -15,7 +15,7 @@ labels: bug
 ```
 
 **Environment**
-- Quarry version (`qy --version` or `pip show quarry-db`):
+- Quarry version (`qy --version`):
 - Engine (postgres/mysql/redis) + server version:
-- OS / Python version:
+- OS version and architecture:
 - Exit code, if using the CLI:

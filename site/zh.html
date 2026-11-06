@@ -226,7 +226,7 @@
       <p class="sub">人、脚本和 agent 共用一个原生数据库内核。本机使用 CLI、GUI 和 MCP，直接嵌入 Rust 类库，或把带 IAM 授权的工作台集成到你的平台。</p>
       <div class="cta-row">
         <div class="install">
-          <span class="dollar">$</span><span id="pipcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
+          <span class="dollar">$</span><span id="installcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
           <button onclick="navigator.clipboard.writeText('curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh');this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)" title="复制">⧉</button>
         </div>
         <p>2.0 · Rust · <a href="https://github.com/yiminspace/quarry/releases">原生安装包与校验和</a> · <a href="https://github.com/yiminspace/quarry/blob/main/docs/install.md">安装 / 升级 / Python 归档</a></p>
@@ -409,7 +409,7 @@
   <div class="wrap">
     <div class="eyebrow">引擎与体积</div>
     <h2>近乎零依赖</h2>
-    <p class="lede">Rust 单二进制，GUI 与数据库驱动内置。提供 macOS/Linux 的 arm64 与 x86_64 安装包，也可通过 pip/pipx 安装相同的原生程序。SSH、Docker 和 schema sync 按需使用系统工具。</p>
+    <p class="lede">Rust 单二进制，GUI 与数据库驱动内置。提供 macOS/Linux 的 arm64 与 x86_64 安装包。用安装脚本安装后，可运行 <code>qy update</code> 升级。SSH、Docker 和 schema sync 按需使用系统工具。</p>
     <div class="engines">
       <span class="engine"><b>PostgreSQL</b> · 原生 SQLx</span>
       <span class="engine"><b>MySQL</b> · 原生 SQLx</span>
@@ -442,7 +442,7 @@
       <div class="rm"><b>结果契约列类型</b> 覆盖全部引擎</div>
       <div class="rm"><b>跨环境 diff</b> 对比环境间的 schema 与数据</div>
       <div class="rm"><b>写操作审计日志</b> 谁在哪跑了什么、什么时候</div>
-      <div class="rm"><b>2.0 已提供</b> 原生二进制与平台 wheel</div>
+      <div class="rm"><b>Quarry 2</b> 原生二进制与内嵌 GUI</div>
       <div class="rm"><b>共享 SQL / 跨设备同步</b> 托管集成暂未提供</div>
     </div>
     <div class="cta-row" style="margin-top:40px">

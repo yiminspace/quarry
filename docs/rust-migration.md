@@ -128,7 +128,7 @@ CLI/MCP/HTTP 使用同一服务 facade；UI 只调整适配层。browser/process
 
 ## 发布策略
 
-现有 main semantic-release 可触发 Python tag/PyPI/MCP 发布。Rust 迁移在隔离分支/worktree推进；在合并实现前调整发布链，Rust 候选使用明确的原生预发布渠道。完成 M4 后再更新安装、升级、MCP Registry 和 PyPI 收尾说明，不默认维护永久双实现或 Python facade。
+迁移前，main 的 semantic-release 可触发 Python tag/PyPI/MCP 发布。Rust 迁移在隔离分支/worktree推进；在合并实现前调整发布链，Rust 候选使用明确的原生预发布渠道。完成 M4 后再更新安装、升级、MCP Registry 和 PyPI 收尾说明，不默认维护永久双实现或 Python facade。
 
 本规格本身不暂停/更改线上发布配置，不替换当前 qy 安装，不操作业务数据库或本机数据卷。
 

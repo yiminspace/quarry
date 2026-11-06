@@ -61,11 +61,10 @@ Python source is a development/test baseline only and is not shipped as runtime.
 
 ### Frontend dev loop
 
-`web/` is a standalone npm project: `npm install && npm run dev` for a hot-reload
-dev server, `npm run build` to produce `src/quarry/web_dist/` (what ships in the
-wheel — end users still `pip install` with zero runtime dependencies; Node is
-dev/CI-only). `npm run lint` runs eslint. CI builds `web/` before running the
-Python test suite so `/quarry` assets exist for the browser layer.
+Run `npm install && npm run dev` inside `web/` for a hot-reload dev server.
+`npm run build` writes `src/quarry/web_dist/` for the native executables to
+embed. `npm run lint` runs eslint. CI builds the frontend and native server before
+running the browser tests.
 
 **The browser suite tests the BUILT bundle, not `web/src`** — after changing
 anything under `web/src`, run `cd web && npm run build` before `pytest`, or you
@@ -81,9 +80,9 @@ will be testing the previous build.
 ## Releases
 
 `main` owns Rust 2.x. `archive/python-1.x` is locked at the last Python release.
-Versions must agree: Cargo SemVer `2.0.0-rc.N`, PyPI PEP 440 `2.0.0rcN`, MCP
-server SemVer plus its nested PyPI package version. Run scripts/validate_release.py.
-Tag releases explicitly; never publish a stable tag until the rc platform-wheel,
-native archive, fresh-install and Python-upgrade gates pass. Never bundle local
-configuration, tokens, workspaces or verification artifacts. CI uses disposable
-containers, never the user's Local data volumes.
+Use an explicit tag matching the Cargo workspace version. Run
+`scripts/validate_release.py` before building or publishing. Publish a stable tag
+only after the release candidate passes native archive, fresh-install and
+existing workspace checks. Publish native archives and checksums on GitHub.
+Never bundle local configuration, tokens, workspaces or verification artifacts.
+Use disposable containers for CI.
