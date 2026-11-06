@@ -152,6 +152,25 @@ fn version_response(address: SocketAddr) -> Option<()> {
     (response.starts_with("HTTP/1.1 200 OK") && response.contains("Quarry")).then_some(())
 }
 
+fn read_http_headers(stream: &mut TcpStream, timeout: Duration) -> Option<()> {
+    let deadline = Instant::now() + timeout;
+    let mut request = [0; 1024];
+    let mut length = 0;
+    while length < request.len() {
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        stream.set_read_timeout(Some(remaining)).ok()?;
+        let read = stream.read(&mut request[length..]).ok()?;
+        if read == 0 {
+            return None;
+        }
+        length += read;
+        if request[..length].windows(4).any(|part| part == b"\r\n\r\n") {
+            return Some(());
+        }
+    }
+    None
+}
+
 fn stop_gui(root: &Path, config: &str, workspace: Option<&str>, host: &str, port: u16) -> String {
     let output = qy(root, config, workspace)
         .args(["gui", "stop", "--host", host, "--port"])
@@ -260,20 +279,23 @@ fn native_gui_keeps_foreign_and_different_workbenches_alive() {
         );
         while shutdown.try_recv() == Err(mpsc::TryRecvError::Empty) {
             if let Ok((mut stream, _)) = foreign.accept() {
-                let timeout = Some(Duration::from_millis(200));
-                stream.set_read_timeout(timeout).unwrap();
-                stream.set_write_timeout(timeout).unwrap();
-                let _ = stream.read(&mut [0; 1024]);
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let timeout = Duration::from_millis(200);
+                stream.set_nonblocking(false).unwrap();
+                stream.set_write_timeout(Some(timeout)).unwrap();
+                if read_http_headers(&mut stream, timeout).is_some() {
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
             }
             thread::sleep(Duration::from_millis(5));
         }
     });
-    assert!(version_response(occupied).is_some());
+    wait_for("the foreign listener to serve HTTP", || {
+        version_response(occupied)
+    });
 
     let mut original = GuiProcess::start(
         root,
@@ -321,7 +343,9 @@ fn native_gui_keeps_foreign_and_different_workbenches_alive() {
         stop_gui(root, "other.toml", None, "127.0.0.1", occupied.port())
             .contains("No matching Quarry GUI")
     );
-    assert!(version_response(occupied).is_some());
+    wait_for("the foreign listener to remain available", || {
+        version_response(occupied)
+    });
     drop(stop);
     foreign.join().unwrap();
 
