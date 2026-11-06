@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — 为 AI 时代而生的数据库工作台</title>
-<meta name="description" content="Rust 原生 CLI、GUI、MCP 与类库。可以本机独立使用、嵌入客户端，或用自己的 IAM 托管工作台。">
+<meta name="description" content="提供 Rust 原生 CLI、GUI、MCP 与类库的数据库工作台。在同一目录查看本地工作区和已注册的云端连接，也可接入自己的 IAM 托管。">
 <meta property="og:title" content="Quarry — 为 AI 时代而生的数据库工作台">
-<meta property="og:description" content="Rust 原生 CLI、GUI、MCP 与类库；独立使用或集成 IAM 托管工作台，个人记录保存在自己的电脑。">
+<meta property="og:description" content="Rust 原生 CLI、GUI、MCP 与类库。在同一目录使用本地工作区和已获授权的云端连接，也可接入自己的 IAM 托管。">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://yiminspace.github.io/quarry/zh.html">
 <meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
@@ -223,7 +223,7 @@
     <div>
       <span class="kicker">开源 · MIT · Rust 原生内核</span>
       <h1>为 <span class="c">AI 时代</span>而生的<br>数据库工作台</h1>
-      <p class="sub">人、脚本和 agent 共用一个原生数据库内核。本机使用 CLI、GUI 和 MCP，直接嵌入 Rust 类库，或把带 IAM 授权的工作台集成到你的平台。</p>
+      <p class="sub">人、脚本和 agent 共用一个原生数据库内核。用 CLI 或 GUI 在同一目录使用本地工作区和已注册的云端连接。也可以嵌入 Rust 类库，或用自己的 IAM 托管工作台。</p>
       <div class="cta-row">
         <div class="install">
           <span class="dollar">$</span><span id="installcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
@@ -276,7 +276,7 @@
   <div class="wrap">
     <div class="eyebrow">给人的那张脸</div>
     <h2>也是一个真正好用的工作台</h2>
-    <p class="lede"><code>qy gui</code> 打开内置的网页工作台：分组连接与结构浏览、多标签 SQL 编辑器、补全与 EXPLAIN、历史搜索、类型着色网格、JSON 查看、Redis 命名空间树，以及 CSV/JSON 导出。支持亮暗主题、中英双语。独立模式通过浏览器存储保留草稿和有大小限制的结果快照；大结果仅留在当前会话。</p>
+    <p class="lede"><code>qy gui</code> 打开内置网页工作台，支持分组连接、结构浏览、多标签 SQL 编辑、补全、EXPLAIN 和历史搜索。可以查看 JSON 与 Redis 键、导出 CSV 或 JSON，并切换亮暗主题和中英文。纯本地模式的草稿和有大小限制的结果快照保存在浏览器。</p>
     <div class="grid3">
       <div class="card">
         <h3><span class="ico">✦</span> 编辑器旁的 SQL 助手</h3>
@@ -338,7 +338,7 @@
       </div>
       <div class="card">
         <h3><span class="ico">⇄</span> 在本机同时使用本地库和云端库</h3>
-        <p>嵌入 Quarry 的客户端可以在 localhost 提供工作台。本机连接在电脑上执行，已授权的云端请求转发到服务端。草稿和执行历史保存在本机 SQLite，例如 YLab 的 <code>ylab db connect</code>。</p>
+        <p>使用支持融合连接的版本，先运行 <code>ylab auth login</code> 登录，再运行 <code>ylab db gui</code> 注册有权限的连接。之后可在 <code>qy gui</code> 和 CLI 的目录里同时查看这些连接和 Quarry 工作区。本地查询在电脑上执行，云端查询经 YLab 转发。两种工作台使用同一配置时共用本机 SQLite 记录。云端草稿和历史按登录账号隔离，云端查询结果留在当前会话。</p>
       </div>
       <div class="card">
         <h3><span class="ico">▤</span> 按版本部署镜像</h3>
@@ -348,6 +348,7 @@
     <p class="lede" style="margin-top:26px">远程查询会把 SQL 发送到平台；助手会把所需上下文发送到配置的模型网关，日志保留遵循平台策略。托管共享 SQL、云端个人历史与跨设备同步暂未实现。</p>
     <div class="cta-row" style="margin-top:26px">
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.zh-CN.md">查看托管部署指南</a>
+      <a href="https://github.com/yiminspace/quarry/blob/main/docs/ylab-integration.md">配置本地与云端连接 →</a>
       <span class="lede">一个镜像、一个配置文件；支持独立登录或已有平台账号。</span>
     </div>
   </div>
@@ -428,7 +429,7 @@
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> 自己选择运行位置</h3>
-        <p>独立 Quarry 连接你配置的数据库，GUI 默认绑定 localhost。托管模式运行在你自己的平台，Quarry 没有中心云账号。模型请求发往你配置的服务。GitHub Release 更新检查可用 <code>QUARRY_UPDATE_CHECK=0</code> 关闭。</p>
+        <p>Quarry 的本机 GUI 绑定 localhost。本地工作区可离线使用，已注册的云端连接沿用你的平台账号授权。模型请求发往你配置的服务。可用 <code>QUARRY_UPDATE_CHECK=0</code> 关闭 GitHub Release 更新检查。</p>
       </div>
     </div>
   </div>

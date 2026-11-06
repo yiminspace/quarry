@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { t } from "./i18n";
-import { displayConnectionEnvironment } from "./store/connStore";
+import { cloudRouteVisible, displayConnectionEnvironment, useConnStore } from "./store/connStore";
 import { sameTabGroup, tabTitle, useTabsStore, type Tab } from "./store/tabsStore";
 
 export type TabBarProps = {
@@ -17,7 +17,9 @@ export type TabBarProps = {
  * dashed `#tabAdd` button; double-click renames in place, drag reorders,
  * middle-click closes. */
 export default function TabBar({ onSwitch, onClose, isProduction = false }: TabBarProps) {
-  const allTabs = useTabsStore((s) => s.tabs);
+  const storedTabs = useTabsStore((s) => s.tabs);
+  const groups = useConnStore((s) => s.groups);
+  const allTabs = storedTabs.filter((tab) => cloudRouteVisible(groups, tab.env));
   const activeId = useTabsStore((s) => s.activeId);
   const active = allTabs.find((tab) => tab.id === activeId);
   const tabs = active ? allTabs.filter((tab) => sameTabGroup(tab, active)) : [];

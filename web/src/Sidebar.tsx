@@ -387,7 +387,7 @@ export default function Sidebar(props: SidebarProps) {
         return names.filter(name => matches(db) || matches(name)).map(name => ({ name, env: env.env, redis: data.engine === 'redis' }));
       });
       return { db, item, queries, objects };
-    }).filter(result => matches(result.db) || result.queries.length || result.objects.length) };
+    }).filter(result => matches(result.item?.label ?? result.db) || result.queries.length || result.objects.length) };
   }).filter(group => group.results.length);
   const onOpenSaved = props.onOpenSaved;
   const loaded = useConnStore((s) => s.loaded);
@@ -426,7 +426,7 @@ export default function Sidebar(props: SidebarProps) {
         {searchGroups.map(group => <div key={groupKey(group.ws, group.group)}>
           <div className="vg-grp">{group.group || t("other")}</div>
           {group.results.map(result => <div key={result.db}>
-            <button className="search-db" onClick={() => { if (result.item) onSelect(result.db, null); }}>{result.db}</button>
+            <button className="search-db" onClick={() => { if (result.item) onSelect(result.db, null); }}>{result.item?.label ?? result.db}</button>
             {result.objects.map(object => <button className="search-object" key={object.env + ':' + object.name}
               onClick={() => props.onOpenSearchObject(result.db, object.env, object.name, object.redis)}>
               <i className={'ti ' + (object.redis ? 'ti-key' : 'ti-table')} /> {object.name}
@@ -457,7 +457,7 @@ export default function Sidebar(props: SidebarProps) {
               onClick={() => toggleCollapsedGroup(gkey)}
             >
               <i className={`ti ${isCollapsed ? "ti-chevron-right" : "ti-chevron-down"}`} />{" "}
-              {g.group || t("other")}
+              {g.label ?? (g.group || t("other"))}
               {orig && (
                 <span className="vg-ws-note wsorig" title={g.ws ?? undefined}>
                   {orig}
@@ -478,7 +478,7 @@ export default function Sidebar(props: SidebarProps) {
                       onClick={() => onSelect(item.db, null)}
                     >
                       <span className={dotClass(item.db)} />
-                      <span className="db-name" title={item.db}>{PLATFORM_MODE && g.group && item.db.startsWith(`${g.group}/`) ? item.db.slice(g.group.length + 1) : item.db}</span>
+                      <span className="db-name" title={item.label ?? item.db}>{item.label ?? (PLATFORM_MODE && g.group && item.db.startsWith(`${g.group}/`) ? item.db.slice(g.group.length + 1) : item.db)}</span>
                       <small className="vg-engine-tag">{item.engine}</small>
                       {isCurrent && <button className="vg-iconbtn treload" title={t("refresh_list")}
                         aria-label={t("refresh_list")} onClick={(event) => {

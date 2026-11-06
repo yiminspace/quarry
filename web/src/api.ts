@@ -1,4 +1,6 @@
 import { PLATFORM_MODE, platformSnapshot, platformDb, platformEnv, platformJSON, resourceFor, resourceLabel, platformFetch } from "./platform";
+import { connectionTargetId } from "./store/connStore";
+export type CloudStatus = "connected" | "unavailable" | "signed_out" | "forbidden" | "restart_required";
 export type ConnEnv = {
   env: string | null;
   key: string;
@@ -11,6 +13,10 @@ export type ConnEnv = {
   display_env?: string | null;
   label?: string;
   resourceId?: string;
+  targetId?: string;
+  providerLabel?: string;
+  sourceStatus?: CloudStatus;
+  workspaceLabel?: string;
   placement?: "remote" | "local";
 };
 
@@ -18,6 +24,7 @@ export type VersionInfo = { name: string; version: string };
 
 export type ConnItem = {
   db: string;
+  label?: string;
   is_env_set: boolean;
   engine: string;
   envs: ConnEnv[];
@@ -25,6 +32,7 @@ export type ConnItem = {
 
 export type ConnGroup = {
   group: string | null;
+  label?: string;
   ws: string | null;
   items: ConnItem[];
 };
@@ -33,7 +41,7 @@ export type ConnectionsResponse = {
   groups: ConnGroup[];
   workspace: string;
   workspaces: string[];
-  cloudStatus?: "connected" | "unavailable" | "signed_out" | "forbidden";
+  cloudStatus?: CloudStatus;
 };
 
 export type RedisKeyMeta = {
@@ -96,6 +104,7 @@ export type QueryRequest = {
   maxRows: number;
   offset?: number;
   requestId?: string;
+  target?: string;
 };
 
 export type ConnTunnel = { host: string; user: string | null; port: number; key: string | null };
@@ -167,7 +176,11 @@ export type ChangelogVersion = { version: string; date: string; entries: string[
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   if (PLATFORM_MODE) return platformGet<T>(path);
-  const res = await fetch(path, { signal });
+  const url = new URL(path, location.origin);
+  const db = url.searchParams.get("db");
+  const target = db && connectionTargetId(db, url.searchParams.get("env") || null);
+  if (target?.startsWith("local:")) url.searchParams.set("target", target);
+  const res = await fetch(url.pathname + url.search, { signal });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || `${path} -> ${res.status}`);
@@ -223,7 +236,8 @@ export function fetchColumns(
 
 const cancelledPlatformRequests = new Set<string>();
 export async function runQuery(req: QueryRequest): Promise<QueryResult> {
-  const request = PLATFORM_MODE ? { ...req, requestId: req.requestId || crypto.randomUUID() } : req;
+  const request = PLATFORM_MODE ? { ...req, requestId: req.requestId || crypto.randomUUID() }
+    : { ...req, target: req.target ?? connectionTargetId(req.db, req.env) };
   const result = await postJSON<QueryResult>("/api/query", request);
   if (PLATFORM_MODE && request.requestId && cancelledPlatformRequests.delete(request.requestId)) throw new Error("查询已取消。");
   return result;
@@ -264,8 +278,10 @@ export function runSaved(
   maxRows: number,
   queryId?: string,
   requestId?: string,
+  target?: string,
+  db?: string,
 ): Promise<QueryResult & { db: string; env: string | null }> {
-  return postJSON("/api/run", { name, env, params, maxRows, queryId, requestId });
+  return postJSON("/api/run", { name, env, params, maxRows, queryId, requestId, target, db });
 }
 
 export function fetchConnInfo(
@@ -319,7 +335,7 @@ export function fetchChangelog(): Promise<ChangelogVersion[]> {
 }
 
 export function fetchRecordLink(db: string, env: string | null, sql: string, row: Record<string, unknown>): Promise<{ sql?: string; table?: string; reason?: string }> {
-  return postJSON("/api/record-link", { db, env, sql, row });
+  return postJSON("/api/record-link", { db, env, sql, row, target: connectionTargetId(db, env) });
 }
 
 /** Adapt the standalone protocol to explicit, authorized platform targets. */

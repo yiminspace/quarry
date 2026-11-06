@@ -234,10 +234,10 @@ pub(crate) async fn stop(host: &Host, bind: &str, port: u16) -> Result<Option<So
     }
 }
 
-pub(crate) async fn standalone(host: &Host, bind: &str, port: u16) -> Result<Launch> {
+pub(crate) async fn standalone(host: &Host, bind: &str, port: u16, reuse: bool) -> Result<Launch> {
     let addresses = loopback_addresses(bind).await?;
     let end = last_port(port);
-    let client = (port != 0).then(|| local_client().ok()).flatten();
+    let client = (reuse && port != 0).then(|| local_client().ok()).flatten();
     if let Some(client) = &client
         && let Some((address, _)) = find_instance(client, host, &addresses, port).await
     {

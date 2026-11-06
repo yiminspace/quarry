@@ -3,7 +3,7 @@ import { fetchConnInfo, fetchHealth, localSync, localUp, type ConnInfo } from ".
 import { copy } from "./clip";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
-import { displayConnectionEnvironment, useConnStore } from "./store/connStore";
+import { displayConnectionEnvironment, localTargetRoute, useConnStore } from "./store/connStore";
 import { toast } from "./store/toastStore";
 
 type Props = {
@@ -206,7 +206,7 @@ export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp,
                   </>
                 )}
               </div>
-              {!cloud && !hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
+              {!cloud && !localTargetRoute(env) && !hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
@@ -219,7 +219,7 @@ export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp,
                   </button>
                 </div>
               )}
-              {!cloud && hasLocal && isLocal && canSync && info.engine === "postgres" && (
+              {!cloud && !localTargetRoute(env) && hasLocal && isLocal && canSync && info.engine === "postgres" && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"

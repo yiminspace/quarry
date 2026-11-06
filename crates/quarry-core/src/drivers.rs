@@ -671,7 +671,7 @@ async fn mysql(
     Ok(())
 }
 
-pub(crate) fn sqlite_path(conn: &ConnectionSpec) -> Result<std::path::PathBuf> {
+fn sqlite_location(conn: &ConnectionSpec) -> Result<std::path::PathBuf> {
     if conn.network_endpoint.is_some() {
         return Err(Error::invalid("SQLite cannot use a network endpoint"));
     }
@@ -710,11 +710,15 @@ pub(crate) fn sqlite_path(conn: &ConnectionSpec) -> Result<std::path::PathBuf> {
         return Err(Error::invalid("Invalid SQLite path"));
     }
     let path = std::path::PathBuf::from(raw);
-    let path = if path.is_absolute() {
+    Ok(if path.is_absolute() {
         path
     } else {
         conn.workspace.join(path)
-    };
+    })
+}
+
+pub(crate) fn sqlite_path(conn: &ConnectionSpec) -> Result<std::path::PathBuf> {
+    let path = sqlite_location(conn)?;
     if !path.is_file() {
         return Err(Error::new(
             ErrorCode::Connection,
@@ -722,6 +726,59 @@ pub(crate) fn sqlite_path(conn: &ConnectionSpec) -> Result<std::path::PathBuf> {
         ));
     }
     Ok(path)
+}
+
+pub(crate) fn transport_identity(conn: &ConnectionSpec) -> Option<JsonValue> {
+    let path_bytes = |path: &std::path::PathBuf| path.as_os_str().as_encoded_bytes().to_vec();
+    let location = match conn.engine {
+        Engine::Postgres => {
+            let options = sqlx::postgres::PgConnectOptions::from_str(&conn.url).ok()?;
+            let database = options
+                .get_database()
+                .unwrap_or_else(|| options.get_username());
+            json!([
+                options.get_host().to_ascii_lowercase(),
+                options.get_port(),
+                database,
+                options.get_socket().map(path_bytes)
+            ])
+        }
+        Engine::MySql => {
+            let options = sqlx::mysql::MySqlConnectOptions::from_str(&conn.url).ok()?;
+            json!([
+                options.get_host().to_ascii_lowercase(),
+                options.get_port(),
+                options.get_database(),
+                options.get_socket().map(path_bytes)
+            ])
+        }
+        Engine::Sqlite => {
+            let path = sqlite_location(conn).ok()?;
+            json!(path_bytes(&path.canonicalize().unwrap_or(path)))
+        }
+        Engine::Redis => {
+            let client = redis::Client::open(conn.url.as_str()).ok()?;
+            let info = client.get_connection_info();
+            let address = match &info.addr {
+                redis::ConnectionAddr::Tcp(host, port)
+                | redis::ConnectionAddr::TcpTls { host, port, .. } => {
+                    json!([host.to_ascii_lowercase(), port])
+                }
+                redis::ConnectionAddr::Unix(path) => json!(path_bytes(path)),
+            };
+            json!([address, info.redis.db])
+        }
+        Engine::Neptune => {
+            let url = url::Url::parse(&conn.url).ok()?;
+            json!([
+                url.scheme(),
+                url.host_str(),
+                url.port_or_known_default(),
+                url.path()
+            ])
+        }
+    };
+    Some(json!([conn.engine, location]))
 }
 async fn sqlite(
     conn: ConnectionSpec,

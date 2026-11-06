@@ -10,6 +10,8 @@ export type CurrentConn = {
   isRedis: boolean;
   production?: boolean;
   source?: ConnEnv["source"];
+  targetId?: string;
+  sourceStatus?: ConnEnv["sourceStatus"];
 } | null;
 
 export type HealthState = { ok: boolean; error?: string };
@@ -84,24 +86,59 @@ export const useConnStore = create<ConnState>((set) => ({
 }));
 
 export function connectionEnvLabel(env: ConnEnv): string {
+  if (env.workspaceLabel) return `${env.display_env || "default"} · ${env.workspaceLabel}`;
   return env.label || (env.source === "cloud" ? env.display_env || t("platform_default") : env.env || "default");
+}
+
+export function localTargetRoute(env: string | null | undefined): boolean {
+  return env?.startsWith("local-target:local:") === true;
+}
+
+export function needsLocalTargetChoice(item: ConnItem): boolean {
+  const labels = item.envs.filter((env) => localTargetRoute(env.env)).map((env) => env.display_env ?? null);
+  return new Set(labels).size < labels.length;
+}
+
+function matchingEnvironments(db: string | null, env: string | null): ConnEnv[] {
+  if (!db) return [];
+  return useConnStore.getState().groups.flatMap((group) => group.items)
+    .filter((item) => item.db === db).flatMap((item) => item.envs.filter((entry) => entry.env === env));
+}
+
+export function connectionTargetId(db: string | null, env: string | null): string | undefined {
+  const matches = matchingEnvironments(db, env);
+  return matches.length === 1 ? matches[0].targetId : undefined;
+}
+
+export function ambiguousConnection(db: string, env: string | null): boolean {
+  return matchingEnvironments(db, env).length > 1;
+}
+
+export function federatedRoute(env: string | null | undefined): boolean {
+  return env?.startsWith("cloud:f:") === true;
+}
+
+export function cloudRouteVisible(groups: ConnGroup[], env: string | null | undefined): boolean {
+  return !federatedRoute(env) || groups.some((group) => group.items.some((item) =>
+    item.envs.some((entry) => entry.env === env && entry.source === "cloud")));
 }
 
 export function defaultEnvFor(item: ConnItem): string | null {
   const configured = item.envs.filter((entry) => entry.source !== "cloud");
   const candidates = configured.length ? configured : item.envs;
   const preferred = candidates.find((entry) =>
-    (entry.source === "cloud" ? entry.display_env : entry.env) === "dev");
+    (entry.source === "cloud" || entry.workspaceLabel ? entry.display_env : entry.env) === "dev");
   return (preferred ?? candidates[0])?.env ?? null;
 }
 
 /** Keep route IDs in tab/request state and show the environment name to users. */
 export function displayConnectionEnvironment(db: string, env: string | null): string {
-  if (env?.startsWith("cloud:")) {
+  if (env?.startsWith("cloud:") || localTargetRoute(env)) {
     const state = useConnStore.getState();
     const entry = state.groups.flatMap((group) => group.items)
       .find((item) => item.db === db)?.envs.find((entry) => entry.env === env);
-    if (entry?.source === "cloud") return `${connectionEnvLabel(entry)} · ${t("cloud_source")}`;
+    if (entry?.source === "cloud") return `${connectionEnvLabel(entry)} · ${entry.providerLabel ?? t("cloud_source")}`;
+    if (entry?.workspaceLabel) return connectionEnvLabel(entry);
     if (!entry && state.cloudStatus) return t("cloud_target_unavailable");
   }
   return displayEnvironment(db, env);

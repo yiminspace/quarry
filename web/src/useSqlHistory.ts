@@ -1,7 +1,8 @@
 import { personalStorage } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cloudRouteVisible, connectionTargetId, useConnStore } from "./store/connStore";
 
-export type HistEntry = { sql: string; db: string | null; env: string | null; ts: number };
+export type HistEntry = { sql: string; db: string | null; env: string | null; targetId?: string; ts: number };
 
 // The legacy GUI's own history key and entry format ({sql,db,env,ts}). Keep
 // enough entries for a realistically large unbounded tab group to be closed
@@ -17,7 +18,7 @@ function normalizeEntry(h: unknown): HistEntry | null {
   if (!h || typeof h !== "object") return null;
   const o = h as Partial<HistEntry>;
   if (typeof o.sql !== "string" || !o.sql) return null;
-  return { sql: o.sql, db: o.db ?? null, env: o.env ?? null, ts: o.ts ?? 0 };
+  return { sql: o.sql, db: o.db ?? null, env: o.env ?? null, targetId: o.targetId ?? undefined, ts: o.ts ?? 0 };
 }
 
 function readHistory(): HistEntry[] {
@@ -39,8 +40,9 @@ function persist(entries: HistEntry[]): void {
 }
 
 function unshift(prev: HistEntry[], sql: string, db: string | null, env: string | null): HistEntry[] {
-  if (prev[0]?.sql === sql) return prev;
-  const next = [{ sql, db, env, ts: Date.now() }, ...prev].slice(0, MAX_ENTRIES);
+  const targetId = connectionTargetId(db, env);
+  if (prev[0]?.sql === sql && prev[0].db === db && prev[0].env === env && prev[0].targetId === targetId) return prev;
+  const next = [{ sql, db, env, targetId, ts: Date.now() }, ...prev].slice(0, MAX_ENTRIES);
   persist(next);
   return next;
 }
@@ -64,6 +66,7 @@ function unshift(prev: HistEntry[], sql: string, db: string | null, env: string 
  * become silently unreachable the moment `hiRef` resets.
  */
 export function useSqlHistory() {
+  const groups = useConnStore((state) => state.groups);
   const [browserHistory, setHistory] = useState<HistEntry[]>(() => readHistory());
   const [executionHistory, setExecutionHistory] = useState<HistEntry[]>([]);
   useEffect(() => {
@@ -85,15 +88,16 @@ export function useSqlHistory() {
     };
   }, []);
   const history = useMemo(() => {
-    if (!executionHistory.length) return browserHistory;
+    if (!executionHistory.length) return browserHistory.filter((entry) => cloudRouteVisible(groups, entry.env));
     const seen = new Set<string>();
     return [...browserHistory, ...executionHistory].sort((a, b) => b.ts - a.ts).filter((entry) => {
-      const key = JSON.stringify([entry.db, entry.env, entry.sql]);
+      if (!cloudRouteVisible(groups, entry.env)) return false;
+      const key = JSON.stringify([entry.targetId ?? [entry.db, entry.env], entry.sql]);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     }).slice(0, MAX_ENTRIES);
-  }, [browserHistory, executionHistory]);
+  }, [browserHistory, executionHistory, groups]);
   const hiRef = useRef(-1);
   const draftRef = useRef("");
   const draftMetaRef = useRef<{ db: string | null; env: string | null }>({ db: null, env: null });
@@ -140,12 +144,12 @@ export function useSqlHistory() {
       if (hiRef.current <= -1) return null;
       if (hiRef.current === 0) {
         hiRef.current = -1;
-        return draftRef.current;
+        return cloudRouteVisible(groups, draftMetaRef.current.env) ? draftRef.current : null;
       }
       hiRef.current -= 1;
       return history[hiRef.current]?.sql ?? null;
     },
-    [history],
+    [groups, history],
   );
 
   return { history, pushHist, keepDraft, navigateHistory };

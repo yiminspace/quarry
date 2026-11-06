@@ -8,6 +8,7 @@ pre-1.0 history followed the earlier development policy.
 ## [Unreleased]
 
 - Stop a matching standalone workbench gracefully from another terminal with `qy gui stop`.
+- Discover registered cloud databases alongside local connections in `qy connections`. Select a database by its exact ID in CLI commands, or confirm a batch of associations with local connections.
 - Reopen the running standalone Quarry GUI from another terminal when the configuration and workspace selection match. Use a nearby port when the requested port belongs to another application or workbench.
 - Clarify the native, embedded, and hosted workbench options and their update paths on the website and in the hosting guide.
 - Install Quarry from native GitHub releases and update managed installs automatically or with `qy update`. Embedded Quarry follows YLab's release.

@@ -2,6 +2,7 @@ export type QueryLinkPayload = {
   db: string;
   env: string | null;
   sql: string;
+  targetId?: string;
 };
 
 /** Address-bar focus (no `sql`) — restore selection, never auto-run. */
@@ -9,6 +10,7 @@ export type FocusPayload = {
   db: string | null;
   env: string | null;
   table: string | null;
+  targetId?: string;
 };
 
 function normalizeEnv(env: string | null): string | null {
@@ -24,6 +26,8 @@ export function encodeQueryLink(baseHref: string, payload: QueryLinkPayload): st
   params.set("sql", payload.sql);
   if (payload.env) params.set("env", payload.env);
   else params.delete("env");
+  if (payload.targetId) params.set("target", payload.targetId);
+  else params.delete("target");
   url.search = params.toString();
   return url.toString();
 }
@@ -33,25 +37,28 @@ export function decodeQueryLink(search: string): QueryLinkPayload | null {
   const db = params.get("db");
   const sql = params.get("sql");
   if (!db || sql === null) return null;
-  return { db, env: normalizeEnv(params.get("env")), sql };
+  const targetId = params.get("target");
+  return { db, env: normalizeEnv(params.get("env")), sql, ...(targetId ? { targetId } : {}) };
 }
 
 export function encodeFocusSearch(payload: FocusPayload): string {
   const params = new URLSearchParams();
   if (payload.db) params.set("db", payload.db);
   if (payload.env) params.set("env", payload.env);
+  if (payload.targetId) params.set("target", payload.targetId);
   if (payload.table) params.set("table", payload.table);
   const q = params.toString();
   return q ? `?${q}` : "";
 }
 
-export function decodeFocus(search: string): { db: string; env: string | null; table: string | null } | null {
+export function decodeFocus(search: string): (FocusPayload & { db: string }) | null {
   const params = new URLSearchParams(search);
   if (params.has("sql")) return null;
   const db = params.get("db");
   if (!db) return null;
   const table = params.get("table");
-  return { db, env: normalizeEnv(params.get("env")), table: table && table.trim() ? table : null };
+  const targetId = params.get("target");
+  return { db, env: normalizeEnv(params.get("env")), table: table && table.trim() ? table : null, ...(targetId ? { targetId } : {}) };
 }
 
 export function focusTitle(payload: FocusPayload): string {

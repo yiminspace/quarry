@@ -1,5 +1,6 @@
 use crate::{Result, RuntimeError, atomic_write, lock_file};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -219,6 +220,21 @@ fn default_env() -> String {
     "dev".into()
 }
 impl ConnectionRecord {
+    /// Bind a copyable local route to its workspace and parsed database endpoint.
+    pub fn target_id(&self) -> String {
+        let transport = self.spec().ok().and_then(|spec| spec.transport_identity());
+        let identity = serde_json::to_vec(&(
+            self.workspace.as_os_str().as_encoded_bytes(),
+            &self.key,
+            transport,
+            &self.ssh_host,
+            &self.ssh_user,
+            self.ssh_port.unwrap_or(22),
+        ))
+        .expect("serialize local target identity");
+        format!("local:{:x}:{}", Sha256::digest(identity), self.key)
+    }
+
     pub fn display_env(&self) -> Option<&str> {
         self.env_explicit.then_some(self.env.as_str())
     }

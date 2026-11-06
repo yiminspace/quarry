@@ -463,7 +463,7 @@ impl QuarryService {
                     if let Some(envs) = item["envs"].as_array_mut() {
                         for env in envs {
                             if let Some(record) = connections.iter().find(|c| {
-                                env["key"] == c.key && env["env"] == json!(c.display_env())
+                                env["key"] == c.key && env["workspace"] == json!(c.workspace)
                             }) {
                                 let enabled = catalog.config.enabled("proxy", &record.workspace);
                                 env["proxied"] = json!(if record.ssh_host.is_some() {
@@ -638,7 +638,7 @@ fn connection_groups(connections: &[ConnectionRecord]) -> Result<Vec<Value>> {
             let is_env_set = members.len() > 1 || members[0].display_env().is_some_and(|e|!e.is_empty());
             let engine = members[0].spec()?.engine;
             members.sort_by_key(|member| if member.env == "local" { 0 } else { 1 });
-            let envs = members.into_iter().map(|c|Ok(json!({"env":c.display_env(),"key":c.key,"engine":c.spec()?.engine.as_str(),"region":c.extra.get("region").and_then(toml::Value::as_str),"ssh":c.ssh_host.is_some(),"proxied":false,"production":c.production}))).collect::<Result<Vec<_>>>()?;
+            let envs = members.into_iter().map(|c|Ok(json!({"env":c.display_env(),"key":c.key,"workspace":c.workspace,"targetId":c.target_id(),"engine":c.spec()?.engine.as_str(),"region":c.extra.get("region").and_then(toml::Value::as_str),"ssh":c.ssh_host.is_some(),"proxied":false,"production":c.production}))).collect::<Result<Vec<_>>>()?;
             Ok(json!({"db":db,"is_env_set":is_env_set,"engine":engine.as_str(),"envs":envs}))
         }).collect::<Result<Vec<_>>>()?;
         Ok(json!({"group":if group.is_empty(){Value::Null}else{json!(group)},"ws":source,"items":items}))

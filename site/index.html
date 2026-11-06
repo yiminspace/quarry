@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quarry — The database workbench built for the AI era</title>
-<meta name="description" content="Native CLI, GUI, MCP and Rust libraries for safe database work. Run Quarry locally, embed it in a desktop client, or host the workbench with your own IAM.">
+<meta name="description" content="A native database workbench with a CLI, GUI, MCP and Rust libraries. Browse local workspaces and registered cloud connections, or host Quarry with your own IAM.">
 <meta property="og:title" content="Quarry — The database workbench built for the AI era">
-<meta property="og:description" content="Native CLI, GUI, MCP and Rust libraries. Local database work or an IAM-protected hosted workbench, with personal records on your computer.">
+<meta property="og:description" content="Native CLI, GUI, MCP and Rust libraries. Bring local workspaces and authorized cloud connections into the same catalog, or host Quarry with your own IAM.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://yiminspace.github.io/quarry/">
 <meta property="og:image" content="https://yiminspace.github.io/quarry/assets/social-card.png">
@@ -223,7 +223,7 @@
     <div>
       <span class="kicker">Open source · MIT · Native Rust</span>
       <h1>The database workbench<br>built for the <span class="c">AI&nbsp;era</span></h1>
-      <p class="sub">One native database kernel for people, scripts and agents. Use the CLI, GUI or MCP locally, embed the Rust libraries, or bring an IAM-protected workbench into your platform.</p>
+      <p class="sub">One native database kernel for people, scripts and agents. Browse local workspaces and registered cloud connections in one catalog, with CLI and GUI access. Embed the Rust libraries or host the workbench with your own IAM.</p>
       <div class="cta-row">
         <div class="install">
           <span class="dollar">$</span><span id="installcmd">curl -fsSL https://yiminspace.github.io/<wbr>quarry/<wbr>install.sh | sh</span>
@@ -276,7 +276,7 @@
   <div class="wrap">
     <div class="eyebrow">The human face</div>
     <h2>And a real workbench for you</h2>
-    <p class="lede"><code>qy gui</code> opens the bundled web workbench: grouped connections and schema browsing, SQL tabs with completion and EXPLAIN, searchable history, a type-aware grid, JSON inspection, Redis key namespaces, and CSV/JSON export. Light &amp; dark themes, English &amp; 中文. Standalone drafts and bounded result snapshots use browser storage; large results stay in-session.</p>
+    <p class="lede"><code>qy gui</code> opens the bundled web workbench with grouped connections, schema browsing, SQL tabs, completion, EXPLAIN and searchable history. Inspect JSON and Redis keys, export CSV or JSON, and switch between light and dark themes in English or Chinese. In pure local mode, drafts and bounded result snapshots stay in browser storage.</p>
     <div class="grid3">
       <div class="card">
         <h3><span class="ico">✦</span> A SQL assistant beside the editor</h3>
@@ -338,7 +338,7 @@
       </div>
       <div class="card">
         <h3><span class="ico">⇄</span> Combine local and hosted connections</h3>
-        <p>A client that embeds Quarry can serve the workbench on localhost, execute local connections on your computer and forward authorized cloud requests to the server. Drafts and execution history live in local SQLite. YLab's <code>ylab db connect</code> is one example.</p>
+        <p>With federation-enabled builds, sign in with <code>ylab auth login</code> and open <code>ylab db gui</code> to register your authorized catalog. <code>qy gui</code> and the CLI can then browse those connections alongside Quarry workspaces. Local queries run on your computer and cloud queries go through YLab. The two workbench launchers share local SQLite records for the same configuration. Cloud drafts and history are scoped to the signed-in account, and cloud query results stay in the current session.</p>
       </div>
       <div class="card">
         <h3><span class="ico">▤</span> Deploy a versioned image</h3>
@@ -348,6 +348,7 @@
     <p class="lede" style="margin-top:26px">Remote queries send SQL to your host; the assistant sends required context to the configured model gateway. Their retention follows host policy. Hosted shared SQL, cloud personal history and cross-device sync are not included.</p>
     <div class="cta-row" style="margin-top:26px">
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.md">Deploy the hosted workbench</a>
+      <a href="https://github.com/yiminspace/quarry/blob/main/docs/ylab-integration.md">Set up local and cloud connections →</a>
       <span class="lede">One image, one configuration file; built-in or existing-platform sign-in.</span>
     </div>
   </div>
@@ -428,7 +429,7 @@
       </div>
       <div class="card">
         <h3><span class="ico">▣</span> Choose where it runs</h3>
-        <p>Standalone Quarry connects to your configured databases and binds its GUI to localhost by default. Hosting runs under your own platform; Quarry provides no central cloud account. Model requests use your configured provider. Disable GitHub release checks with <code>QUARRY_UPDATE_CHECK=0</code>.</p>
+        <p>Quarry binds the native GUI to localhost. Local workspaces stay available offline, and registered cloud access uses your platform account. Model requests use your configured provider. Disable GitHub release checks with <code>QUARRY_UPDATE_CHECK=0</code>.</p>
       </div>
     </div>
   </div>

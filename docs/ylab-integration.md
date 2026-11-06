@@ -1,39 +1,41 @@
 # YiminLab hosted and local integration
 
 YiminLab deploys the official Quarry image with its existing IAM verification
-and resource ACLs. The same React workbench also ships inside the Rust `ylab`
-binary.
+and resource ACLs. The same React workbench also ships inside the Rust `ylab` binary.
 
 | Entry | Connections | Personal records |
 | --- | --- | --- |
-| YLab `/quarry/` or `ylab db open` | Authorized cloud connections | Drafts and SQL history in account-scoped browser storage |
-| `ylab db connect` | Existing Quarry workspaces plus authorized cloud connections | Workbench state and execution history in local SQLite |
+| YLab Console `/quarry/` | Authorized cloud connections | Account-scoped browser storage |
+| `ylab db gui` and a federated `qy gui` | Quarry workspaces and registered cloud connections | Shared, configuration-scoped SQLite on this computer |
 
 ## Local workbench
 
-`ylab db connect` serves the complete Quarry GUI on loopback. Workspace
-configuration, environment switching, saved queries, tunnels and local database
-tools use the normal Quarry service. Cloud environments have an explicit source
-label. Their resource IDs remain distinct from local environment names.
+Run `ylab auth login`, then load the catalog with `ylab db connections` or
+`ylab db gui`. YLab registers the authorized catalog in the private Quarry
+registry under `~/.config/quarry/federation/`. The snapshot contains resource
+metadata and account scope. `qy connections`, `qy exec` and `qy gui` use the same
+registry when they use the same Quarry configuration. If a pure local Quarry
+window is already open when a source is first registered, run `qy gui` again
+to open the protected workbench.
 
-The native host implements `quarry_cli::http::CloudBackend` and supplies it to
-`quarry_cli::run_gui_from`. The desktop router accepts a short-lived, one-use
-launch code from the URL fragment and exchanges it for a local browser session.
-The fragment is cleared before the exchange. The host's cloud bearer remains in
-the native process. YLab loads and refreshes credentials only when forwarding
-cloud operations, using the account selected when the workbench started.
+Use an exact target ID when a short name is ambiguous. Run
+`qy connections candidates` to review potential associations, then
+`qy connections link <cloud-id> <local-id> ...` to confirm them. A link changes
+the grouping in the directory. Each target keeps its own execution route and
+permissions. For PostgreSQL, `pg_control_system().system_identifier` and the
+current database's `pg_database.oid` can help verify a candidate when both
+connections can read them. A physical copy can preserve those values, so
+review the source and environment before linking.
 
-Users can start the local workbench before signing in. To add cloud access, run
-`ylab auth login` and restart `ylab db connect`. Previously signed-in users can
-restart offline with their local workspaces and personal SQLite. A cloud
-connection always requires live server authorization. Reconnecting refreshes
-the catalog without replaying SQL.
+The desktop workbench accepts a short-lived, one-use launch code and exchanges
+it for a loopback browser session. Quarry calls the installed YLab helper with
+a bounded database operation and resource ID. YLab reads and refreshes its
+own credentials. The hosted gateway continues to authorize every operation.
 
-`--config` and `--workspace` select existing local configuration explicitly.
-For upgrades, YLab can reuse a legacy account workspace when the standard
-Quarry configuration is absent. Personal SQLite continues to use the existing
-account namespace and document keys. Browser recovery protects edits when
-local storage fails or a saved document has a revision conflict.
+Local drafts and history stay available across cloud account changes. Cloud
+records keep their original account and target scope. A disconnected target
+remains unavailable for execution, and losing access never selects a same-name
+local connection. Reconnecting refreshes the directory without replaying SQL.
 
 ## Hosted boundary and rollout
 
