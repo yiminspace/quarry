@@ -157,7 +157,12 @@ fn native_gui_reuses_matching_workbench_and_opens_its_url() {
     let root = dir.path();
     let mut original = GuiProcess::start(root, "config.toml", None, "localhost", 0, false);
     let address = original.address();
-    assert!(address.ip().is_loopback());
+    let preferred_ip = TcpListener::bind(("localhost", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .ip();
+    assert_eq!(address.ip(), preferred_ip);
     original.still_serving(address);
 
     let mut reentry = GuiProcess::start(
@@ -177,8 +182,14 @@ fn native_gui_reuses_matching_workbench_and_opens_its_url() {
         "workspaces = ['workspace-a', 'workspace-b']\n",
     )
     .unwrap();
-    let mut reentry =
-        GuiProcess::start(root, "config.toml", None, "127.0.0.1", address.port(), true);
+    let mut reentry = GuiProcess::start(
+        root,
+        "config.toml",
+        None,
+        &address.ip().to_string(),
+        address.port(),
+        true,
+    );
     assert_eq!(reentry.address(), address);
     reentry.exited_successfully();
     let opened = wait_for("the browser opener", || {
@@ -270,6 +281,20 @@ fn native_gui_keeps_foreign_and_different_workbenches_alive() {
     assert!(version_response(occupied).is_some());
     drop(stop);
     foreign.join().unwrap();
+
+    // A repeated launch keeps the same browser origin after the blocker exits.
+    drop(TcpListener::bind(occupied).unwrap());
+    let mut reentry = GuiProcess::start(
+        root,
+        "config.toml",
+        Some("workspace-a"),
+        "127.0.0.1",
+        occupied.port(),
+        false,
+    );
+    assert_eq!(reentry.address(), original_address);
+    reentry.exited_successfully();
+    original.still_serving(original_address);
 }
 
 #[test]

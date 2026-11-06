@@ -1503,6 +1503,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "include_dir",
+ "libc",
  "mime_guess",
  "percent-encoding",
  "quarry-assistant",
