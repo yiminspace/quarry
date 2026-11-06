@@ -4069,12 +4069,18 @@ def test_saved_queries_stay_in_owning_workspace(page_noparam):
     page = page_noparam
     tree = page.request.get(page.url.split('/quarry/')[0] + '/api/connections').json()
     item = next(i for g in tree['groups'] for i in g['items'] if i['db'] == 'testpg')
+    target = item['envs'][0].setdefault('targetId', 'fixture-testpg')
     tree['groups'] = [dict(ws='/ws/one', group='One', items=[item]),
                       dict(ws='/ws/two', group='Two', items=[])]
     tree['workspaces'] = ['/ws/one', '/ws/two', '/ws/only-queries']
     queries = [dict(name='same', db='testpg', ws=f'/ws/{ws}', queryId=ws,
                     desc='', sql=f'SELECT {n}', params=[])
                for n, ws in enumerate(['one', 'two', 'only-queries'], 1)]
+    # The mock allows workspace two to use a validated sibling in workspace
+    # one. Keep the workspace with no eligible connection listed in the sidebar.
+    queries[0].update(targetIds=[target], ownerTargetIds=[target])
+    queries[1].update(targetIds=[target], ownerTargetIds=[])
+    queries[2].update(targetIds=[], ownerTargetIds=[])
     # Exercise the modal path as well as direct execution with identical names.
     queries[1]['params'] = [dict(name='x', type=None, required=False, default='1')]
     page.route('**/api/connections', lambda r: r.fulfill(json=tree))
@@ -4109,10 +4115,12 @@ def test_saved_queries_stay_in_owning_workspace(page_noparam):
     page.locator('.modal input').first.press('Enter')
     page.wait_for_function('document.querySelector("#grid table") !== null')
     assert runs[-1]['queryId'] == 'two'
+    assert runs[-1]['target'] == target
     one.click()
     with page.expect_response('**/api/run'):
         q1.click()
     assert runs[-1]['queryId'] == 'one'
+    assert runs[-1]['target'] == target
 
 
 def test_row_record_link_uses_result_context_and_does_not_execute(page_clip):
