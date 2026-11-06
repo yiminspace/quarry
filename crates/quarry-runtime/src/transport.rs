@@ -872,6 +872,26 @@ async fn resolved_ssh_configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_mock_ssh(path: &Path, script: String) {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Keep writable executable descriptors out of this process so a
+        // concurrent fork cannot inherit one and cause Linux exec to fail.
+        let writer = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"umask 077; printf '%s' "$1" > "$2""#,
+                "quarry-fixture",
+            ])
+            .arg(script)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(writer.success(), "cannot write mock SSH fixture");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[test]
     fn mock_ssh_process() {
         let Ok(port) = std::env::var("QUARRY_TEST_MOCK_SSH_PORT") else {
@@ -891,7 +911,6 @@ mod tests {
     #[tokio::test]
     async fn ssh_uses_system_configuration_unless_explicitly_disabled_and_leases_survive_replacement()
      {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("ssh");
         let log = dir.path().join("args");
@@ -899,7 +918,7 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .replace('\'', "'\\''");
-        std::fs::write(
+        write_mock_ssh(
             &script,
             format!(
                 r#"#!/bin/sh
@@ -913,9 +932,7 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
                 log.display(),
                 binary
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let manager = TunnelManager::new(dir.path().join("state")).with_ssh_executable(&script);
         let record:ConnectionRecord=serde_json::from_value(serde_json::json!({"key":"app","url":"postgres://user:secret@database.internal/app","engine":"postgres","ssh_host":"configured-alias","workspace":dir.path()})).unwrap();
         let first = manager.open(&record, None).await.unwrap();
@@ -938,7 +955,6 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
     }
     #[tokio::test]
     async fn slow_ssh_setup_does_not_block_unrelated_tunnels_and_cannot_survive_close() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("ssh");
         let gate = dir.path().join("release-slow-ssh");
@@ -947,7 +963,7 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
             .unwrap()
             .to_string_lossy()
             .replace('\'', "'\\''");
-        std::fs::write(
+        write_mock_ssh(
             &script,
             format!(
                 r#"#!/bin/sh
@@ -962,9 +978,7 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
                 started.display(),
                 binary
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let manager =
             Arc::new(TunnelManager::new(dir.path().join("state")).with_ssh_executable(&script));
         let slow:ConnectionRecord=serde_json::from_value(serde_json::json!({"key":"slow","url":"postgres://user:secret@slow.internal/app","engine":"postgres","ssh_host":"slow-bastion","workspace":dir.path()})).unwrap();
@@ -1036,14 +1050,13 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
     }
     #[tokio::test]
     async fn proxy_badge_requires_exact_live_tunnel_including_shared_owner() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("ssh");
         let binary = std::env::current_exe()
             .unwrap()
             .to_string_lossy()
             .replace('\'', "'\\''");
-        std::fs::write(
+        write_mock_ssh(
             &script,
             format!(
                 r#"#!/bin/sh
@@ -1055,9 +1068,7 @@ QUARRY_TEST_MOCK_SSH_PORT="$port" exec '{}' --exact transport::tests::mock_ssh_p
 "#,
                 binary
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let state = dir.path().join("state");
         let manager = TunnelManager::new(&state)
             .with_ssh_executable(&script)
