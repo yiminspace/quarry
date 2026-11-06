@@ -48,7 +48,9 @@ executable checks for a newer stable release in the background, at most once
 per hour. Quarry verifies and stages the download, then activates it at the
 next launch. Run `qy update` to download and activate
 the new version immediately. Set `QUARRY_AUTO_UPDATE=0` to opt out of automatic
-downloads and activation while retaining `qy update`.
+downloads and activation. `QUARRY_UPDATE_CHECK=0` also hides the release notice
+in the workbench and opts out of automatic updates. Both settings allow
+explicit `qy update`.
 
 If you copied a native binary manually, rerun the installer at the same
 location to make it eligible for future self-updates. Use your normal build

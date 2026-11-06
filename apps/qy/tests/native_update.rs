@@ -165,6 +165,16 @@ fn verifies_stages_throttles_and_restarts_with_original_arguments() {
     for flag in ["--help", "--version"] {
         success(fixture.command(&launcher).arg(flag).output().unwrap());
     }
+    for setting in ["QUARRY_AUTO_UPDATE", "QUARRY_UPDATE_CHECK"] {
+        success(
+            fixture
+                .command(&launcher)
+                .env(setting, "0")
+                .arg(CHECK)
+                .output()
+                .unwrap(),
+        );
+    }
     assert!(!fixture.path("curl.log").exists());
 
     success(fixture.command(&launcher).arg("list").output().unwrap());
@@ -190,15 +200,17 @@ fn verifies_stages_throttles_and_restarts_with_original_arguments() {
         3
     );
 
-    success(
-        fixture
-            .command(&launcher)
-            .env("QUARRY_AUTO_UPDATE", "0")
-            .arg("list")
-            .output()
-            .unwrap(),
-    );
-    assert!(pending.is_symlink());
+    for setting in ["QUARRY_AUTO_UPDATE", "QUARRY_UPDATE_CHECK"] {
+        success(
+            fixture
+                .command(&launcher)
+                .env(setting, "0")
+                .arg("list")
+                .output()
+                .unwrap(),
+        );
+        assert!(pending.is_symlink());
+    }
 
     let args = ["list", "--db", "notes with spaces", "--format", "json"];
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -230,6 +242,7 @@ fn explicit_update_works_when_disabled_and_refuses_bad_checksums() {
         fixture
             .command(&launcher)
             .env("QUARRY_AUTO_UPDATE", "0")
+            .env("QUARRY_UPDATE_CHECK", "0")
             .arg("update")
             .output()
             .unwrap()

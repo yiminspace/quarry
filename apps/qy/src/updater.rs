@@ -149,6 +149,7 @@ pub(crate) fn is_managed_install() -> bool {
 
 fn auto_enabled() -> bool {
     std::env::var_os("QUARRY_AUTO_UPDATE").as_deref() != Some("0".as_ref())
+        && std::env::var_os("QUARRY_UPDATE_CHECK").as_deref() != Some("0".as_ref())
 }
 
 pub(crate) fn internal_command(args: &[OsString]) -> Option<Result<()>> {
