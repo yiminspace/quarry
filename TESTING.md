@@ -1355,7 +1355,7 @@ This section describes the former cloud-origin companion. See the cloud-only and
 | # | Area | Feature | Covered by | ✓ |
 |---|------|---------|------------|---|
 | NP1 | editor/tabs | Protected launch hydrates the configuration's SQLite workbench document before constructing the editor. Drafts survive reload without browser records. Provider drafts are projected for the verified account. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust `workbench_projection_keeps_other_accounts_drafts_private_on_update` | ✅ |
-| NP2 | persistence/recovery | Failed hydration makes no SQLite writes. Browser recovery remains available until the persisted revision can be checked. A concurrent write preserves the current draft and offers recovery export and confirmed reload. | F:test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite; F:test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly | ✅ |
+| NP2 | persistence/recovery | Failed hydration makes no SQLite writes. A concurrent write preserves the current draft and offers export and confirmed reload. On reopen, an older recovery with matching tabs and no additional content yields to the newer saved document. | F:test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite; F:test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly; F:test_native_workbench_reopen_uses_newer_records_when_recovery_adds_no_content | ✅ |
 | NP3 | launch and history | Protected launch clears the one-use fragment, exchanges it for a loopback session, and reopens with that session. Quarry and YLab use the same SQLite history for the selected configuration. Local history stays available through cloud disconnection. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust native history tests; YLab native process tests | ✅ |
 | NP4 | large workbench documents | Saves use the existing 16 MiB SQLite budget in UTF-8 bytes. Optional result snapshots are omitted first. A larger draft stays available for editing and recovery, and shortening it resumes saving at the same revision. | F:test_native_workbench_large_save_prioritizes_drafts_over_results; F:test_native_workbench_oversized_draft_can_resume_saving; Rust `native_personal_http_preserves_sqlite_document_budget_and_revision` | ✅ |
 
@@ -1379,8 +1379,10 @@ This section describes the former cloud-origin companion. See the cloud-only and
   clears recovery only for the revision it saved, and retains edits made while
   saving. The save body can omit result snapshots without changing active-tab
   state or dropping draft SQL. A size refusal leaves the pending revision and
-  recovery intact. The explicit confirmed load is the only user action that discards
-  recovery. Separate query-history entries are outside this CAS document.
+  recovery intact. On startup, matching tab records and absence of additional
+  recovery content allow hydration from a newer revision, including its
+  authorized cloud scopes. Divergent recovery still requires confirmed load
+  to discard. Separate query-history entries are outside this CAS document.
 
 ### Header project-link audits (2026-11-05)
 
