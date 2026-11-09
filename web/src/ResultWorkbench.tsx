@@ -1,4 +1,4 @@
-import { PLATFORM_MODE } from "./platform";
+import { CLI_SESSION_MODE, PLATFORM_MODE } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelPlatformQuery,
@@ -778,7 +778,7 @@ export default function ResultWorkbench() {
     const table = currentTable ?? parseMainTable(sql);
     const search = encodeFocusSearch({ db, env, table, targetId: current?.targetId });
     const url = new URL(window.location.href);
-    const pathname = "/quarry/";
+    const pathname = CLI_SESSION_MODE ? url.pathname : "/quarry/";
     if (url.search !== search || url.pathname !== pathname) {
       window.history.replaceState(null, "", `${pathname}${search}${url.hash}`);
     }
@@ -1458,9 +1458,9 @@ export default function ResultWorkbench() {
           <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>
           </button>
-          <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
+          {!CLI_SESSION_MODE && <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
             <i className="ti ti-link" /> <span id="linkLbl">{t("copy_query_link")}</span>
-          </button>
+          </button>}
         </div>
           }>
         <SqlEditor

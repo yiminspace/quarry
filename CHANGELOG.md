@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Add optional CLI-launched hosted workbenches with one database per browser session and in-memory expiry.
+
 - Reopen the newer saved workbench without a conflict warning when the older browser recovery adds no workbench content.
 
 ## [2.2.0] - 2026-11-06

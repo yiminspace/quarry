@@ -1,8 +1,8 @@
-import { PLATFORM_MODE } from "./platform";
+import { CLI_SESSION_MODE, PLATFORM_MODE } from "./platform";
 
 /** A previously loaded editor can reopen offline. No API, identity, SQL or result is cached. */
 export async function prepareOfflineShell(): Promise<void> {
-  if (!PLATFORM_MODE || !("serviceWorker" in navigator)) return;
+  if (CLI_SESSION_MODE || !PLATFORM_MODE || !("serviceWorker" in navigator)) return;
   const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]');
   const build = script?.src.split("/").pop()?.replace(/[^A-Za-z0-9_.-]/g, "") || "development";
   try {

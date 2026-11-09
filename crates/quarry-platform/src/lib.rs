@@ -114,7 +114,7 @@ impl HostedState {
             assistant: None,
         })
     }
-    fn resource(&self, p: &Principal, id: &str) -> Result<&HostedResource> {
+    pub fn resource(&self, p: &Principal, id: &str) -> Result<&HostedResource> {
         self.resources
             .iter()
             .find(|r| r.id == id && r.granted(p))
@@ -125,6 +125,10 @@ impl HostedState {
             .resolve(&r.connection_key, Some(&r.env), r.workspace.as_deref())
     }
 }
+/// A resource restriction supplied by the trusted HTTP host, never by client headers.
+#[derive(Clone)]
+pub struct HostedResourceScope(pub String);
+
 pub fn hosted_router(state: HostedState) -> Router {
     Router::new()
         .fallback(any(hosted_dispatch))
@@ -185,7 +189,16 @@ fn id<'a>(q: &'a BTreeMap<String, String>, b: &'a Value) -> Result<&'a str> {
         .or_else(|| q.get("resourceId").map(String::as_str))
         .ok_or_else(|| failure(400, "invalid", "Explicit database resource required"))
 }
-async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response {
+async fn hosted_dispatch(State(mut s): State<HostedState>, req: Request) -> Response {
+    if let Some(scope) = req.extensions().get::<HostedResourceScope>() {
+        s.resources = Arc::new(
+            s.resources
+                .iter()
+                .filter(|resource| resource.id == scope.0)
+                .cloned()
+                .collect(),
+        );
+    }
     if req.method() == Method::POST && req.uri().path() == "/api/assistant/chat" {
         return match hosted_chat(&s, req).await {
             Ok(r) => r,

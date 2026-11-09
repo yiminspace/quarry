@@ -291,7 +291,7 @@ impl Auth {
 #[async_trait]
 impl Authorizer for Auth {
     async fn authorize(&self, bearer: &str, permission: &str) -> Result<Principal, Failure> {
-        if bearer.is_empty() || bearer.len() > 8192 || bearer.chars().any(char::is_whitespace) {
+        if bearer.is_empty() || bearer.len() > 16384 || bearer.chars().any(char::is_whitespace) {
             return Err(fail(
                 401,
                 "unauthorized",
