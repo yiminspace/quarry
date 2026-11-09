@@ -341,6 +341,7 @@ async fn external_identity_is_verified_per_call_never_taken_from_client_headers(
     let temp = tempfile::tempdir().unwrap();
     let mut config = fixture(temp.path());
     config.auth = AuthConfig::External {
+        cli_handoff: false,
         verify_url: format!("http://{address}/verify"),
         allow_insecure_http: false,
         response: quarry_server::config::VerifyResponse::Headers,
@@ -405,6 +406,7 @@ fn insecure_configurations_fail_before_listening() {
     }
     assert!(config.validate().is_err());
     config.auth = AuthConfig::External {
+        cli_handoff: false,
         verify_url: "http://public.example/verify".into(),
         allow_insecure_http: false,
         response: quarry_server::config::VerifyResponse::Headers,
@@ -414,4 +416,138 @@ fn insecure_configurations_fail_before_listening() {
         logout_path: None,
     };
     assert!(config.validate().is_err());
+}
+
+#[tokio::test]
+async fn cli_browser_ticket_is_single_use_and_session_enforces_scope_and_current_grants() {
+    use axum::{extract::State, http::HeaderMap, routing::get};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    async fn verify(
+        State(revoked): State<Arc<AtomicBool>>,
+        headers: HeaderMap,
+    ) -> (axum::http::StatusCode, axum::Json<Value>) {
+        let status = if headers
+            .get("authorization")
+            .is_none_or(|header| header != "Bearer personal")
+        {
+            axum::http::StatusCode::UNAUTHORIZED
+        } else if revoked.load(Ordering::Relaxed) {
+            axum::http::StatusCode::FORBIDDEN
+        } else {
+            axum::http::StatusCode::OK
+        };
+        (
+            status,
+            axum::Json(json!({"id":"admin","permissions":["lab:db:read"],"roles":[]})),
+        )
+    }
+    let revoked = Arc::new(AtomicBool::new(false));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let iam = Router::new()
+        .route("/verify", get(verify))
+        .with_state(revoked.clone());
+    let task = tokio::spawn(async move { axum::serve(listener, iam).await.unwrap() });
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = fixture(temp.path());
+    config.resources[1].readers = vec!["admin".into()];
+    config.auth = AuthConfig::External {
+        cli_handoff: true,
+        verify_url: format!("http://{address}/verify"),
+        allow_insecure_http: false,
+        response: quarry_server::config::VerifyResponse::Json,
+        session_key: "unused".into(),
+        login_url: "/unused".into(),
+        refresh_path: "/unused".into(),
+        logout_path: None,
+    };
+    let router = quarry_server::router(config, "test".into()).unwrap();
+    let ticket = request(
+        &router,
+        "POST",
+        "/api/db/browser-ticket",
+        Some("personal"),
+        Some(json!({"resourceId":"allowed"})),
+    )
+    .await;
+    assert_eq!(ticket.0, 200);
+    assert_eq!(ticket.1["expires_in"], 60);
+    let redeem = || {
+        Request::builder()
+            .method("POST")
+            .uri("/quarry/browser-ticket/consume")
+            .header("sec-fetch-site", "same-origin")
+            .body(Body::from(json!({"code":ticket.1["code"]}).to_string()))
+            .unwrap()
+    };
+    let session = router.clone().oneshot(redeem()).await.unwrap();
+    assert_eq!(session.status(), 200);
+    let cookie = session.headers()["set-cookie"].to_str().unwrap().to_owned();
+    assert!(cookie.contains("; Secure; HttpOnly; SameSite=Strict; Max-Age=1800"));
+    let cookie = cookie.split(';').next().unwrap();
+    let data: Value =
+        serde_json::from_slice(&session.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let path = data["path"].as_str().unwrap();
+    assert_eq!(
+        router.clone().oneshot(redeem()).await.unwrap().status(),
+        401
+    );
+    let browser_request = |op: &str| {
+        Request::builder()
+            .uri(format!("{path}api/{op}"))
+            .header("Cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let catalog = router
+        .clone()
+        .oneshot(browser_request("platform"))
+        .await
+        .unwrap();
+    assert_eq!(catalog.status(), 200);
+    let data: Value =
+        serde_json::from_slice(&catalog.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(data["resources"].as_array().unwrap().len(), 1);
+    assert_eq!(data["resources"][0]["id"], "allowed");
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(browser_request("tables?resourceId=hidden"))
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(browser_request("tables?resourceId=allowed"))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        request(
+            &router,
+            "GET",
+            &format!("{path}api/platform"),
+            Some("personal"),
+            None
+        )
+        .await
+        .0,
+        401
+    );
+    revoked.store(true, Ordering::Relaxed);
+    assert_eq!(
+        router
+            .oneshot(browser_request("tables?resourceId=allowed"))
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    task.abort();
 }

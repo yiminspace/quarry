@@ -176,6 +176,8 @@ pub enum AuthConfig {
         roles: Vec<String>,
     },
     External {
+        #[serde(default)]
+        cli_handoff: bool,
         verify_url: String,
         #[serde(default)]
         allow_insecure_http: bool,

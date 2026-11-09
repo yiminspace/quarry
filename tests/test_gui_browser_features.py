@@ -7956,3 +7956,48 @@ def test_result_image_url_text_keeps_existing_double_click_actions(page_sqlite):
     page.keyboard.press('Escape')
     page.get_by_role('button', name='Enlarge image').last.click()
     expect(page.get_by_role('dialog', name='Image preview')).to_be_visible()
+
+
+def test_platform_cli_session_opens_one_database_and_expires(page_sqlite):
+    page = page_sqlite
+    entry = urlparse(page.url)._replace(path="/quarry/", query="", fragment="").geturl()
+    session = "/quarry/session/" + "a" * 32 + "/"
+    calls = []
+
+    def hosted(route):
+        request = route.request
+        path = urlparse(request.url).path
+        if request.resource_type == "document":
+            response = route.fetch(url=entry)
+            route.fulfill(response=response, body=response.text().replace(
+                "<head>", '<head><meta name="quarry-mode" content="platform">'
+                '<meta name="quarry-cli-session" content="true">', 1))
+        elif path == "/quarry/browser-ticket/consume":
+            calls.append(request.post_data_json)
+            route.fulfill(json={"path": session})
+        elif path == session + "api/platform":
+            assert "authorization" not in request.headers
+            route.fulfill(headers={"x-quarry-session-remaining-ms": "2500"}, json={
+                "mode": "hosted", "principal": {"id": "dev-user"}, "capabilities": {},
+                "resources": [{"id": "only", "project": "brain", "db": "one-db", "env": "dev",
+                               "engine": "sqlite", "production": True}],
+            })
+        elif path.startswith(session + "api/"):
+            route.fulfill(json={"tables": [], "groups": [], "workspaces": [], "engine": "sqlite"})
+        else:
+            route.continue_()
+
+    page.route("**/quarry/**", hosted)
+    page.goto(entry, wait_until="domcontentloaded")
+    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    assert page.locator("#sql").count() == 0
+    page.goto(entry + "?launch=1#quarry_handoff=one-use", wait_until="domcontentloaded")
+    page.wait_for_url("**" + session)
+    page.locator("#sql").wait_for()
+    assert urlparse(page.url).path == session
+    assert page.locator("#linkBtn").count() == 0
+    assert page.evaluate("async () => (await fetch(location.pathname + 'api/platform')).ok")
+    assert calls == [{"code": "one-use"}]
+    assert not page.evaluate("location.hash")
+    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    assert page.locator("#sql").count() == 0

@@ -121,6 +121,15 @@ The frontend reads the session key and authentication paths from
 and returns the browser to `/quarry/`. Route `/quarry/`, `/api/hosted/*`, and
 `/api/db/*` to the hosted service. Route your sign-in, refresh, and sign-out paths
 to the platform endpoints that handle them.
+### CLI-launched browser sessions
+
+Set `auth.cli_handoff` to `true` on a standalone external-auth server to enable the single-database workbench.
+The CLI sends its external bearer and `{"resourceId":"…"}` to `POST /api/db/browser-ticket`.
+It opens `/quarry/#quarry_handoff=<code>` using the returned one-use code.
+The browser exchanges the code for a path-scoped, Secure, HttpOnly session cookie.
+Tickets expire in 60 seconds and browser sessions expire in 30 minutes. Both are local to the server process.
+Use HTTPS and a single replica for this mode. The browser's database access is rechecked against external IAM.
+
 Private-network HTTP verification requires explicit `allow_insecure_http: true`;
 public connections should use HTTPS.
 

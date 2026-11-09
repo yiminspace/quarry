@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { hostedConfig, hostedConfigurationError, signIn } from "./hostedAuth";
-import { PLATFORM_MODE, platformSnapshot } from "./platform";
+import { CLI_SESSION_MODE, PLATFORM_MODE, platformSnapshot, subscribePlatform } from "./platform";
 import { t } from "./i18n";
 
 /** Authentication is served by the image; the database workbench stays shared. */
@@ -9,7 +9,18 @@ export default function HostedEntry({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const state = useSyncExternalStore(subscribePlatform, platformSnapshot);
   if (!PLATFORM_MODE) return children;
+  if (CLI_SESSION_MODE) {
+    if (state.account && state.remote === "connected") return children;
+    return <main className="hosted-entry">
+      <section className="hosted-login" aria-labelledby="hosted-login-title">
+        <div className="vg-logo logo">Q</div>
+        <h1 id="hosted-login-title">{t("hosted_sign_in")}</h1>
+        <p role="status">{t("hosted_reopen_bcli")}</p>
+      </section>
+    </main>;
+  }
   const configurationError = hostedConfigurationError();
   if (!configurationError && platformSnapshot().account) return children;
   const auth = hostedConfig().auth;

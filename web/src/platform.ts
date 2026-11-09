@@ -5,6 +5,9 @@ import { consumeHostedHandoff, hostedConfig, hostedConfigurationError, loadHoste
 
 /** Hosted workbench. Native Quarry uses its own same-origin API and storage. */
 export const PLATFORM_MODE = typeof document !== "undefined" && document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") === "platform";
+export const CLI_SESSION_MODE = PLATFORM_MODE && document.querySelector('meta[name="quarry-cli-session"]')?.getAttribute("content") === "true";
+let cliExpiryTimer: ReturnType<typeof setTimeout> | undefined;
+const cliSessionPath = /^\/quarry\/session\/[0-9a-f]{32}\/$/;
 export type PlatformResource = { id: string; project: string; db: string; env: string | null; engine: string; production: boolean; placement: "remote" };
 type Bootstrap = { principal: { id: string }; resources: Omit<PlatformResource, "placement">[] };
 type PlatformState = {
@@ -49,6 +52,27 @@ async function refreshSession(before: HostedSession): Promise<HostedSession> {
 }
 export async function platformFetch(path: string, init: RequestInit = {}): Promise<Response> {
   if (!path.startsWith("/api/") || path.startsWith("//")) throw new Error("Invalid platform API path");
+  if (CLI_SESSION_MODE) {
+    if (!cliSessionPath.test(location.pathname)) throw new Error(t("hosted_reopen_bcli"));
+    const headers = new Headers(init.headers);
+    if (init.body) headers.set("Content-Type", "application/json");
+    const response = await fetch(location.pathname + path.slice(1), {
+      ...init, headers, cache: "no-store", credentials: "same-origin",
+      signal: init.signal ?? AbortSignal.timeout(path === "/api/platform" ? 2500 : 30000),
+    });
+    if (response.status === 401) {
+      publish({ remote: "disconnected", error: t("hosted_reopen_bcli") });
+      throw new Error(t("hosted_reopen_bcli"));
+    }
+    if (path === "/api/platform" && response.ok) {
+      const remaining = Number(response.headers.get("x-quarry-session-remaining-ms"));
+      if (remaining > 0 && remaining <= 30 * 60 * 1000) {
+        clearTimeout(cliExpiryTimer);
+        cliExpiryTimer = setTimeout(() => publish({ remote: "disconnected", error: t("hosted_reopen_bcli") }), remaining);
+      }
+    }
+    return response;
+  }
   const url = hostedConfig().apiBase + "/" + path.slice(5);
   const before = currentSession();
   const send = (session: HostedSession) => {
@@ -77,11 +101,11 @@ export async function platformJSON<T>(path: string, body?: unknown): Promise<T> 
 }
 
 // Retain the existing account-scoped browser document so hosted upgrades keep drafts.
-function scopeKey(suffix: string): string { return `qy_platform:${JSON.stringify([location.origin, state.account])}:${suffix}`; }
+function scopeKey(suffix: string): string { return `qy_platform:${JSON.stringify(CLI_SESSION_MODE ? [location.origin, state.account, state.resources[0]?.id] : [location.origin, state.account])}:${suffix}`; }
 let values: Record<string, string> = {};
 const BROWSER_DOCUMENT_LIMIT = 2_000_000;
 function saveBrowserRecords(): void {
-  if (!state.account || readHostedSession()?.user.id !== state.account) return;
+  if (!state.account || (CLI_SESSION_MODE ? state.resources.length !== 1 : readHostedSession()?.user.id !== state.account)) return;
   const copy = { ...values };
   // Query rows stay in the current page. Persist the editor and SQL history only.
   delete copy.qy_tabres;
@@ -148,6 +172,28 @@ export async function initializePlatform(): Promise<void> {
   if (handoff !== null || legacyLocalLaunch) {
     launch.delete("quarry_local"); launch.delete("quarry_code"); launch.delete("quarry_handoff");
     history.replaceState(null, "", location.pathname + location.search + (launch.size ? `#${launch}` : ""));
+  }
+  if (CLI_SESSION_MODE) {
+    try {
+      if (handoff && location.pathname === "/quarry/") {
+        const response = await fetch("/quarry/browser-ticket/consume", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: handoff }), cache: "no-store",
+          credentials: "same-origin", signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) throw new Error(t("hosted_reopen_bcli"));
+        const { path } = await response.json();
+        if (typeof path !== "string" || !cliSessionPath.test(path)) throw new Error(t("hosted_reopen_bcli"));
+        location.replace(path);
+        return;
+      }
+      if (!cliSessionPath.test(location.pathname)) return;
+      const data = await platformJSON<Bootstrap>("/api/platform");
+      if (data.resources.length !== 1) throw new Error(t("hosted_reopen_bcli"));
+      publish({ account: data.principal.id, remote: "connected", resources: data.resources.map((resource) => ({ ...resource, placement: "remote" })) });
+      hydrateBrowserRecords();
+    } catch { publish({ error: t("hosted_reopen_bcli") }); }
+    return;
   }
   await loadHostedConfig();
   if (hostedConfigurationError()) return;

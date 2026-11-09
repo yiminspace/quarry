@@ -91,6 +91,12 @@ Rust 的 `quarry-server` 二进制。最终镜像包含该二进制及其运行�
 }
 ```
 
+如需从 CLI 打开远程单库工作台，在独立 external-auth 服务上启用 `auth.cli_handoff`。
+CLI 携带外部 Bearer 和 `resourceId` 请求 `POST /api/db/browser-ticket`，再通过
+`/quarry/#quarry_handoff=<code>` 打开浏览器。票据 60 秒内仅可兑换一次，
+浏览器用限定路径的 Secure、HttpOnly Cookie 访问单个库，会话 30 分钟到期。
+票据和会话仅存在当前进程内存中。启用时使用 HTTPS 和单副本，浏览器每次访问仍检查当前 IAM 授权。
+
 Quarry 每次授权时向 `verify_url` 发送 GET 请求，携带 Bearer 令牌以及 `X-Required-Permission`
 和 `X-Required-Scope`。身份服务验证会话和权限，通过时返回 HTTP 200。`json` 模式读取响应中的
 `id`、`roles` 和 `permissions`，`headers` 模式读取 `X-User-Id`、`X-User-Roles` 和

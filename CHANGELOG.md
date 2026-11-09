@@ -9,6 +9,8 @@ pre-1.0 history followed the earlier development policy.
 
 - Use the column header’s Text / Load images menu to opt into thumbnails. Opening the menu checks only that column. Load images recognizes image suffixes in HTTPS URL paths and filename parameters and loads images as rows come into view. Browser image loading supports hosts without CORS headers, and the choice is restored with the saved query result after refresh. URL text uses the available cell width beside the thumbnail.
 
+- Add optional CLI-launched hosted workbenches with one database per browser session and in-memory expiry.
+
 - Reopen the newer saved workbench without a conflict warning when the older browser recovery adds no workbench content.
 
 ## [2.2.0] - 2026-11-06
