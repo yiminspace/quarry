@@ -17,7 +17,7 @@ export default function HostedEntry({ children }: { children: ReactNode }) {
       <section className="hosted-login" aria-labelledby="hosted-login-title">
         <div className="vg-logo logo">Q</div>
         <h1 id="hosted-login-title">{t("hosted_sign_in")}</h1>
-        <p role="status">{t("hosted_reopen_bcli")}</p>
+        <p role="status">{t("hosted_cli_reopen")}</p>
       </section>
     </main>;
   }
