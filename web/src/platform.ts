@@ -53,7 +53,7 @@ async function refreshSession(before: HostedSession): Promise<HostedSession> {
 export async function platformFetch(path: string, init: RequestInit = {}): Promise<Response> {
   if (!path.startsWith("/api/") || path.startsWith("//")) throw new Error("Invalid platform API path");
   if (CLI_SESSION_MODE) {
-    if (!cliSessionPath.test(location.pathname)) throw new Error(t("hosted_reopen_bcli"));
+    if (!cliSessionPath.test(location.pathname)) throw new Error(t("hosted_cli_reopen"));
     const headers = new Headers(init.headers);
     if (init.body) headers.set("Content-Type", "application/json");
     const response = await fetch(location.pathname + path.slice(1), {
@@ -61,14 +61,14 @@ export async function platformFetch(path: string, init: RequestInit = {}): Promi
       signal: init.signal ?? AbortSignal.timeout(path === "/api/platform" ? 2500 : 30000),
     });
     if (response.status === 401) {
-      publish({ remote: "disconnected", error: t("hosted_reopen_bcli") });
-      throw new Error(t("hosted_reopen_bcli"));
+      publish({ remote: "disconnected", error: t("hosted_cli_reopen") });
+      throw new Error(t("hosted_cli_reopen"));
     }
     if (path === "/api/platform" && response.ok) {
       const remaining = Number(response.headers.get("x-quarry-session-remaining-ms"));
       if (remaining > 0 && remaining <= 30 * 60 * 1000) {
         clearTimeout(cliExpiryTimer);
-        cliExpiryTimer = setTimeout(() => publish({ remote: "disconnected", error: t("hosted_reopen_bcli") }), remaining);
+        cliExpiryTimer = setTimeout(() => publish({ remote: "disconnected", error: t("hosted_cli_reopen") }), remaining);
       }
     }
     return response;
@@ -181,18 +181,18 @@ export async function initializePlatform(): Promise<void> {
           body: JSON.stringify({ code: handoff }), cache: "no-store",
           credentials: "same-origin", signal: AbortSignal.timeout(10000),
         });
-        if (!response.ok) throw new Error(t("hosted_reopen_bcli"));
+        if (!response.ok) throw new Error(t("hosted_cli_reopen"));
         const { path } = await response.json();
-        if (typeof path !== "string" || !cliSessionPath.test(path)) throw new Error(t("hosted_reopen_bcli"));
+        if (typeof path !== "string" || !cliSessionPath.test(path)) throw new Error(t("hosted_cli_reopen"));
         location.replace(path);
         return;
       }
       if (!cliSessionPath.test(location.pathname)) return;
       const data = await platformJSON<Bootstrap>("/api/platform");
-      if (data.resources.length !== 1) throw new Error(t("hosted_reopen_bcli"));
+      if (data.resources.length !== 1) throw new Error(t("hosted_cli_reopen"));
       publish({ account: data.principal.id, remote: "connected", resources: data.resources.map((resource) => ({ ...resource, placement: "remote" })) });
       hydrateBrowserRecords();
-    } catch { publish({ error: t("hosted_reopen_bcli") }); }
+    } catch { publish({ error: t("hosted_cli_reopen") }); }
     return;
   }
   await loadHostedConfig();

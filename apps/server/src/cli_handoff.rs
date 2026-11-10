@@ -43,7 +43,11 @@ fn unavailable() -> Failure {
 }
 
 fn expired() -> Failure {
-    fail(401, "unauthorized", "Open the workbench again with bcli.")
+    fail(
+        401,
+        "unauthorized",
+        "Reopen the database from the command line.",
+    )
 }
 
 impl Handoffs {

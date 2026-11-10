@@ -7765,6 +7765,9 @@ def test_platform_cli_session_opens_one_database_and_expires(page_sqlite):
             route.fulfill(json={"path": session})
         elif path == session + "api/platform":
             assert "authorization" not in request.headers
+            if not calls:
+                route.fulfill(status=401, json={"error": "unauthorized"})
+                return
             route.fulfill(headers={"x-quarry-session-remaining-ms": "2500"}, json={
                 "mode": "hosted", "principal": {"id": "dev-user"}, "capabilities": {},
                 "resources": [{"id": "only", "project": "brain", "db": "one-db", "env": "dev",
@@ -7777,7 +7780,10 @@ def test_platform_cli_session_opens_one_database_and_expires(page_sqlite):
 
     page.route("**/quarry/**", hosted)
     page.goto(entry, wait_until="domcontentloaded")
-    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    page.get_by_text("Reopen the database from the command line.", exact=True).wait_for()
+    assert page.locator("#sql").count() == 0
+    page.goto(urlparse(entry)._replace(path=session).geturl(), wait_until="domcontentloaded")
+    page.get_by_text("Reopen the database from the command line.", exact=True).wait_for()
     assert page.locator("#sql").count() == 0
     page.goto(entry + "?launch=1#quarry_handoff=one-use", wait_until="domcontentloaded")
     page.wait_for_url("**" + session)
@@ -7787,5 +7793,5 @@ def test_platform_cli_session_opens_one_database_and_expires(page_sqlite):
     assert page.evaluate("async () => (await fetch(location.pathname + 'api/platform')).ok")
     assert calls == [{"code": "one-use"}]
     assert not page.evaluate("location.hash")
-    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    page.get_by_text("Reopen the database from the command line.", exact=True).wait_for()
     assert page.locator("#sql").count() == 0

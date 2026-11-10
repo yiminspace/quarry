@@ -114,7 +114,11 @@ async fn cli_browser(
             .and_then(|v| v.to_str().ok())
             != Some("same-origin")
         {
-            return Err(fail(403, "forbidden", "Open the workbench with bcli"));
+            return Err(fail(
+                403,
+                "forbidden",
+                "Open the database from the command line.",
+            ));
         }
         let payload = body(req).await?;
         let (id, cookie) = sessions.consume(&text(&payload, "code")?)?;
@@ -152,7 +156,11 @@ async fn cli_browser(
             .and_then(|v| v.to_str().ok())
             != Some("same-origin")
     {
-        return Err(fail(403, "forbidden", "Open the workbench with bcli"));
+        return Err(fail(
+            403,
+            "forbidden",
+            "Open the database from the command line.",
+        ));
     }
     let cookie = req
         .headers()
@@ -162,7 +170,13 @@ async fn cli_browser(
         .flat_map(|header| header.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
         .find_map(|(name, value)| (name == cli_handoff::COOKIE).then_some(value))
-        .ok_or_else(|| fail(401, "unauthorized", "Open the workbench again with bcli."))?;
+        .ok_or_else(|| {
+            fail(
+                401,
+                "unauthorized",
+                "Reopen the database from the command line.",
+            )
+        })?;
     let (access, remaining) = sessions.session(id, cookie)?;
     let uri = format!(
         "/api/{operation}{}",
