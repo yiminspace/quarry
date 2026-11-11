@@ -50,7 +50,7 @@ function ImageLoad({ url, large = false, onOpen, onConfirmed }: { url: string; l
   }, [visible, status, attempt]);
 
   return (
-    <div ref={host} className={large ? "result-image-large" : "result-image-thumb"} aria-busy={visible && status === "loading"}>
+    <div ref={host} onDoubleClick={(event) => event.stopPropagation()} className={large ? "result-image-large" : "result-image-thumb"} aria-busy={visible && status === "loading"}>
       {visible && status !== "failed" && (
         <img key={attempt} src={url} alt={t("image_preview")} decoding="async" referrerPolicy="no-referrer"
           onLoad={(event) => {
@@ -80,7 +80,7 @@ function ImageLoad({ url, large = false, onOpen, onConfirmed }: { url: string; l
 
 export function ResultImageCell({ url, onOpen, onConfirmed }: { url: string; onOpen: () => void; onConfirmed: () => void }) {
   return (
-    <div className="result-image-cell" onDoubleClick={(event) => event.stopPropagation()}>
+    <div className="result-image-cell">
       <ImageLoad url={url} onOpen={onOpen} onConfirmed={onConfirmed} />
       <span className="result-image-url">{cellPreview(url).text}</span>
     </div>

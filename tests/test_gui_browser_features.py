@@ -7957,3 +7957,28 @@ def test_result_images_keep_confirmed_control_when_text_mode_loads_more(page_sql
     page.locator('#grid th[data-i="0"]').click()
     expect(mode).to_be_visible()
     expect(page.get_by_role('combobox', name='id display', exact=True)).to_have_count(0)
+
+
+
+def test_result_image_url_text_keeps_existing_double_click_actions(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    short = 'https://images.example/plain'
+    long = 'https://images.example/image?signature=' + 'a' * 80
+    page.route('https://images.example/**', lambda route: route.fulfill(
+        content_type='image/svg+xml' if '/image?' in route.request.url else 'text/html',
+        body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>' if '/image?' in route.request.url else '<html>ordinary page</html>'))
+    _run_sql(page, f"select '{short}' as value union all select '{long}'")
+    page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
+    page.locator('#grid .result-image-url').first.dblclick()
+    assert page.evaluate('window.__copied') == short
+    expect(page.locator('.vg-modal')).to_have_count(0)
+    page.locator('#grid .result-image-url').last.dblclick()
+    expect(page.locator('.vg-modal pre')).to_have_text(long)
+    expect(page.locator('#imagePreview')).to_have_count(0)
+    page.keyboard.press('Escape')
+    page.get_by_role('button', name='Enlarge image').last.click()
+    expect(page.get_by_role('dialog', name='Image preview')).to_be_visible()
+    expect(page.locator('.vg-modal')).to_have_count(1)
+    page.keyboard.press('Escape')
