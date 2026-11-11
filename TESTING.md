@@ -373,7 +373,7 @@ processes against disposable fixtures; its model replies are fixtures.
   SQLite files using the standard library and replace the default Postgres
   fixture config. SQLite browser tests require only Playwright/Chromium. Existing
   PostgreSQL browser tests keep their database availability skip.
-  `page_sqlite_workspaces` additionally loads real brain/yiminlab directories
+  `page_sqlite_workspaces` additionally loads configured local workspace directories
   through the normal workspace resolver and serves real query/API responses;
   identical relative file URLs, distinct owner rows, source paths and persisted
   active-workspace exports are checked together in row 116.

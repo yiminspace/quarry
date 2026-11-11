@@ -11,13 +11,13 @@ built-in account or connect your identity provider.
 | Entry point | Connections | Personal records |
 | --- | --- | --- |
 | Hosted `/quarry/` | Server connections authorized for the signed-in account | Drafts and SQL history in account-scoped browser storage |
-| Embedded localhost GUI, such as `ylab db gui` | Local workspaces and authorized server connections | Workbench state and execution history in local SQLite |
+| Embedded localhost GUI | Local workspaces and authorized server connections | Workbench state and execution history in local SQLite |
 | Standalone `qy gui` | Quarry workspaces and registered cloud sources | Local SQLite when using the protected workbench, browser storage in pure local mode |
 
 All three share Quarry's query engine. The embedding client runs local queries
 on your computer and forwards cloud requests under the selected account. The
 hosted service keeps connection credentials and checks authorization on each
-cloud request. See the [YLab integration](ylab-integration.md) for one example.
+cloud request.
 
 ## Start the image
 

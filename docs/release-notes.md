@@ -1,6 +1,6 @@
 Quarry 2.2.0 brings local and authorized cloud connections into one catalog.
-Open `ylab db gui` to register your YLab connections, then discover them in
-`qy connections` or `qy gui`. Cloud queries use YLab's current credentials,
+Compatible providers can register authorized connections for discovery in
+`qy connections` or `qy gui`. Remote queries use the provider account,
 and cloud drafts and history stay scoped to the signed-in account.
 
 Use `qy connections reconcile` to verify PostgreSQL connections that reach the
@@ -18,7 +18,7 @@ The [installation guide](https://github.com/yiminspace/quarry/blob/main/docs/ins
 covers switching from Python packages while keeping your existing configuration,
 saved queries and data.
 
-YLab's embedded copy of Quarry updates with YLab. Operators can update the
+Embedded copies update with their host. Operators can update the
 hosted workbench using the Docker image pinned in the stable release's
 `hosted-release.json` descriptor. See the
 [hosting guide](https://github.com/yiminspace/quarry/blob/main/docs/hosting.md)
