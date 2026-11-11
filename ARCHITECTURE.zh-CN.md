@@ -9,8 +9,8 @@ crates 实现。React/TypeScript 工作台在编译时嵌入程序，运行时�
 
 ```text
 qy CLI / 本机 GUI / MCP ───────────────┐
-ylab 内置数据库命令 / 本机配对服务 ─────┼→ Rust crates → 数据库
-YiminLab IAM 托管服务 ────────────────┘
+宿主 CLI / 本机配对服务 ─────┼→ Rust crates → 数据库
+平台 IAM 托管服务 ────────────────┘
 ```
 
 | 模块 | 职责 |
@@ -43,7 +43,7 @@ SSH 隧道在进程内复用；keeper 可维持跨 CLI 调用的通路。代理�
 
 ## 托管模式
 
-YiminLab 负责用户登录、IAM 权限和资源登记；Quarry 的托管适配层只接受
+托管平台负责用户登录、IAM 权限和资源登记；Quarry 的托管适配层只接受
 登记的资源 ID，再由服务器解析真实连接。数据库密码、连接文件路径和
 SSH 配置不会作为浏览器可编辑的连接资料下发。
 
@@ -60,9 +60,9 @@ SSH 配置不会作为浏览器可编辑的连接资料下发。
 ## 托管网页与本机 Local
 
 ```text
-YiminLab 网页
+托管网页
   ├─ 远程查询、模型调用 → IAM 托管服务
-  └─ 个人历史、Local   → 已配对的本机 ylab
+  └─ 个人历史、Local   → 已配对的本机客户端
                             ├─ 个人 SQLite
                             └─ 本机 Docker / 数据库
 ```
@@ -102,4 +102,4 @@ Local 的身份包含平台、账号及来源资源。同名数据库或不同�
 多个步骤不是原子操作；失败会尝试回退，无法完成时保留恢复证据。
 
 具体构建和嵌入接口见 [Rust 说明](docs/rust-preview.md)，集成范围及验证
-边界见 [YiminLab 集成](docs/ylab-integration.md)。
+边界见 [托管接入指南](docs/hosting.zh-CN.md)。

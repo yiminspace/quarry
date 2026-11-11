@@ -6,7 +6,7 @@ policies, SSH tunnels, saved queries, local Docker services and a SQL assistant.
 
 ## Install
 
-Version 2.0 is the native Rust stable release.
+Quarry 2.x ships as a native Rust executable.
 
 ```sh
 curl -fsSL https://yiminspace.github.io/quarry/install.sh | sh
@@ -50,9 +50,7 @@ in host applications. [Architecture](docs/rust-migration.md).
 
 For a hosted workbench, the official Docker image serves the GUI, authentication,
 read-only API and execution from one configuration file. Use a built-in
-administrator or configure an existing platform's IAM; YiminLab consumes the same
-image. `ylab` automatically connects and saves personal records to computer
-SQLite. YLab's embedded Quarry updates with YLab. Standalone `qy` also runs
+administrator or configure an existing platform's IAM. Standalone `qy` runs
 locally with its own workspaces.
 See the [hosting guide](docs/hosting.md) for deployment, access grants and offline
 behavior. The Rust SDK remains available for advanced embedding.
