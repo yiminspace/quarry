@@ -7801,6 +7801,11 @@ def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
     expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('auto')
     page.locator('#tabs .tab').first.click()
     expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('text')
+    _run_sql(page, sql)
+    expect(mode).to_be_visible()
+    expect(mode).to_have_value('text')
+    mode.select_option('auto')
+    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
 
 
 def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):

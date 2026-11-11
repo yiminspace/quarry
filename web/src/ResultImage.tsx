@@ -14,7 +14,7 @@ export function ResultImageModeSelect({ column = emptyColumn, mode, label, onCha
   onChange: (mode: ImageMode) => void;
 }) {
   const confirmed = useSyncExternalStore(column.subscribe, column.getSnapshot);
-  if (!confirmed) return null;
+  if (!confirmed && mode === "auto") return null;
   return (
     <select className="result-image-mode" aria-label={label} value={mode}
       onClick={(event) => event.stopPropagation()}
