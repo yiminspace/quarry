@@ -5,6 +5,19 @@
 
 const I18N: Record<string, Record<string, string>> = {
   en: {
+    image_preview: "Image preview",
+    image_failed: "Image unavailable or timed out. Retry or open the original URL.",
+    image_retry: "Retry image",
+    image_enlarge: "Enlarge image",
+    image_loading: "Loading image…",
+    image_copy_url: "Copy URL",
+    image_original: "Open original",
+    image_close: "Close",
+    image_display: "display",
+    image_auto: "Auto",
+    image_mode: "Image",
+    image_text: "Text",
+
     hosted_sign_in: "Sign in to Quarry",
     hosted_username: "Username",
     hosted_password: "Password",
@@ -260,6 +273,19 @@ const I18N: Record<string, Record<string, string>> = {
     ka_reconnecting: "tunnel keeper: reconnecting",
   },
   zh: {
+    image_preview: "图片预览",
+    image_failed: "图片加载失败或超时，可重试或打开原链接。",
+    image_retry: "重试图片",
+    image_enlarge: "放大图片",
+    image_loading: "图片加载中…",
+    image_copy_url: "复制链接",
+    image_original: "打开原图",
+    image_close: "关闭",
+    image_display: "显示方式",
+    image_auto: "自动",
+    image_mode: "图片",
+    image_text: "文本",
+
     hosted_sign_in: "登录 Quarry",
     hosted_username: "账号",
     hosted_password: "密码",
