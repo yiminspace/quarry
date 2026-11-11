@@ -1,3 +1,4 @@
+import { getResultImageColumns } from "../imageDetection";
 import { PLATFORM_MODE, personalStorage } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
@@ -501,7 +502,10 @@ export const useTabsStore = create<TabsState>((set, get) => {
       const s = get();
       if (!s.tabs.some((t) => t.id === id)) return; // tab closed while in flight
       const results = { ...s.results };
-      if (snapshot) results[id] = { ...snapshot, targetId: snapshot.targetId ?? connectionTargetId(snapshot.queryDb, snapshot.queryEnv) };
+      if (snapshot) {
+        if (snapshot.result) getResultImageColumns(snapshot.result);
+        results[id] = { ...snapshot, targetId: snapshot.targetId ?? connectionTargetId(snapshot.queryDb, snapshot.queryEnv) };
+      }
       else delete results[id];
       persistResults(s.tabs, s.activeId, results);
       set({ results });

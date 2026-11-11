@@ -304,6 +304,14 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | 130 | header | the logo and Quarry name share a link to the English or Chinese project homepage; a labeled GitHub icon inside VoyageToolbar follows the palette control and links to the project repository; both open in new tabs | F:test_header_project_links_open_in_new_tabs, V:test_header_project_links_use_theme_tokens, V:test_header_toolbar_buttons_share_full_box_spec | ✅ |
 | 131 | themes | Trace Paper, Exam Hall, and IELTS Lab are selectable in the Voyage palette; each applies its four-axis preset and background, keeps the selected theme across a mode toggle and reload, and shows the active palette card | F:test_voyage_theme_presets_apply_and_persist | ✅ |
 
+### Result image coverage
+
+| ID | Region | Behavior | Evidence | Status |
+|----|--------|----------|----------|--------|
+| 132 | grid | Visible HTTP(S) URLs are lazily loaded for browser image decoding; Auto/Image/Text controls appear only after a URL in that column loads with nonzero natural dimensions and stay scoped to tab and column schema; enlarge, copy URL, open original and Escape preserve raw sort/export values | `imageDetection` via resultImage.test.ts (23 unit cases, including single-pass indexing and isolated column confirmation); F:test_result_images_preview_modes_sort_export_and_tab_isolation, F:test_result_image_controls_follow_column_names_and_values, F:test_result_images_keep_confirmed_control_when_text_mode_loads_more | ✅ |
+| 133 | grid/images | viewport-only requests; 15-second timeout and failure stop automatic loading and expose retry; original URLs stay visible; standard browser HTTP caching reuses full signed URLs without stripping parameters; referrer omitted | F:test_result_images_lazy_load_failure_timeout_and_retry, F:test_result_images_use_http_cache_and_keep_signed_urls_distinct | ✅ |
+| 134 | grid/images | borderless thumbnails preserve the same row height as text mode; mode control and enlarged preview use theme tokens in dark/light mode; modal fits a narrow viewport | V:test_result_image_chrome_uses_theme_tokens | ✅ |
+
 ### Hosted workbench matrix
 
 The following rows cover the platform-marked built bundle. Standalone rows above
@@ -462,6 +470,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | header | per-tunnel permanent failure details (`blocked`) are available in CLI/API but not expanded in the keeper badge | badge reports daemon state; a running keeper does not prove database reachability |
 | sidebar | row-count / size hints next to tables | backlog (low) |
 | sidebar | complete SQL/Cypher parsing and live Neptune schema navigation | query associations are hints from saved query text; complex/ambiguous references may remain under Other; labels shown here are not a complete live inventory |
+| grid/images | generated server-side thumbnails, authenticated custom-header image requests and saved column display preferences across reloads | current preview fetches the original URL directly, follows browser/server cache headers, and keeps column display overrides in-session per tab/schema |
 | grid | record links for JOINs, computed/aliased projections, aggregates, nullable or absent unique keys | disabled with an explanation; conservative original-column single-table SELECT support |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
@@ -1402,3 +1411,15 @@ This section describes the former cloud-origin companion. See the cloud-only and
   Palette selection and mode use the existing Voyage preference write path.
   The theme attributes and selected-card state read those preferences,
   including after reload.
+
+### Result image audit (2026-11-11)
+
+- Existence audit maps column mode changes, thumbnail enlargement, retry, Copy URL, Open original, backdrop/Escape dismissal and modal focus controls to rows 132–134. Image display adds no API endpoint or localStorage key. Existing cell click/double-click and keyboard shortcuts remain rows 50/53.
+- Capability audit checks inline visibility, original value access, failure recovery, large preview, text fallback and browser caching. Server-side resizing, custom authentication headers and persisted display overrides are recorded in Design gaps. The original image is downloaded even for a small thumbnail.
+- Shared-state audit enumerates every new write site. `imageModes` is initialized in ResultWorkbench and updated only by the column selector, keyed by active tab ID and result column names. Its reader supplies both the selector value and URL detection. `imagePreview` is initialized there, written by thumbnail activation, and cleared on close or tab change. Its reader only mounts the matching tab's modal. ImageLoad owns visibility, status and retry attempt locally, with URL-keyed mounts isolating sort/query changes. Query snapshots, original cell values and export sources are untouched. Rows 132/133 exercise the overlapping controls, sorting, tab restoration and raw JSON export.
+- Validation includes the frontend build, eslint, all 125 frontend unit tests, native `cargo build -p quarry-cli`, and all seven image browser/visual cases passing against the built Rust binary. Both dark/light visual cases verify equal Image/Text row heights, zero thumbnail border and narrow-viewport modal geometry. The HTTP-cache case uses an actual local image server and removes Playwright routes so the browser cache stays enabled.
+
+- Image layout follow-up uses one inherited line-height for thumbnail and cell content, with no surrounding border. Candidate controls derive from original result URLs confirmed by successful browser decoding, so sorting and Text mode preserve the available selector. Ordinary text/number columns stay compact. Browser/visual cases cover selector absence on id and HTML URLs even with icon_url names or image extensions and equal row heights after toggling Image/Text.
+
+- Decode-confirmation uses positive naturalWidth/naturalHeight after image load. Column names and file extensions do not establish image type. The browser case holds an extensionless response to prove its control is absent until decoding succeeds, while a text/html response named icon_url and ending in .png never gets a control.
+- Image indexing runs in `tabsStore.setTabResult` for accepted snapshots, and lazily when displaying a restored result. A WeakMap keyed by the immutable result object reuses the derived index on tab return. Each scan skips empty/non-string values, checks HTTP prefixes before URL parsing, and parses duplicate values once. Each column maps original row objects to candidate URLs, so sorting reads the same entries. Rendering does not parse URLs. Each ResultImageColumn records successful decoding against the original row in a WeakMap, confirms its column once, and notifies only subscribed ResultImageModeSelect headers through useSyncExternalStore. Appended results carry confirmation from retained row objects, including while Text mode suppresses image mounts. ImageLoad state stays local. The index and confirmation metadata are not serialized with query data. Existence audit maps these readers/writers to rows 132–134. Capability and Design gaps remain as listed. Unit cases pin single-pass parsing and isolated notification, while browser cases cover sort/export, mode selection, tab return, retry and actual decode gating.

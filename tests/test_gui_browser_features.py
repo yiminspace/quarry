@@ -7744,3 +7744,211 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
     assert not page.get_by_test_id('native-records-status').count()
     assert page.evaluate("localStorage.getItem('qy_native:native-fixture:recovery')") == other
     assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))
+
+
+def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="blue"/></svg>'
+    page.route('https://images.example/**', lambda route: route.fulfill(content_type='image/svg+xml', body=svg))
+    first = 'https://images.example/first?signature=abc%2Fdef&expires=123'
+    second = 'https://images.example/second.png'
+    sql = f"select 2 as id, '{first}' as icon_url, 'ordinary text' as other union all select 1, '{second}', null"
+    _run_sql(page, sql)
+    image = page.locator('#grid .result-image-thumb img').first
+    expect(image).to_have_attribute('src', first)
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
+    mode = page.get_by_role('combobox', name='icon_url display', exact=True)
+    mode.select_option('text')
+    expect(page.locator('#grid .result-image-thumb')).to_have_count(0)
+    expect(page.locator('#grid td[data-v]').filter(has_text=first)).to_be_visible()
+    mode.select_option('auto')
+    opener = page.get_by_role('button', name='Enlarge image').first
+    opener.click()
+    dialog = page.get_by_role('dialog', name='Image preview')
+    expect(dialog).to_be_visible()
+    expect(dialog.locator('img')).to_have_attribute('src', first)
+    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('href', first)
+    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('target', '_blank')
+    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('rel', 'noopener noreferrer')
+    page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
+    dialog.get_by_role('button', name='Copy URL').click()
+    assert page.evaluate('window.__copied') == first
+    page.keyboard.press('Escape')
+    expect(dialog).to_have_count(0)
+    expect(opener).to_be_focused()
+    # Column controls receive Enter themselves, without triggering grid inspection or sort.
+    mode.focus()
+    mode.press('Enter')
+    page.keyboard.press('Escape')
+    expect(page.locator('.vg-modal')).to_have_count(0)
+    page.locator('#grid th[data-i="0"]').click()
+    expect(page.locator('#grid .result-image-thumb img').first).to_have_attribute('src', second)
+    expect(page.get_by_role('combobox', name='other display', exact=True)).to_have_count(0)
+    expect(page.get_by_role('combobox', name='id display', exact=True)).to_have_count(0)
+    mode.select_option('image')
+    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
+    with page.expect_download() as download:
+        page.locator('#jsonBtn').click()
+    exported = json.loads(open(download.value.path()).read())
+    assert [row['icon_url'] for row in exported] == [second, first]
+    mode.select_option('text')
+    page.locator('#tabAdd').click()
+    _run_sql(page, f"select '{second}' as icon_url")
+    expect(page.locator('#grid .result-image-thumb')).to_have_count(1)
+    expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('auto')
+    page.locator('#tabs .tab').first.click()
+    expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('text')
+
+
+def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+    held = []
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>'
+    recovered = {'value': False}
+
+    def respond(route):
+        requests.append(route.request.url)
+        if '/slow' in route.request.url:
+            held.append(route)
+        elif '/bad' in route.request.url and not recovered['value']:
+            route.fulfill(content_type='text/plain', body='expired')
+        else:
+            route.fulfill(content_type='image/svg+xml', body=svg)
+    page.route('https://images.example/**', respond)
+    _run_sql(page, "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x, 'https://images.example/' || x || '.png' AS image_url FROM n")
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 32")
+    assert len(requests) < 100
+    assert 'https://images.example/100.png' not in requests
+    page.locator('#grid').evaluate('el => el.scrollTop = el.scrollHeight')
+    page.locator('#grid tbody tr').last.locator('img').wait_for()
+    assert 'https://images.example/100.png' in requests
+    _run_sql(page, "select 'https://images.example/bad' as avatar_url")
+    retry = page.get_by_role('button', name='Retry image', exact=True)
+    expect(retry).to_be_visible()
+    before = len(requests)
+    page.wait_for_timeout(100)
+    assert len(requests) == before
+    expect(page.locator('#grid td[data-v="https://images.example/bad"]')).to_be_visible()
+    recovered['value'] = True
+    retry.click()
+    expect(retry).to_have_count(0)
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 32")
+    page.clock.install()
+    _run_sql(page, "select 'https://images.example/slow' as avatar_url")
+    page.locator('#grid img').wait_for()
+    page.clock.fast_forward(15_001)
+    expect(retry).to_be_visible()
+    expect(page.locator('#grid img')).to_have_count(0)
+    expect(page.get_by_role('combobox', name='avatar_url display', exact=True)).to_have_count(0)
+    for route in held:
+        try:
+            route.abort()
+        except Exception:
+            pass
+
+
+def test_result_images_use_http_cache_and_keep_signed_urls_distinct(page_sqlite):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    # Playwright routing disables the HTTP cache. Remove fixture routes before
+    # testing actual browser caching against an independently served image.
+    page.unroute_all()
+    page.context.unroute_all()
+    requests = []
+
+    class Images(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append((self.path, self.headers.get('Referer')))
+            body = b'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"/>'
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/svg+xml')
+            self.send_header('Cache-Control', 'public, max-age=3600')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Images)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        url = f'http://127.0.0.1:{server.server_port}/icon?signature=first'
+        _run_sql(page, f"select '{url}' as icon_url")
+        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+        page.get_by_role('button', name='Enlarge image').click()
+        page.wait_for_function("document.querySelector('#imagePreview img')?.naturalWidth === 64")
+        page.keyboard.press('Escape')
+        mode = page.get_by_role('combobox', name='icon_url display', exact=True)
+        mode.select_option('text')
+        mode.select_option('image')
+        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+        assert requests == [('/icon?signature=first', None)]
+        second = url.replace('signature=first', 'signature=second')
+        _run_sql(page, f"select '{second}' as icon_url")
+        expect(page.locator('#grid img')).to_have_attribute('src', second)
+        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+        assert requests == [('/icon?signature=first', None), ('/icon?signature=second', None)]
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_result_image_controls_follow_column_names_and_values(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    held = []
+    def respond(route):
+        if '/opaque' in route.request.url:
+            held.append(route)
+        else:
+            route.fulfill(content_type='text/html', body='<html>ordinary web page</html>')
+    page.route('https://images.example/**', respond)
+    _run_sql(page, "select 1 as id, 'name' as label, 'https://images.example/page.png' as icon_url, 'https://images.example/opaque' as asset")
+    expect(page.locator('#grid .result-image-mode')).to_have_count(0)
+    page.wait_for_function("document.querySelectorAll('#grid .result-image-thumb[aria-busy=true]').length === 1")
+    assert held
+    held.pop().fulfill(content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>')
+    asset = page.get_by_role('combobox', name='asset display', exact=True)
+    expect(asset).to_be_visible()
+    expect(page.locator('#grid .result-image-mode')).to_have_count(1)
+    asset.select_option('text')
+    expect(asset).to_be_visible()
+    page.locator('#grid th[data-i="0"]').click()
+    expect(asset).to_have_value('text')
+    asset.select_option('auto')
+    expect(asset).to_be_visible()
+
+
+def test_result_images_keep_confirmed_control_when_text_mode_loads_more(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    page.route('https://images.example/**', lambda route: route.fulfill(
+        content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>'))
+    page.select_option('#maxRows', '100')
+    _run_sql(page, "select id, case when id <= 100 then 'https://images.example/' || id else null end as icon_url from entries order by id")
+    mode = page.get_by_role('combobox', name='icon_url display', exact=True)
+    expect(mode).to_be_visible()
+    mode.select_option('text')
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(200)
+    expect(mode).to_be_visible()
+    expect(mode).to_have_value('text')
+    expect(page.locator('#grid img')).to_have_count(0)
+    mode.select_option('auto')
+    page.locator('#grid th[data-i="0"]').click()
+    expect(mode).to_be_visible()
+    expect(page.get_by_role('combobox', name='id display', exact=True)).to_have_count(0)

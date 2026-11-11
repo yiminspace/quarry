@@ -1,3 +1,5 @@
+import { getResultImageColumns, type ImageMode, type ResultImageColumn } from "./imageDetection";
+import { ResultImageCell, ResultImageModal, ResultImageModeSelect } from "./ResultImage";
 import { PLATFORM_MODE } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -194,6 +196,8 @@ export default function ResultWorkbench() {
   const [pendingLocalDb, setPendingLocalDb] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState>(null);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
+  const [imageModes, setImageModes] = useState<Record<string, Record<string, ImageMode>>>({});
+  const [imagePreview, setImagePreview] = useState<{ tabId: string; url: string } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<number, number>>({});
   const [modal, setModal] = useState<ModalState>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1060,7 +1064,12 @@ export default function ResultWorkbench() {
     setSortState(null);
     setSelectedCell(null);
     setColumnWidths({});
+    setImagePreview(null);
   }, [activeTabId]);
+
+  const imageScope = JSON.stringify([activeTabId, result?.columns.map((column) => column.name)]);
+  const columnImageMode = (column: string): ImageMode => imageModes[imageScope]?.[column] ?? "auto";
+  const imageColumns = useMemo(() => result ? getResultImageColumns(result) : new Map<string, ResultImageColumn>(), [result]);
 
   /* ---- grid derivations ---- */
 
@@ -1151,7 +1160,7 @@ export default function ResultWorkbench() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const { shownRows: rows, selectedCell: sel, result: res, queryEnv: env } = gridNavRef.current;
-      if (!sel || !res) return;
+      if (!sel || !res || anyModalOpen() || (document.activeElement as HTMLElement)?.closest("button, select, a")) return;
       const typing = /INPUT|TEXTAREA/.test((document.activeElement as HTMLElement)?.tagName || "");
       if ((e.metaKey || e.ctrlKey) && e.key === "c" && !typing && !String(getSelection())) {
         const v = cellText(rows[sel.ri]?.[res.columns[sel.ci]?.name]) ?? "";
@@ -1481,6 +1490,7 @@ export default function ResultWorkbench() {
           navigateHistory={navigateHistory}
         />
         </EditorWorkspace>
+        {imagePreview?.tabId === activeTabId && <ResultImageModal url={imagePreview.url} onClose={() => setImagePreview(null)} />}
         <div className="vg-gridwrap gridwrap" id="grid">
           {loading ? (
             <div className="vg-empty spin">
@@ -1516,6 +1526,12 @@ export default function ResultWorkbench() {
                       {sortState?.i === i && (
                         <span className="vg-ar ar">{sortState.dir > 0 ? "↑" : "↓"}</span>
                       )}
+                      <ResultImageModeSelect column={imageColumns.get(c.name)} mode={columnImageMode(c.name)}
+                        label={`${c.name} ${t("image_display")}`}
+                        onChange={(mode) => setImageModes((previous) => ({
+                          ...previous,
+                          [imageScope]: { ...previous[imageScope], [c.name]: mode },
+                        }))} />
                       <span className="vg-rz rz" onMouseDown={(e) => startColResize(e, i)} />
                     </th>
                   ))}
@@ -1538,6 +1554,8 @@ export default function ResultWorkbench() {
                     {result.columns.map((c, ci) => {
                       const v = r[c.name];
                       const preview = cellPreview(v);
+                      const imageColumn = imageColumns.get(c.name);
+                      const imageUrl = columnImageMode(c.name) === "text" ? null : imageColumn?.urls.get(r);
                       const isSel = selectedCell?.ri === ri && selectedCell?.ci === ci;
                       return (
                         <td
@@ -1549,7 +1567,10 @@ export default function ResultWorkbench() {
                           onClick={() => setSelectedCell({ ri, ci })}
                           onDoubleClick={() => onCellDblClick(v)}
                         >
-                          {preview.text === null ? "NULL" : preview.text}
+                          {imageUrl && imageColumn ? <ResultImageCell key={imageUrl} url={imageUrl}
+                            onOpen={() => setImagePreview({ tabId: activeTabId, url: imageUrl })}
+                            onConfirmed={() => imageColumn.confirm(r)} />
+                            : preview.text === null ? "NULL" : preview.text}
                         </td>
                       );
                     })}
