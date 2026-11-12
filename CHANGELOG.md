@@ -7,11 +7,7 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
-- Index image-link candidates once per query result and reuse them during sorting, selection and tab changes. Successful image decoding updates only its column display control.
-
-- Keep image thumbnails borderless and aligned with text row heights, and show display controls only after the browser successfully decodes an image in that column.
-
-- Preview image URLs as lazy-loaded result thumbnails, enlarge them on click, and switch each column between automatic, image and text display. Failed or timed-out images offer retry while preserving their original URLs for copying and export.
+- Use the column header’s Text / Load images menu to opt into thumbnails. Opening the menu checks only that column. Load images recognizes image suffixes in HTTPS URL paths and filename parameters and loads images as rows come into view. Browser image loading supports hosts without CORS headers, and the choice is restored with the saved query result after refresh. URL text uses the available cell width beside the thumbnail.
 
 - Reopen the newer saved workbench without a conflict warning when the older browser recovery adds no workbench content.
 

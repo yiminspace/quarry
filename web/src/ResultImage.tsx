@@ -1,39 +1,20 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { collectColumnImages } from "./imageDetection";
+import type { QueryResult } from "./api";
+import { useEffect, useId, useRef, useState } from "react";
 import { cellPreview } from "./cellValue";
 import { copy } from "./clip";
 import { t } from "./i18n";
-import { ResultImageColumn, type ImageMode } from "./imageDetection";
 import { Modal } from "./Modals";
 
-const emptyColumn = new ResultImageColumn();
-
-export function ResultImageModeSelect({ column = emptyColumn, mode, label, onChange }: {
-  column?: ResultImageColumn;
-  mode: ImageMode;
-  label: string;
-  onChange: (mode: ImageMode) => void;
-}) {
-  const confirmed = useSyncExternalStore(column.subscribe, column.getSnapshot);
-  if (!confirmed && mode === "auto") return null;
-  return (
-    <select className="result-image-mode" aria-label={label} value={mode}
-      onClick={(event) => event.stopPropagation()}
-      onChange={(event) => onChange(event.target.value as ImageMode)}>
-      <option value="auto">{t("image_auto")}</option>
-      <option value="image">{t("image_mode")}</option>
-      <option value="text">{t("image_text")}</option>
-    </select>
-  );
-}
-
-function ImageLoad({ url, large = false, onOpen, onConfirmed }: { url: string; large?: boolean; onOpen?: () => void; onConfirmed?: () => void }) {
+function ImageLoad({ url, onOpen }: { url: string; onOpen: () => void }) {
   const host = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(large);
+  const [visible, setVisible] = useState(false);
   const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
+  const timerRef = useRef<number | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (large || !host.current) return;
+    if (!host.current) return;
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
       setVisible(true);
@@ -41,23 +22,23 @@ function ImageLoad({ url, large = false, onOpen, onConfirmed }: { url: string; l
     }, { root: host.current.closest(".gridwrap") });
     observer.observe(host.current);
     return () => observer.disconnect();
-  }, [large]);
+  }, []);
 
   useEffect(() => {
-    if (!visible || status !== "loading") return;
-    const timer = window.setTimeout(() => setStatus("failed"), 15_000);
+    if (!visible) return;
+    const timer = timerRef.current = window.setTimeout(() => setStatus("failed"), 15_000);
     return () => window.clearTimeout(timer);
-  }, [visible, status, attempt]);
+  }, [visible, attempt]);
 
   return (
-    <div ref={host} onDoubleClick={(event) => event.stopPropagation()} className={large ? "result-image-large" : "result-image-thumb"} aria-busy={visible && status === "loading"}>
+    <div ref={host} onDoubleClick={(event) => event.stopPropagation()} className="result-image-thumb" aria-busy={visible && status === "loading"}>
       {visible && status !== "failed" && (
         <img key={attempt} src={url} alt={t("image_preview")} decoding="async" referrerPolicy="no-referrer"
           onLoad={(event) => {
+            window.clearTimeout(timerRef.current);
             if (!event.currentTarget.naturalWidth || !event.currentTarget.naturalHeight) { setStatus("failed"); return; }
             setStatus("ready");
-            onConfirmed?.();
-          }} onError={() => setStatus("failed")} />
+          }} onError={() => { window.clearTimeout(timerRef.current); setStatus("failed"); }} />
       )}
       {status === "failed" ? (
         <button type="button" className="result-image-retry" title={t("image_failed")} aria-label={t("image_retry")}
@@ -66,22 +47,26 @@ function ImageLoad({ url, large = false, onOpen, onConfirmed }: { url: string; l
             setStatus("loading");
             setAttempt((n) => n + 1);
           }}>
-          {large ? t("image_retry") : <i className="ti ti-refresh" aria-hidden="true" />}
+          <i className="ti ti-refresh" aria-hidden="true" />
         </button>
-      ) : onOpen ? (
+      ) : (
         <button type="button" className="result-image-open" aria-label={t("image_enlarge")} title={t("image_enlarge")}
-          onClick={(event) => { event.stopPropagation(); onOpen(); }}>
+          disabled={status !== "ready"}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}>
           {status === "loading" && <span aria-hidden="true">…</span>}
         </button>
-      ) : status === "loading" && <span>{t("image_loading")}</span>}
+      )}
     </div>
   );
 }
 
-export function ResultImageCell({ url, onOpen, onConfirmed }: { url: string; onOpen: () => void; onConfirmed: () => void }) {
+export function ResultImageCell({ url, onOpen }: { url: string; onOpen: () => void }) {
   return (
     <div className="result-image-cell">
-      <ImageLoad url={url} onOpen={onOpen} onConfirmed={onConfirmed} />
+      <ImageLoad url={url} onOpen={onOpen} />
       <span className="result-image-url">{cellPreview(url).text}</span>
     </div>
   );
@@ -116,9 +101,57 @@ export function ResultImageModal({ url, onClose }: { url: string; onClose: () =>
           <a className="vg-btn btn" href={url} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">{t("image_original")}</a>
           <button ref={closeButton} className="vg-btn btn" onClick={onClose}>{t("image_close")}</button>
         </div>
-        <ImageLoad key={url} url={url} large />
+        <div className="result-image-large">
+          <img src={url} alt={t("image_preview")} decoding="async" referrerPolicy="no-referrer" />
+        </div>
         <div className="result-image-full-url">{url}</div>
       </section>
     </Modal>
+  );
+}
+
+export function ResultImageColumnMenu({ result, column, enabled, onChange }: {
+  result: QueryResult;
+  column: string;
+  enabled: boolean;
+  onChange: (urls: ReadonlySet<string> | null) => void;
+}) {
+  const menuId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const [scan, setScan] = useState<{ result: QueryResult; urls: ReadonlySet<string> }>();
+  const urls = scan?.result === result ? scan.urls : undefined;
+  const label = `${column} ${t("image_display")}`;
+  return (
+    <div className="result-image-mode" onClick={(event) => event.stopPropagation()}>
+      <button ref={trigger} type="button" className="result-image-mode-trigger"
+        aria-label={label} title={label} data-enabled={enabled} popoverTarget={menuId}
+        onClick={(event) => {
+          if (!menu.current || menu.current.matches(":popover-open")) return;
+          if (!enabled && !urls) setScan({ result, urls: collectColumnImages(result.rows, column) });
+          const anchor = event.currentTarget.getBoundingClientRect();
+          const width = Math.min(144, window.innerWidth - 16);
+          menu.current.style.left = `${Math.max(8, Math.min(anchor.right - width, window.innerWidth - width - 8))}px`;
+          const above = window.innerHeight - anchor.bottom < 80 && anchor.top > 80;
+          menu.current.style.top = above ? "auto" : `${anchor.bottom + 4}px`;
+          menu.current.style.bottom = above ? `${window.innerHeight - anchor.top + 4}px` : "auto";
+        }}>
+        <i className="ti ti-dots" aria-hidden="true" />
+      </button>
+      <div ref={menu} id={menuId} className="result-image-mode-menu" popover="auto" role="group" aria-label={label}>
+        {(enabled || urls?.size ? [false, true] : [false]).map((image) => (
+          <button key={String(image)} type="button" aria-pressed={enabled === image}
+            onClick={() => {
+              if (enabled && !image) onChange(null);
+              if (!enabled && image && urls?.size) onChange(urls);
+              menu.current?.hidePopover();
+              trigger.current?.focus();
+            }}>
+            <span>{t(image ? "image_load_column" : "image_text")}</span>
+            {enabled === image && <i className="ti ti-check" aria-hidden="true" />}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

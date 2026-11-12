@@ -1,5 +1,4 @@
-import { getResultImageColumns, type ImageMode, type ResultImageColumn } from "./imageDetection";
-import { ResultImageCell, ResultImageModal, ResultImageModeSelect } from "./ResultImage";
+import { ResultImageCell, ResultImageModal, ResultImageColumnMenu } from "./ResultImage";
 import { PLATFORM_MODE } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -196,8 +195,7 @@ export default function ResultWorkbench() {
   const [pendingLocalDb, setPendingLocalDb] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState>(null);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
-  const [imageModes, setImageModes] = useState<Record<string, Record<string, ImageMode>>>({});
-  const [imagePreview, setImagePreview] = useState<{ tabId: string; url: string } | null>(null);
+  const [imagePreview, setImagePreview] = useState<{ tabId: string; result: QueryResult; column: number; url: string } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<number, number>>({});
   const [modal, setModal] = useState<ModalState>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1067,9 +1065,11 @@ export default function ResultWorkbench() {
     setImagePreview(null);
   }, [activeTabId]);
 
-  const imageScope = JSON.stringify([activeTabId, result?.columns.map((column) => column.name)]);
-  const columnImageMode = (column: string): ImageMode => imageModes[imageScope]?.[column] ?? "auto";
-  const imageColumns = useMemo(() => result ? getResultImageColumns(result) : new Map<string, ResultImageColumn>(), [result]);
+  useEffect(() => {
+    setImagePreview((previous) => previous?.result === result ? previous : null);
+  }, [result]);
+
+  const enabledImageColumns = activeSnapshot?.imageColumns;
 
   /* ---- grid derivations ---- */
 
@@ -1490,7 +1490,9 @@ export default function ResultWorkbench() {
           navigateHistory={navigateHistory}
         />
         </EditorWorkspace>
-        {imagePreview?.tabId === activeTabId && <ResultImageModal url={imagePreview.url} onClose={() => setImagePreview(null)} />}
+        {imagePreview?.tabId === activeTabId && imagePreview.result === result && enabledImageColumns?.has(imagePreview.column) && (
+          <ResultImageModal url={imagePreview.url} onClose={() => setImagePreview(null)} />
+        )}
         <div className="vg-gridwrap gridwrap" id="grid">
           {loading ? (
             <div className="vg-empty spin">
@@ -1526,12 +1528,15 @@ export default function ResultWorkbench() {
                       {sortState?.i === i && (
                         <span className="vg-ar ar">{sortState.dir > 0 ? "↑" : "↓"}</span>
                       )}
-                      <ResultImageModeSelect column={imageColumns.get(c.name)} mode={columnImageMode(c.name)}
-                        label={`${c.name} ${t("image_display")}`}
-                        onChange={(mode) => setImageModes((previous) => ({
-                          ...previous,
-                          [imageScope]: { ...previous[imageScope], [c.name]: mode },
-                        }))} />
+                      <ResultImageColumnMenu result={result} column={c.name} enabled={!!enabledImageColumns?.has(i)}
+                        onChange={(urls) => {
+                          const current = useTabsStore.getState().results[activeTabId];
+                          if (current?.result !== result) return;
+                          const columns = new Map(current.imageColumns);
+                          if (urls) columns.set(i, urls);
+                          else columns.delete(i);
+                          setTabResult(activeTabId, { ...current, imageColumns: columns.size ? columns : undefined });
+                        }} />
                       <span className="vg-rz rz" onMouseDown={(e) => startColResize(e, i)} />
                     </th>
                   ))}
@@ -1554,8 +1559,7 @@ export default function ResultWorkbench() {
                     {result.columns.map((c, ci) => {
                       const v = r[c.name];
                       const preview = cellPreview(v);
-                      const imageColumn = imageColumns.get(c.name);
-                      const imageUrl = columnImageMode(c.name) === "text" ? null : imageColumn?.urls.get(r);
+                      const imageUrl = typeof v === "string" && enabledImageColumns?.get(ci)?.has(v) ? v : undefined;
                       const isSel = selectedCell?.ri === ri && selectedCell?.ci === ci;
                       return (
                         <td
@@ -1567,9 +1571,8 @@ export default function ResultWorkbench() {
                           onClick={() => setSelectedCell({ ri, ci })}
                           onDoubleClick={() => onCellDblClick(v)}
                         >
-                          {imageUrl && imageColumn ? <ResultImageCell key={imageUrl} url={imageUrl}
-                            onOpen={() => setImagePreview({ tabId: activeTabId, url: imageUrl })}
-                            onConfirmed={() => imageColumn.confirm(r)} />
+                          {imageUrl ? <ResultImageCell key={imageUrl} url={imageUrl}
+                            onOpen={() => setImagePreview({ tabId: activeTabId, result, column: ci, url: imageUrl })} />
                             : preview.text === null ? "NULL" : preview.text}
                         </td>
                       );
