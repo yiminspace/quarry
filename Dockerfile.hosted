@@ -23,8 +23,10 @@ LABEL org.opencontainers.image.revision=${GIT_SHA}
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 quarry && useradd --uid 10001 --gid 10001 --no-create-home quarry \
-    && mkdir -p /var/lib/quarry && chown quarry:quarry /var/lib/quarry
+    && mkdir -p /var/lib/quarry/cloud-local && chown -R quarry:quarry /var/lib/quarry
 COPY --from=build /src/target/release/quarry-server /usr/local/bin/quarry-server
+# Docker CLI only (no daemon): optional cloud Local talks to a separate Docker-in-Docker service.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
 USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD ["quarry-server", "healthcheck"]

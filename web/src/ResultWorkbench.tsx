@@ -1,6 +1,6 @@
 import { ResultImageCell, ResultImageModal, ResultImageColumnMenu } from "./ResultImage";
-import { CLI_SESSION_MODE, PLATFORM_MODE } from "./platform";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CLI_SESSION_MODE, PLATFORM_MODE, platformSnapshot, subscribePlatform } from "./platform";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   cancelPlatformQuery,
   fetchConnections,
@@ -201,6 +201,8 @@ export default function ResultWorkbench() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paramModal, setParamModal] = useState<SavedQuery | null>(null);
   const [connInfoOpen, setConnInfoOpen] = useState(false);
+  // Hosted mode offers connection details only for cloud Local administration.
+  const cloudLocal = useSyncExternalStore(subscribePlatform, () => platformSnapshot().cloudLocal);
   const [explainBusy, setExplainBusy] = useState(false);
   const [loadMoreBusy, setLoadMoreBusy] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
@@ -1376,7 +1378,7 @@ export default function ResultWorkbench() {
             id="ciBtn"
             title={t("conn_info")}
             aria-label={t("conn_info")}
-            style={{ display: current && !PLATFORM_MODE ? undefined : "none" }}
+            style={{ display: current && (!PLATFORM_MODE || cloudLocal) ? undefined : "none" }}
             onClick={() => setConnInfoOpen(true)}
           >
             <i className="ti ti-info-circle" />

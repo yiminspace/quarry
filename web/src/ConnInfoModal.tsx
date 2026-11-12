@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { fetchConnInfo, fetchHealth, localSync, localUp, type ConnInfo } from "./api";
+import CloudLocalPanel from "./CloudLocalPanel";
 import { copy } from "./clip";
 import { t, tv } from "./i18n";
 import { useModalEscape } from "./modalStack";
+import { PLATFORM_MODE } from "./platform";
 import { displayConnectionEnvironment, localTargetRoute, useConnStore } from "./store/connStore";
 import { toast } from "./store/toastStore";
 
@@ -206,7 +208,7 @@ export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp,
                   </>
                 )}
               </div>
-              {!cloud && !localTargetRoute(env) && !hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
+              {!PLATFORM_MODE && !cloud && !localTargetRoute(env) && !hasLocal && (info.engine === "postgres" || info.engine === "redis") && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
@@ -219,7 +221,7 @@ export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp,
                   </button>
                 </div>
               )}
-              {!cloud && !localTargetRoute(env) && hasLocal && isLocal && canSync && info.engine === "postgres" && (
+              {!PLATFORM_MODE && !cloud && !localTargetRoute(env) && hasLocal && isLocal && canSync && info.engine === "postgres" && (
                 <div className="vg-ciactions ciactions">
                   <button
                     className="vg-btn btn"
@@ -234,6 +236,7 @@ export default function ConnInfoModal({ db, env, cloud, onClose, onAfterLocalUp,
               )}
             </>
           )}
+          {PLATFORM_MODE && <CloudLocalPanel db={db} env={env} onChanged={onClose} />}
         </div>
       </div>
     </div>

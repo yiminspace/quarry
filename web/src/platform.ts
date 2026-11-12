@@ -8,16 +8,18 @@ export const PLATFORM_MODE = typeof document !== "undefined" && document.querySe
 export const CLI_SESSION_MODE = PLATFORM_MODE && document.querySelector('meta[name="quarry-cli-session"]')?.getAttribute("content") === "true";
 let cliExpiryTimer: ReturnType<typeof setTimeout> | undefined;
 const cliSessionPath = /^\/quarry\/session\/[0-9a-f]{32}\/$/;
-export type PlatformResource = { id: string; project: string; db: string; env: string | null; engine: string; production: boolean; placement: "remote" };
-type Bootstrap = { principal: { id: string }; resources: Omit<PlatformResource, "placement">[] };
+export type PlatformResource = { id: string; project: string; db: string; env: string | null; engine: string; production: boolean; placement: "remote" | "cloud"; sourceResourceId?: string | null; image?: string | null };
+type Bootstrap = { principal: { id: string }; resources: (Omit<PlatformResource, "placement"> & { placement?: string })[]; capabilities?: { cloudLocal?: boolean } };
 type PlatformState = {
   account: string | null;
   remote: "connected" | "disconnected";
   error: string | null;
   storageError: string | null;
   resources: PlatformResource[];
+  /** Server offers per-user cloud Local databases to this account. */
+  cloudLocal: boolean;
 };
-let state: PlatformState = { account: null, remote: "disconnected", error: null, storageError: null, resources: [] };
+let state: PlatformState = { account: null, remote: "disconnected", error: null, storageError: null, resources: [], cloudLocal: false };
 const listeners = new Set<() => void>();
 export const platformSnapshot = () => state;
 export const subscribePlatform = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
@@ -146,12 +148,14 @@ async function reconnectRemote(): Promise<void> {
   try {
     const data = await platformJSON<Bootstrap>("/api/platform");
     if (data.principal.id !== state.account) throw new Error(t("platform_remote_identity"));
-    publish({ remote: "connected", error: null, resources: data.resources.map((resource) => ({ ...resource, placement: "remote" })) });
+    publish({ remote: "connected", error: null, cloudLocal: !!data.capabilities?.cloudLocal, resources: data.resources.map((resource) => ({ ...resource, placement: resource.placement === "cloud" ? "cloud" : "remote" })) });
     window.dispatchEvent(new Event("quarry-platform-changed"));
   } catch (error) {
     publish({ remote: "disconnected", error: String((error as Error).message) });
   }
 }
+/** Reload the authorized resource directory (after creating or deleting a cloud Local). */
+export const refreshPlatform = (): Promise<void> => reconnectRemote();
 export function resourceFor(db: string, env: string | null): PlatformResource {
   const resource = state.resources.find((item) => platformDb(item) === db && platformEnv(item) === env);
   if (!resource) throw new Error(t("platform_target_unavailable"));
@@ -159,7 +163,7 @@ export function resourceFor(db: string, env: string | null): PlatformResource {
 }
 export const platformDb = (resource: PlatformResource) => `${resource.project}/${resource.db}`;
 export const platformEnv = (resource: PlatformResource) => `remote:${resource.id}`;
-export const resourceLabel = (resource: PlatformResource) => resource.env || t("platform_default");
+export const resourceLabel = (resource: PlatformResource) => resource.placement === "cloud" ? t("cloud_local_label") : resource.env || t("platform_default");
 export function displayEnvironment(db: string, env: string | null): string {
   if (!PLATFORM_MODE) return env || "default";
   try { return resourceLabel(resourceFor(db, env)); } catch { return t("platform_remote_missing"); }

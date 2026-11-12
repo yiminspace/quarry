@@ -133,6 +133,54 @@ Use HTTPS and a single replica for this mode. The browser's database access is r
 Private-network HTTP verification requires explicit `allow_insecure_http: true`;
 public connections should use HTTPS.
 
+## Cloud Local
+
+The hosted server can run personal PostgreSQL and Redis debugging databases for each user, with
+the same experience as a desktop Local: choose any allowed image version, full privileges inside
+the database, and direct connections from your own services. Databases run inside a separate
+Docker-in-Docker service that only Quarry can reach; their ports are not published on the host.
+
+```sh
+cp hosted.cloud-local.example.json config/hosted.json   # then fill in accounts and databases
+docker compose -f compose.yaml -f compose.cloud-local.yaml up -d
+```
+
+The `cloud_local` section of `hosted.json`:
+
+| Field | Meaning |
+| --- | --- |
+| `docker_host` / `docker_cert_path` | Docker-in-Docker address and TLS client certificate directory; `tcp://docker:2376` and `/certs/client` in the Compose overlay |
+| `connect_host` | Host name Quarry uses to reach database containers; `docker` in Compose |
+| `ports` | Port range allocated inside Docker-in-Docker; default `[20000, 20999]` |
+| `max_per_user` | Locals per user; default 5 |
+| `memory` / `cpus` | Per-container limits such as `"1g"` and `"1"` |
+| `images` | Allowed image prefixes; defaults to `postgres:`, `postgis/postgis:`, `pgvector/pgvector:`, `redis:`, `redis/redis-stack-server:` and `valkey/valkey:` |
+| `ticket_hours` | Tunnel ticket lifetime; default 12 hours |
+
+To use it:
+
+1. Open connection details for a PostgreSQL or Redis database and choose Create cloud Local,
+   optionally with an image.
+2. The Local appears as that database's Cloud Local environment. Query it from the web and CLI like
+   any hosted database.
+3. To connect your own service, choose Connect from this computer and run the command shown:
+
+   ```sh
+   qy local connect https://quarry.example.com/quarry/ --port 5433 --ticket qt_...
+   ```
+
+   Then point the service at `postgresql://quarry:quarry@127.0.0.1:5433/<database>`. The tunnel
+   forwards bytes unchanged, so transactions, prepared statements, extensions and migration tools work.
+
+Cloud Local requires `lab:db:local`. Each Local belongs to the account that created it; tickets are
+bound to that account and Local and are revoked when it is deleted. Web queries stay read-only;
+writes go through the tunnel, as with a desktop Local. A PostgreSQL Local can sync its schema from
+its source database without copying rows.
+
+Docker-in-Docker needs a privileged container. Run it on a trusted host or use the Sysbox runtime.
+Cloud Local data lives on the deployment's server (the `cloud-local-docker` volume); backups and
+retention are the deployer's responsibility.
+
 ## Hosted and local workbenches
 
 The hosted web workbench shows the cloud connections authorized for the signed-in

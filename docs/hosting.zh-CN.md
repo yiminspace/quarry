@@ -116,6 +116,49 @@ Quarry 每次授权时向 `verify_url` 发送 GET 请求，携带 Bearer 令牌�
 并将平台自己的登录、续期和退出路径路由到对应服务。
 内部私网 HTTP 身份接口需要显式 `allow_insecure_http: true`；公网接口保持 HTTPS。
 
+## 云端 Local
+
+托管服务可以在服务器上为每个用户单独起 PostgreSQL 和 Redis 调试库，体验和本机 Local 一样：
+可以选择镜像版本，有完整权限，本机服务也能直连。数据库跑在一个独立的 Docker-in-Docker
+服务里，端口只对 Quarry 开放，不在宿主机上发布。
+
+```sh
+cp hosted.cloud-local.example.json config/hosted.json   # 补全账号和数据库后
+docker compose -f compose.yaml -f compose.cloud-local.yaml up -d
+```
+
+`hosted.json` 里的 `cloud_local` 段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `docker_host` / `docker_cert_path` | Quarry 访问 dind 的地址和 TLS 客户端证书目录，Compose 叠加文件里分别是 `tcp://docker:2376` 和 `/certs/client` |
+| `connect_host` | Quarry 连接数据库容器时使用的主机名，Compose 里是 `docker` |
+| `ports` | dind 内部分配给 Local 的端口段，默认 `[20000, 20999]` |
+| `max_per_user` | 每人最多几个 Local，默认 5 |
+| `memory` / `cpus` | 每个容器的资源上限，例如 `"1g"`、`"1"` |
+| `images` | 允许的镜像前缀；省略时为 `postgres:`、`postgis/postgis:`、`pgvector/pgvector:`、`redis:`、`redis/redis-stack-server:`、`valkey/valkey:` |
+| `ticket_hours` | 隧道凭证有效期，默认 12 小时 |
+
+使用方式：
+
+1. 在网页里打开某个 PostgreSQL 或 Redis 库的连接详情，点“创建云端 Local”，可选填镜像版本。
+2. 新的 Local 会作为这个库下的“云端 Local”环境出现，在网页和 CLI 里查询它和查询其他云端库一样。
+3. 要让本机服务连接，在它的连接详情里点“从本机连接”，复制命令运行：
+
+   ```sh
+   qy local connect https://quarry.example.com/quarry/ --port 5433 --ticket qt_...
+   ```
+
+   之后服务使用 `postgresql://quarry:quarry@127.0.0.1:5433/<库名>` 即可。隧道把字节原样转发，
+   事务、预编译语句、扩展、迁移工具都可以正常使用。
+
+需要 `lab:db:local` 权限。每个 Local 只属于创建它的账号；凭证按账号和 Local 绑定，删除 Local 时一并作废。
+网页查询仍然只读，写入通过隧道完成，和本机 Local 的规则一致。PostgreSQL Local 可以从来源库同步结构，
+只传结构，不复制业务数据。
+
+Docker-in-Docker 需要 privileged 容器，请部署在可信主机上，或改用 Sysbox 运行时。
+云端 Local 里的数据保存在部署者的服务器（`cloud-local-docker` 卷）上，备份和保留策略由部署者负责。
+
 ## 网页和本机工作台
 
 托管网页展示当前账号有权访问的云端连接。草稿和 SQL 历史保存在当前浏览器，

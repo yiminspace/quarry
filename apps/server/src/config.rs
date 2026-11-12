@@ -1,4 +1,4 @@
-use quarry_platform::HostedResource;
+use quarry_platform::{CloudLocalOptions, HostedResource};
 use serde::Deserialize;
 use std::io::Write;
 #[cfg(unix)]
@@ -18,6 +18,8 @@ struct CompactConfig {
     databases: Vec<Database>,
     assistant_base_url: Option<String>,
     assistant_model: Option<String>,
+    #[serde(default)]
+    cloud_local: Option<CloudLocalOptions>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,6 +117,7 @@ impl CompactConfig {
             auth: self.auth,
             assistant_base_url: self.assistant_base_url,
             assistant_model: self.assistant_model,
+            cloud_local: self.cloud_local,
             listen: self.listen,
         };
         config.validate()?;
@@ -158,6 +161,9 @@ pub struct Config {
     pub auth: AuthConfig,
     pub assistant_base_url: Option<String>,
     pub assistant_model: Option<String>,
+    /// Optional per-user Local databases on a deployment-owned Docker daemon.
+    #[serde(default)]
+    pub cloud_local: Option<CloudLocalOptions>,
     #[serde(default = "listen")]
     pub listen: String,
 }
@@ -299,6 +305,9 @@ impl Config {
                     }
                 }
             }
+        }
+        if let Some(cloud) = &self.cloud_local {
+            cloud.validate()?;
         }
         if self.assistant_base_url.is_some() != self.assistant_model.is_some() {
             return Err("Both assistant_base_url and assistant_model are required together".into());

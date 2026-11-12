@@ -45,8 +45,21 @@ pub fn router(config: config::Config, version: String) -> Result<Router, quarry_
         }
     )
     .then(|| Arc::new(Handoffs::default()));
+    let cloud = config
+        .cloud_local
+        .map(|options| {
+            quarry_platform::CloudLocals::new(
+                options,
+                service.clone(),
+                config.state_dir.join("cloud-local"),
+            )
+        })
+        .transpose()?;
     let auth = Arc::new(Auth::new(config.auth, config.state_dir)?);
     let mut hosted = HostedState::new(service, auth.clone(), config.resources)?;
+    if let Some(cloud) = cloud {
+        hosted = hosted.with_cloud_local(cloud);
+    }
     if let (Some(base_url), Some(model)) = (config.assistant_base_url, config.assistant_model) {
         hosted = hosted.with_assistant(quarry_platform::AssistantOptions { base_url, model })?;
     }

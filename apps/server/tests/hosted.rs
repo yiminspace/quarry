@@ -58,6 +58,7 @@ fn fixture(path: &Path) -> Config {
         auth: auth_config(),
         assistant_base_url: None,
         assistant_model: None,
+        cloud_local: None,
         listen: "127.0.0.1:0".into(),
     }
 }

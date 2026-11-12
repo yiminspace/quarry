@@ -6708,9 +6708,10 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
 
 # Hosted UI contract tests use the built bundle with the platform marker.
 # Network fixtures exercise browser behavior; Rust platform tests cover IAM and ACLs.
-def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False):
+def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False, cloud_local=False):
     state = {'online': online, 'queries': [], 'local_requests': [],
-             'assistant_requests': [], 'operations': [], 'refreshes': 0}
+             'assistant_requests': [], 'operations': [], 'refreshes': 0,
+             'cloud_local': cloud_local, 'cloud_requests': [], 'cloud_resources': []}
     remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
                   engine=engine, production=True)
     page.add_init_script("""(() => {
@@ -6735,6 +6736,24 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
         path = parsed.path.replace('/api/db/', '/api/', 1)
         body = request.post_data_json if request.method == 'POST' else {}
         account = request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
+        if state['cloud_local'] and (path.startswith('/api/local/') or path == '/api/schema/import'):
+            state['cloud_requests'].append((path, body))
+            if path == '/api/local/up' and body.get('sourceResourceId'):
+                state['cloud_resources'] = [dict(id='cloud:abc', project='lab', db='notes', env='local',
+                                                 placement='cloud', engine=engine, production=False,
+                                                 image=body.get('image') or 'postgres:16-alpine',
+                                                 sourceResourceId=body['sourceResourceId'])]
+                value = {'created': True, 'resources': state['cloud_resources']}
+            elif path == '/api/local/ticket':
+                value = {'ticket': 'qt_fixture', 'resourceId': body['resourceId'], 'engine': engine,
+                         'database': 'workspace_ab_notes', 'user': 'quarry', 'password': 'quarry'}
+            elif path == '/api/local/down' and body.get('purge'):
+                state['cloud_resources'] = []
+                value = {'purged': True}
+            else:
+                value = {'ok': True}
+            route.fulfill(json=value)
+            return
         if path in ('/api/pair', '/api/unpair', '/api/personal') or path.startswith('/api/local/'):
             state['local_requests'].append(request.url)
             route.abort()
@@ -6757,7 +6776,8 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
             return
         elif path == '/api/platform':
             value = {'mode': 'hosted', 'principal': {'id': account},
-                     'capabilities': {'assistant': True}, 'resources': [remote]}
+                     'capabilities': {'assistant': True, 'cloudLocal': state['cloud_local']},
+                     'resources': [remote] + state['cloud_resources']}
         elif path == '/api/tables':
             value = {'engine': 'sqlite', 'tables': ['entries'], 'capped': False}
         elif path == '/api/columns':
@@ -6948,6 +6968,49 @@ def test_platform_cloud_query_history_stays_in_browser(page_sqlite):
     assert page.locator('#hlist').get_by_text('select 11 as remote_value', exact=True).count() == 0
     assert not state['local_requests']
     assert len(state['queries']) == 1
+
+
+def test_platform_cloud_local_create_connect_and_delete_without_running_sql(page_sqlite):
+    page = page_sqlite
+    page.on('dialog', lambda dialog: dialog.accept())
+    state = _hosted_workbench(page, engine='postgres', cloud_local=True)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as keep_this_draft')
+    page.locator('#ciBtn').click()
+    panel = page.get_by_test_id('cloud-local-panel')
+    panel.wait_for()
+    page.get_by_test_id('cloud-local-image').fill('postgres:15-alpine')
+    page.get_by_test_id('cloud-local-create').click()
+    page.wait_for_function("!document.querySelector('#cibox')")
+    assert ('/api/local/up', {'sourceResourceId': 'remote-notes', 'engine': 'postgres', 'image': 'postgres:15-alpine'}) in state['cloud_requests']
+
+    # The new cloud Local is a separate, labelled environment of the same database.
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.get_by_text('Cloud Local', exact=True).first.click()
+    page.locator('#ciBtn').click()
+    page.get_by_test_id('cloud-local-connect').click()
+    command = page.get_by_test_id('cloud-local-command')
+    command.wait_for()
+    assert command.text_content().startswith('qy local connect ')
+    assert command.text_content().endswith('--port 5433 --ticket qt_fixture')
+    assert page.get_by_test_id('cloud-local-url').text_content() == 'postgresql://quarry:quarry@127.0.0.1:5433/workspace_ab_notes'
+    page.get_by_test_id('cloud-local-delete').click()
+    page.wait_for_function("!document.querySelector('#cibox')")
+    assert ('/api/local/down', {'resourceId': 'cloud:abc', 'purge': True}) in state['cloud_requests']
+    assert page.locator('#sql').input_value() == 'select 1 as keep_this_draft'
+    assert not state['queries']
+    assert not state['local_requests']
+
+
+def test_platform_without_cloud_local_capability_shows_no_local_administration(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page, engine='postgres')
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').wait_for()
+    assert page.locator('#ciBtn').is_hidden()
+    assert page.get_by_test_id('cloud-local-panel').count() == 0
+    assert page.locator('#ciUp').count() == 0
+    assert not state['local_requests'] and not state['cloud_requests']
 
 
 def test_platform_background_reconnect_preserves_draft_without_query_replay(page_sqlite):

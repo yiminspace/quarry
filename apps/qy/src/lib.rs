@@ -4,6 +4,7 @@ mod gui_launch;
 pub mod http;
 mod mcp;
 mod service;
+mod tunnel;
 mod updater;
 mod verified_associations;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -423,6 +424,16 @@ enum LocalCommand {
         db: String,
         #[arg(long = "from", default_value = "dev")]
         from: String,
+    },
+    /// Expose a cloud Local on a loopback port for your own services.
+    Connect {
+        /// Hosted Quarry address, e.g. https://quarry.example.com/quarry/
+        server: String,
+        /// Tunnel ticket copied from the workbench (or QUARRY_TUNNEL_TICKET).
+        #[arg(long, env = "QUARRY_TUNNEL_TICKET", hide_env_values = true)]
+        ticket: String,
+        #[arg(long, default_value_t = 5433)]
+        port: u16,
     },
     #[command(name = "neptune-calls")]
     NeptuneCalls {
@@ -1895,6 +1906,14 @@ async fn put_connection(host: &Host, f: ConnectionFields, overwrite: bool) -> Re
     output(json!({"saved":connection.key}))
 }
 async fn local(host: &Host, action: LocalCommand) -> Result<()> {
+    if let LocalCommand::Connect {
+        server,
+        ticket,
+        port,
+    } = &action
+    {
+        return tunnel::connect(server, ticket, *port).await;
+    }
     let manager = host.local()?;
     match action {
         LocalCommand::Status { engine, format } => {
@@ -2014,6 +2033,7 @@ async fn local(host: &Host, action: LocalCommand) -> Result<()> {
         LocalCommand::NeptuneCalls { after, format } => {
             metadata_output(manager.neptune_calls(after).await?, &format)
         }
+        LocalCommand::Connect { .. } => unreachable!("handled before local manager setup"),
     }
 }
 async fn ai(host: &Host, command: AiCommand) -> Result<()> {
