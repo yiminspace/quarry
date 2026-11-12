@@ -1,14 +1,20 @@
-Quarry 2.2.0 brings local and authorized cloud connections into one catalog.
-Compatible providers can register authorized connections for discovery in
-`qy connections` or `qy gui`. Remote queries use the provider account,
-and cloud drafts and history stay scoped to the signed-in account.
+Quarry 2.3.0 lets hosted deployments run Local databases on the server.
 
-Use `qy connections reconcile` to verify PostgreSQL connections that reach the
-same database. Add `--apply` to group confirmed routes under the local name.
-Existing sources can register again using the shared provider protocol.
+A hosted workbench can give each user personal PostgreSQL and Redis Locals on a
+Docker-in-Docker daemon owned by the deployment. Create one from a database's
+connection details, pick any allowed image version, and optionally copy the
+source schema without its rows. Queries from the workbench stay read-only. To
+connect your own services, copy the command from the workbench and run
+`qy local connect`: it opens a loopback port and forwards the database protocol
+unchanged through an authenticated WebSocket, so drivers, transactions,
+extensions and migration tools work as with a desktop Local. Each Local has its
+own Docker network and password, and only its owner can reach it.
 
-The standalone workbench can reopen the matching running session and can be
-stopped with `qy gui stop`.
+Hosts that launch the workbench from their CLI can open one database per
+browser session with in-memory expiry.
+
+Result columns can show image URLs as thumbnails when you choose Load images
+from the column header.
 
 Install Quarry from GitHub Releases. The native archive includes the CLI, local
 workbench and MCP server. Installer-managed copies can apply a verified update
@@ -22,4 +28,4 @@ Embedded copies update with their host. Operators can update the
 hosted workbench using the Docker image pinned in the stable release's
 `hosted-release.json` descriptor. See the
 [hosting guide](https://github.com/yiminspace/quarry/blob/main/docs/hosting.md)
-for IAM and database access configuration.
+for IAM, database access and cloud Local configuration.

@@ -7,7 +7,9 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
-- Hosted Quarry can give each user cloud Local PostgreSQL and Redis databases on a server-side Docker-in-Docker daemon. Enable it with `cloud_local` in `hosted.json` and the `compose.cloud-local.yaml` overlay. Users create a Local from a database's connection details and can pick any allowed image version. Run `qy local connect` with a ticket from the workbench to reach the Local from your own services on a loopback port. Database ports are never published.
+## [2.3.0] - 2026-11-12
+
+- Hosted Quarry can give each user cloud Local PostgreSQL and Redis databases on a server-side Docker-in-Docker daemon. Enable it with `cloud_local` in `hosted.json` and the `compose.cloud-local.yaml` overlay. Users create a Local from a database's connection details and can pick any allowed image version. Run `qy local connect` with a ticket from the workbench to reach the Local from your own services on a loopback port. Database ports are never published, and each Local has its own Docker network and password.
 
 - Use the column header’s Text / Load images menu to opt into thumbnails. Opening the menu checks only that column. Load images recognizes image suffixes in HTTPS URL paths and filename parameters and loads images as rows come into view. Browser image loading supports hosts without CORS headers, and the choice is restored with the saved query result after refresh. URL text uses the available cell width beside the thumbnail.
 
