@@ -1029,31 +1029,52 @@ def test_hosted_update_notice_uses_theme_tokens(page_sqlite, mode):
 
 @pytest.mark.parametrize('mode', ['dark', 'light'])
 def test_result_image_chrome_uses_theme_tokens(page_sqlite, mode):
-    from test_gui_browser_features import _select_sqlite, _run_sql
+    from test_gui_browser_features import (
+        _select_sqlite, _run_sql, _result_image_mode, _set_result_image_mode, _enable_result_images, _PREVIEW_SVG,
+    )
     page = page_sqlite
     _select_sqlite(page)
     page.route('https://images.example/**', lambda route: route.fulfill(
-        content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"/>'))
-    _run_sql(page, "select 'https://images.example/icon.png' as icon_url")
+        content_type='image/svg+xml', body=_PREVIEW_SVG))
+    url = "https://images.example/icon.png?signature=" + "a" * 100
+    _run_sql(page, f"select '{url}' as icon_url")
     if page.evaluate('document.documentElement.dataset.mode') != mode:
         page.locator('.vg-switcher-mode').click()
-    for selector, prop, token in [
-        ('.result-image-mode', 'color', '--fg2'),
-        ('.result-image-mode', 'backgroundColor', '--bg1'),
-    ]:
-        assert page.locator(selector).evaluate('''(el, args) => {
+    control = _result_image_mode(page, 'icon_url')
+    control.hover()
+    assert control.evaluate('el => getComputedStyle(el).opacity') == '1'
+    text_height = page.locator('#grid tbody tr').first.evaluate('el => el.getBoundingClientRect().height')
+    control.click()
+    menu = page.locator('.result-image-mode-menu:popover-open')
+    assert menu.evaluate('''el => {
+        const trigger = el.previousElementSibling;
+        const header = trigger.closest('th').getBoundingClientRect();
+        const button = trigger.getBoundingClientRect();
+        const popup = el.getBoundingClientRect();
+        return header.right - button.right <= 9 && Math.abs(popup.right - button.right) < 2
+          && popup.top >= button.bottom && popup.left >= 0;
+    }''')
+    for prop, token in [('color', '--fg'), ('backgroundColor', '--bg1')]:
+        assert menu.evaluate('''(el, args) => {
             const probe = document.createElement('span');
             probe.style.color = `var(${args[1]})`; el.append(probe);
             const matches = getComputedStyle(el)[args[0]] === getComputedStyle(probe).color;
             probe.remove(); return matches;
         }''', [prop, token])
+    menu.get_by_role('button', name='Load images', exact=True).click()
     row_height = page.locator('#grid tbody tr').first.evaluate('el => el.getBoundingClientRect().height')
-    assert page.locator('.result-image-thumb').evaluate('el => getComputedStyle(el).borderTopWidth') == '0px'
-    image_mode = page.get_by_role('combobox', name='icon_url display', exact=True)
-    image_mode.select_option('text')
-    text_height = page.locator('#grid tbody tr').first.evaluate('el => el.getBoundingClientRect().height')
     assert abs(row_height - text_height) < 0.1
-    image_mode.select_option('auto')
+    assert page.locator('.result-image-url').evaluate('''el => {
+        const cell = el.closest('td');
+        const cellRight = cell.getBoundingClientRect().right;
+        const style = getComputedStyle(cell);
+        const contentRight = cellRight - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+        return Math.abs(el.getBoundingClientRect().right - contentRight) < 1
+          && el.scrollWidth > el.clientWidth;
+    }''')
+    assert page.locator('.result-image-thumb').evaluate('el => getComputedStyle(el).borderTopWidth') == '0px'
+    _set_result_image_mode(page, 'icon_url', False)
+    _enable_result_images(page, 'icon_url')
     page.get_by_role('button', name='Enlarge image').click()
     assert page.locator('.result-image-large').evaluate('''el => {
         const probe = document.createElement('span'); probe.style.color = 'var(--bg1)'; el.append(probe);

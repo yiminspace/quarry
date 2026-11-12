@@ -1,5 +1,31 @@
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+
+const WORKBENCH_META = new Set([
+  "quarry-federated",
+  "quarry-mode",
+  "quarry-workbench-entry",
+  "quarry-workbench-scope",
+]);
+
+function localWorkbenchMetadata(target: string): Plugin {
+  return {
+    name: "quarry-local-workbench-metadata",
+    async transformIndexHtml() {
+      const response = await fetch(`${target}/quarry/`, {
+        redirect: "error",
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => {
+        throw new Error(`Quarry backend is unavailable at ${target}. Start the local Rust workbench.`);
+      });
+      if (!response.ok) throw new Error(`Quarry backend at ${target} returned HTTP ${response.status}.`);
+      const html = await response.text();
+      return Array.from(html.matchAll(/<meta name="([\w-]+)" content="([\w.:-]+)">/g))
+        .filter(([, name]) => WORKBENCH_META.has(name))
+        .map(([, name, content]) => ({ tag: "meta", attrs: { name, content }, injectTo: "head-prepend" }));
+    },
+  };
+}
 
 export default defineConfig(({ command, isPreview, mode }) => {
   const config = {
@@ -24,6 +50,7 @@ export default defineConfig(({ command, isPreview, mode }) => {
 
   return {
     ...config,
+    plugins: [...config.plugins, localWorkbenchMetadata(target)],
     server: {
       host: "127.0.0.1",
       proxy: {

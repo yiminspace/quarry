@@ -1,4 +1,4 @@
-import { getResultImageColumns } from "../imageDetection";
+import { collectColumnImages } from "../imageDetection";
 import { PLATFORM_MODE, personalStorage } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
@@ -58,6 +58,7 @@ export type TabResultSnapshot = {
   queryEnv: string | null;
   querySql: string | null;
   targetId?: string;
+  imageColumns?: ReadonlyMap<number, ReadonlySet<string>>;
 };
 
 // Exactly the legacy GUI's storage keys AND value formats (qy_tabs is a flat
@@ -110,7 +111,13 @@ function newId(): TabId {
 }
 
 type StoredTab = Partial<Tab>;
-type StoredResult = { db?: string | null; env?: string | null; targetId?: string; res?: (QueryResult & { _sql?: string }) | null } | null;
+type StoredResult = {
+  db?: string | null;
+  env?: string | null;
+  targetId?: string;
+  res?: (QueryResult & { _sql?: string }) | null;
+  imageColumns?: number[];
+} | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
   return { id: newId(), title: null, sql: "", db: seed?.db ?? null, env: seed?.env ?? null, workspace: workspaceFor(seed?.db ?? null),
@@ -142,12 +149,22 @@ function readStoredResults(tabs: Tab[], ati: number): Record<TabId, TabResultSna
     if (entry.db !== tab.db || (entry.env ?? null) !== (tab.env ?? null)) return;
     if (entry.targetId !== tab.targetId) return;
     const { _sql, ...result } = entry.res;
+    const imageColumns = new Map<number, ReadonlySet<string>>();
+    if (Array.isArray(entry.imageColumns) && Array.isArray(result.columns) && Array.isArray(result.rows)) {
+      for (const index of new Set(entry.imageColumns)) {
+        const name = Number.isInteger(index) && index >= 0 ? result.columns[index]?.name : undefined;
+        if (typeof name !== "string") continue;
+        const urls = collectColumnImages(result.rows, name);
+        if (urls.size) imageColumns.set(index, urls);
+      }
+    }
     out[tab.id] = {
       result: result as QueryResult,
       queryDb: entry.db ?? null,
       queryEnv: entry.env ?? null,
       querySql: _sql ?? null,
       targetId: entry.targetId,
+      ...(imageColumns.size ? { imageColumns } : {}),
     };
   };
   try {
@@ -213,7 +230,10 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
     const snap = results[tab.id];
     if (!snap?.result) return null;
     const res = snap.querySql ? { ...snap.result, _sql: snap.querySql } : snap.result;
-    return { db: snap.queryDb, env: snap.queryEnv, targetId: snap.targetId, res };
+    return {
+      db: snap.queryDb, env: snap.queryEnv, targetId: snap.targetId, res,
+      ...(snap.imageColumns?.size ? { imageColumns: [...snap.imageColumns.keys()] } : {}),
+    };
   };
   const packed: StoredResult[] = tabs.map(() => null);
   let remaining = MAX_PERSISTED_RESULTS_BYTES;
@@ -503,7 +523,6 @@ export const useTabsStore = create<TabsState>((set, get) => {
       if (!s.tabs.some((t) => t.id === id)) return; // tab closed while in flight
       const results = { ...s.results };
       if (snapshot) {
-        if (snapshot.result) getResultImageColumns(snapshot.result);
         results[id] = { ...snapshot, targetId: snapshot.targetId ?? connectionTargetId(snapshot.queryDb, snapshot.queryEnv) };
       }
       else delete results[id];

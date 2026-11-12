@@ -7746,32 +7746,57 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
     assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))
 
 
+_PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="steelblue"/></svg>'
+
+
+def _result_image_mode(page, column):
+    return page.get_by_role('button', name=f'{column} display', exact=True)
+
+
+def _set_result_image_mode(page, column, image):
+    _result_image_mode(page, column).click()
+    page.locator('.result-image-mode-menu:popover-open').get_by_role(
+        'button', name='Load images' if image else 'Text', exact=True).click()
+
+
+def _enable_result_images(page, column):
+    _set_result_image_mode(page, column, True)
+
+
 def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
     from playwright.sync_api import expect
     page = page_sqlite
     _select_sqlite(page)
-    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="blue"/></svg>'
-    page.route('https://images.example/**', lambda route: route.fulfill(content_type='image/svg+xml', body=svg))
-    first = 'https://images.example/first?signature=abc%2Fdef&expires=123'
+    requests = []
+
+    def serve(route):
+        requests.append((route.request.url, route.request.headers.get('referer')))
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', serve)
+    first = 'https://images.example/first?filename=app.png&signature=abc%2Fdef&expires=123'
     second = 'https://images.example/second.png'
-    sql = f"select 2 as id, '{first}' as icon_url, 'ordinary text' as other union all select 1, '{second}', null"
+    sql = f"select 2 as id, '{first}' as icon_url, 'https://images.example/other.png' as other union all select 1, '{second}', null"
     _run_sql(page, sql)
-    image = page.locator('#grid .result-image-thumb img').first
-    expect(image).to_have_attribute('src', first)
-    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
-    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
-    mode = page.get_by_role('combobox', name='icon_url display', exact=True)
-    mode.select_option('text')
-    expect(page.locator('#grid .result-image-thumb')).to_have_count(0)
-    expect(page.locator('#grid td[data-v]').filter(has_text=first)).to_be_visible()
-    mode.select_option('auto')
+    expect(page.locator('#grid img')).to_have_count(0)
+    mode = _result_image_mode(page, 'icon_url')
+    expect(mode).to_have_attribute('data-enabled', 'false')
+    mode.hover()
+    mode.click()
+    menu = page.locator('.result-image-mode-menu:popover-open')
+    expect(menu.get_by_role('button', name='Text', exact=True)).to_have_attribute('aria-pressed', 'true')
+    page.keyboard.press('Escape')
+    expect(menu).to_have_count(0)
+    assert requests == []
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
+    expect(page.locator('#grid img')).to_have_count(2)
+    assert sorted(requests) == [(first, None), (second, None)]
     opener = page.get_by_role('button', name='Enlarge image').first
     opener.click()
     dialog = page.get_by_role('dialog', name='Image preview')
-    expect(dialog).to_be_visible()
-    expect(dialog.locator('img')).to_have_attribute('src', first)
+    expect(dialog.locator('img')).to_be_visible()
     expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('href', first)
-    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('target', '_blank')
     expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('rel', 'noopener noreferrer')
     page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
     dialog.get_by_role('button', name='Copy URL').click()
@@ -7779,78 +7804,77 @@ def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
     page.keyboard.press('Escape')
     expect(dialog).to_have_count(0)
     expect(opener).to_be_focused()
-    # Column controls receive Enter themselves, without triggering grid inspection or sort.
-    mode.focus()
-    mode.press('Enter')
-    page.keyboard.press('Escape')
-    expect(page.locator('.vg-modal')).to_have_count(0)
-    page.locator('#grid th[data-i="0"]').click()
-    expect(page.locator('#grid .result-image-thumb img').first).to_have_attribute('src', second)
-    expect(page.get_by_role('combobox', name='other display', exact=True)).to_have_count(0)
-    expect(page.get_by_role('combobox', name='id display', exact=True)).to_have_count(0)
-    mode.select_option('image')
-    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
+    # Click the column name; the adjacent select handles its own clicks.
+    page.locator('#grid th[data-i="0"]').click(position={'x': 15, 'y': 12})
+    expect(page.locator('#grid .result-image-url').first).to_have_text(second)
     with page.expect_download() as download:
         page.locator('#jsonBtn').click()
     exported = json.loads(open(download.value.path()).read())
     assert [row['icon_url'] for row in exported] == [second, first]
-    mode.select_option('text')
+    _set_result_image_mode(page, 'icon_url', False)
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
+    _run_sql(page, sql)
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
     page.locator('#tabAdd').click()
     _run_sql(page, f"select '{second}' as icon_url")
-    expect(page.locator('#grid .result-image-thumb')).to_have_count(1)
-    expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('auto')
+    expect(page.locator('#grid img')).to_have_count(0)
     page.locator('#tabs .tab').first.click()
-    expect(page.get_by_role('combobox', name='icon_url display', exact=True)).to_have_value('text')
-    _run_sql(page, sql)
-    expect(mode).to_be_visible()
-    expect(mode).to_have_value('text')
-    mode.select_option('auto')
-    expect(page.locator('#grid .result-image-thumb')).to_have_count(2)
+    expect(page.locator('#grid img')).to_have_count(2)
+    page.reload(wait_until='domcontentloaded')
+    expect(mode).to_have_attribute('data-enabled', 'true')
+    expect(page.locator('#grid img')).to_have_count(2)
+    _set_result_image_mode(page, 'icon_url', False)
+    page.reload(wait_until='domcontentloaded')
+    expect(mode).to_have_attribute('data-enabled', 'false')
+    expect(page.locator('#grid img')).to_have_count(0)
 
 
 def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
     from playwright.sync_api import expect
     page = page_sqlite
     _select_sqlite(page)
-    requests = []
-    held = []
-    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>'
-    recovered = {'value': False}
+    requests, held = [], []
+    recovered = False
 
     def respond(route):
         requests.append(route.request.url)
         if '/slow' in route.request.url:
             held.append(route)
-        elif '/bad' in route.request.url and not recovered['value']:
-            route.fulfill(content_type='text/plain', body='expired')
+        elif '/bad' in route.request.url and not recovered:
+            route.fulfill(content_type='text/html', body='<html>expired</html>')
         else:
-            route.fulfill(content_type='image/svg+xml', body=svg)
+            route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
     page.route('https://images.example/**', respond)
-    _run_sql(page, "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT x, 'https://images.example/' || x || '.png' AS image_url FROM n")
-    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 32")
-    assert len(requests) < 100
+    page.select_option('#maxRows', '100')
+    _run_sql(page, "select id, 'https://images.example/' || id || '.png' AS image_url from entries order by id")
+    _enable_result_images(page, 'image_url')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
     assert 'https://images.example/100.png' not in requests
     page.locator('#grid').evaluate('el => el.scrollTop = el.scrollHeight')
     page.locator('#grid tbody tr').last.locator('img').wait_for()
     assert 'https://images.example/100.png' in requests
-    _run_sql(page, "select 'https://images.example/bad' as avatar_url")
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(200)
+    expect(page.locator('#grid img')).to_have_count(0)
+    assert 'https://images.example/101.png' not in requests
+    _run_sql(page, "select 'https://images.example/bad.png' as avatar_url")
+    _enable_result_images(page, 'avatar_url')
     retry = page.get_by_role('button', name='Retry image', exact=True)
     expect(retry).to_be_visible()
-    before = len(requests)
-    page.wait_for_timeout(100)
-    assert len(requests) == before
-    expect(page.locator('#grid td[data-v="https://images.example/bad"]')).to_be_visible()
-    recovered['value'] = True
+    expect(page.locator('#grid td[data-v="https://images.example/bad.png"]')).to_be_visible()
+    recovered = True
     retry.click()
-    expect(retry).to_have_count(0)
-    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 32")
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
     page.clock.install()
-    _run_sql(page, "select 'https://images.example/slow' as avatar_url")
-    page.locator('#grid img').wait_for()
+    _run_sql(page, "select 'https://images.example/slow.png' as avatar_url")
+    with page.expect_request('https://images.example/slow.png'):
+        _enable_result_images(page, 'avatar_url')
     page.clock.fast_forward(15_001)
     expect(retry).to_be_visible()
     expect(page.locator('#grid img')).to_have_count(0)
-    expect(page.get_by_role('combobox', name='avatar_url display', exact=True)).to_have_count(0)
     for route in held:
         try:
             route.abort()
@@ -7858,127 +7882,77 @@ def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
             pass
 
 
-def test_result_images_use_http_cache_and_keep_signed_urls_distinct(page_sqlite):
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from playwright.sync_api import expect
+def test_result_images_enlarge_and_keep_signed_urls_distinct(page_sqlite):
     page = page_sqlite
     _select_sqlite(page)
-    # Playwright routing disables the HTTP cache. Remove fixture routes before
-    # testing actual browser caching against an independently served image.
-    page.unroute_all()
-    page.context.unroute_all()
     requests = []
 
-    class Images(BaseHTTPRequestHandler):
-        def do_GET(self):
-            requests.append((self.path, self.headers.get('Referer')))
-            body = b'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"/>'
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/svg+xml')
-            self.send_header('Cache-Control', 'public, max-age=3600')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+    def serve(route):
+        requests.append(route.request.url)
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
 
-        def log_message(self, *_args):
-            pass
+    page.route('https://images.example/**', serve)
+    first = 'https://images.example/icon.png?signature=first%2Fone'
+    second = 'https://images.example/icon.png?signature=second%2Ftwo'
+    _run_sql(page, f"select '{first}' as icon_url")
+    _enable_result_images(page, 'icon_url')
+    page.get_by_role('button', name='Enlarge image').click()
+    page.wait_for_function("document.querySelector('#imagePreview img')?.naturalWidth === 64")
+    assert set(requests) == {first}
+    page.keyboard.press('Escape')
+    _run_sql(page, f"select '{second}' as icon_url")
+    _enable_result_images(page, 'icon_url')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert set(requests) == {first, second}
 
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Images)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    try:
-        url = f'http://127.0.0.1:{server.server_port}/icon?signature=first'
-        _run_sql(page, f"select '{url}' as icon_url")
-        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
-        page.get_by_role('button', name='Enlarge image').click()
-        page.wait_for_function("document.querySelector('#imagePreview img')?.naturalWidth === 64")
+
+def test_result_image_dropdown_filters_links_and_loads_without_cors(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+
+    def serve(route):
+        requests.append(route.request.url)
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', serve)
+    _run_sql(page, """select 'https://images.example/icon.png' as icon,
+      'http://images.example/plain.png' as insecure,
+      'https://images.example/no-extension' as plain""")
+    page.locator('#grid tbody .rownum').click()
+    expect(page.locator('.vg-modal')).to_contain_text('https://images.example/icon.png')
+    expect(page.locator('.vg-modal img')).to_have_count(0)
+    page.keyboard.press('Escape')
+    for column in ('insecure', 'plain'):
+        _result_image_mode(page, column).click()
+        menu = page.locator('.result-image-mode-menu:popover-open')
+        expect(menu.get_by_role('button')).to_have_count(1)
+        expect(menu.get_by_role('button', name='Text', exact=True)).to_have_attribute('aria-pressed', 'true')
         page.keyboard.press('Escape')
-        mode = page.get_by_role('combobox', name='icon_url display', exact=True)
-        mode.select_option('text')
-        mode.select_option('image')
-        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
-        assert requests == [('/icon?signature=first', None)]
-        second = url.replace('signature=first', 'signature=second')
-        _run_sql(page, f"select '{second}' as icon_url")
-        expect(page.locator('#grid img')).to_have_attribute('src', second)
-        page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
-        assert requests == [('/icon?signature=first', None), ('/icon?signature=second', None)]
-    finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=5)
-
-
-def test_result_image_controls_follow_column_names_and_values(page_sqlite):
-    from playwright.sync_api import expect
-    page = page_sqlite
-    _select_sqlite(page)
-    held = []
-    def respond(route):
-        if '/opaque' in route.request.url:
-            held.append(route)
-        else:
-            route.fulfill(content_type='text/html', body='<html>ordinary web page</html>')
-    page.route('https://images.example/**', respond)
-    _run_sql(page, "select 1 as id, 'name' as label, 'https://images.example/page.png' as icon_url, 'https://images.example/opaque' as asset")
-    expect(page.locator('#grid .result-image-mode')).to_have_count(0)
-    page.wait_for_function("document.querySelectorAll('#grid .result-image-thumb[aria-busy=true]').length === 1")
-    assert held
-    held.pop().fulfill(content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>')
-    asset = page.get_by_role('combobox', name='asset display', exact=True)
-    expect(asset).to_be_visible()
-    expect(page.locator('#grid .result-image-mode')).to_have_count(1)
-    asset.select_option('text')
-    expect(asset).to_be_visible()
-    page.locator('#grid th[data-i="0"]').click()
-    expect(asset).to_have_value('text')
-    asset.select_option('auto')
-    expect(asset).to_be_visible()
-
-
-def test_result_images_keep_confirmed_control_when_text_mode_loads_more(page_sqlite):
-    from playwright.sync_api import expect
-    page = page_sqlite
-    _select_sqlite(page)
-    page.route('https://images.example/**', lambda route: route.fulfill(
-        content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>'))
-    page.select_option('#maxRows', '100')
-    _run_sql(page, "select id, case when id <= 100 then 'https://images.example/' || id else null end as icon_url from entries order by id")
-    mode = page.get_by_role('combobox', name='icon_url display', exact=True)
-    expect(mode).to_be_visible()
-    mode.select_option('text')
-    page.locator('#loadMoreBtn').click()
-    expect(page.locator('#grid tbody tr')).to_have_count(200)
-    expect(mode).to_be_visible()
-    expect(mode).to_have_value('text')
-    expect(page.locator('#grid img')).to_have_count(0)
-    mode.select_option('auto')
-    page.locator('#grid th[data-i="0"]').click()
-    expect(mode).to_be_visible()
-    expect(page.get_by_role('combobox', name='id display', exact=True)).to_have_count(0)
-
+    assert requests == []
+    _enable_result_images(page, 'icon')
+    page.locator('#grid .result-image-thumb').first.scroll_into_view_if_needed()
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert requests == ['https://images.example/icon.png']
 
 
 def test_result_image_url_text_keeps_existing_double_click_actions(page_sqlite):
     from playwright.sync_api import expect
     page = page_sqlite
     _select_sqlite(page)
-    short = 'https://images.example/plain'
-    long = 'https://images.example/image?signature=' + 'a' * 80
+    short = 'https://images.example/plain.png'
+    long = 'https://images.example/image.png?signature=' + 'a' * 80
     page.route('https://images.example/**', lambda route: route.fulfill(
-        content_type='image/svg+xml' if '/image?' in route.request.url else 'text/html',
-        body='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"/>' if '/image?' in route.request.url else '<html>ordinary page</html>'))
+        content_type='image/svg+xml', body=_PREVIEW_SVG))
     _run_sql(page, f"select '{short}' as value union all select '{long}'")
+    _enable_result_images(page, 'value')
     page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
     page.locator('#grid .result-image-url').first.dblclick()
     assert page.evaluate('window.__copied') == short
     expect(page.locator('.vg-modal')).to_have_count(0)
     page.locator('#grid .result-image-url').last.dblclick()
     expect(page.locator('.vg-modal pre')).to_have_text(long)
-    expect(page.locator('#imagePreview')).to_have_count(0)
     page.keyboard.press('Escape')
     page.get_by_role('button', name='Enlarge image').last.click()
     expect(page.get_by_role('dialog', name='Image preview')).to_be_visible()
-    expect(page.locator('.vg-modal')).to_have_count(1)
-    page.keyboard.press('Escape')
