@@ -1,6 +1,6 @@
 import { ResultImageCell, ResultImageModal, ResultImageColumnMenu } from "./ResultImage";
-import { PLATFORM_MODE } from "./platform";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CLI_SESSION_MODE, PLATFORM_MODE, platformSnapshot, subscribePlatform } from "./platform";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   cancelPlatformQuery,
   fetchConnections,
@@ -201,6 +201,8 @@ export default function ResultWorkbench() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paramModal, setParamModal] = useState<SavedQuery | null>(null);
   const [connInfoOpen, setConnInfoOpen] = useState(false);
+  // Hosted mode offers connection details only for cloud Local administration.
+  const cloudLocal = useSyncExternalStore(subscribePlatform, () => platformSnapshot().cloudLocal);
   const [explainBusy, setExplainBusy] = useState(false);
   const [loadMoreBusy, setLoadMoreBusy] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
@@ -780,7 +782,7 @@ export default function ResultWorkbench() {
     const table = currentTable ?? parseMainTable(sql);
     const search = encodeFocusSearch({ db, env, table, targetId: current?.targetId });
     const url = new URL(window.location.href);
-    const pathname = "/quarry/";
+    const pathname = CLI_SESSION_MODE ? url.pathname : "/quarry/";
     if (url.search !== search || url.pathname !== pathname) {
       window.history.replaceState(null, "", `${pathname}${search}${url.hash}`);
     }
@@ -1376,7 +1378,7 @@ export default function ResultWorkbench() {
             id="ciBtn"
             title={t("conn_info")}
             aria-label={t("conn_info")}
-            style={{ display: current && !PLATFORM_MODE ? undefined : "none" }}
+            style={{ display: current && (!PLATFORM_MODE || cloudLocal) ? undefined : "none" }}
             onClick={() => setConnInfoOpen(true)}
           >
             <i className="ti ti-info-circle" />
@@ -1467,9 +1469,9 @@ export default function ResultWorkbench() {
           <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>
           </button>
-          <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
+          {!CLI_SESSION_MODE && <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
             <i className="ti ti-link" /> <span id="linkLbl">{t("copy_query_link")}</span>
-          </button>
+          </button>}
         </div>
           }>
         <SqlEditor

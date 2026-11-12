@@ -22,6 +22,65 @@ pub struct LocalSpec {
     pub internal_port: u16,
     pub image: String,
 }
+/// A Docker daemon other than the caller's own, such as a Docker-in-Docker
+/// service next to a hosted Quarry. Managed services publish on `publish_ip`
+/// inside that daemon and are reached at `connect_host` from this process.
+/// The network between them must be private to the hosting deployment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerEndpoint {
+    pub host: String,
+    pub cert_path: Option<PathBuf>,
+    pub publish_ip: String,
+    pub connect_host: String,
+}
+/// Resource bounds and ownership labels applied when a container is created.
+#[derive(Debug, Clone, Default)]
+pub struct ContainerLimits {
+    pub memory: Option<String>,
+    pub cpus: Option<String>,
+    pub labels: BTreeMap<String, String>,
+}
+impl DockerEndpoint {
+    pub fn validate(&self) -> Result<()> {
+        let valid_host = |v: &str| {
+            !v.is_empty()
+                && v.len() <= 253
+                && v.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-._:[]".contains(&c))
+        };
+        if !(self.host.starts_with("tcp://") || self.host.starts_with("unix://"))
+            || self
+                .host
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+            || self.publish_ip.parse::<std::net::IpAddr>().is_err()
+            || !valid_host(&self.connect_host)
+            || self.cert_path.as_ref().is_some_and(|p| !p.is_absolute())
+        {
+            return Err(RuntimeError::Invalid(
+                "invalid remote Docker endpoint".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+impl ContainerLimits {
+    pub fn validate(&self) -> Result<()> {
+        let token = |v: &str| {
+            !v.is_empty()
+                && v.len() <= 64
+                && v.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-._/=".contains(&c))
+        };
+        if self.memory.as_deref().is_some_and(|v| !token(v))
+            || self.cpus.as_deref().is_some_and(|v| !token(v))
+            || self.labels.iter().any(|(k, v)| !token(k) || !token(v))
+        {
+            return Err(RuntimeError::Invalid("invalid container limits".into()));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone)]
 pub struct LocalManager {
     pub config: RuntimeConfig,
@@ -31,6 +90,11 @@ pub struct LocalManager {
     pub psql: PathBuf,
     resource_namespace: Option<String>,
     neptune_launcher: Option<DaemonLauncher>,
+    endpoint: Option<DockerEndpoint>,
+    limits: ContainerLimits,
+    /// Per-service secret: a private Docker network plus this database
+    /// password, so co-tenant containers cannot reach or log in to each other.
+    secret: Option<String>,
 }
 impl LocalManager {
     pub fn new(config: RuntimeConfig, state_dir: impl Into<PathBuf>) -> Self {
@@ -42,7 +106,78 @@ impl LocalManager {
             psql: "psql".into(),
             resource_namespace: None,
             neptune_launcher: None,
+            endpoint: None,
+            limits: ContainerLimits::default(),
+            secret: None,
         }
+    }
+    /// Isolate this namespace's services: a dedicated Docker network and the
+    /// given secret as the PostgreSQL password and Redis `requirepass`.
+    pub fn with_isolation(mut self, secret: impl Into<String>) -> Result<Self> {
+        let secret = secret.into();
+        if self.resource_namespace.is_none()
+            || secret.len() < 32
+            || secret.len() > 128
+            || !secret.bytes().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(RuntimeError::Invalid(
+                "isolation requires a namespace and a 32-128 character alphanumeric secret".into(),
+            ));
+        }
+        self.secret = Some(secret);
+        Ok(self)
+    }
+    fn isolated_network(&self) -> Option<String> {
+        self.secret
+            .as_ref()
+            .zip(self.resource_namespace.as_ref())
+            .map(|(_, namespace)| format!("{namespace}-net"))
+    }
+    fn password(&self) -> &str {
+        self.secret.as_deref().unwrap_or("quarry")
+    }
+    /// Manage services on a remote Docker daemon instead of the local one.
+    pub fn with_endpoint(mut self, endpoint: DockerEndpoint) -> Result<Self> {
+        endpoint.validate()?;
+        self.endpoint = Some(endpoint);
+        Ok(self)
+    }
+    pub fn with_limits(mut self, limits: ContainerLimits) -> Result<Self> {
+        limits.validate()?;
+        self.limits = limits;
+        Ok(self)
+    }
+    /// Host name used in registered connection URLs for managed services.
+    pub fn connect_host(&self) -> &str {
+        self.endpoint
+            .as_ref()
+            .map(|e| e.connect_host.as_str())
+            .unwrap_or("localhost")
+    }
+    /// Whether a connection host is where this manager's services live.
+    pub fn is_managed_host(&self, host: &str) -> bool {
+        match &self.endpoint {
+            Some(endpoint) => {
+                host.trim_start_matches('[').trim_end_matches(']')
+                    == endpoint
+                        .connect_host
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+            }
+            None => is_loopback(host),
+        }
+    }
+    fn probe_host(&self) -> &str {
+        self.endpoint
+            .as_ref()
+            .map(|e| e.connect_host.as_str())
+            .unwrap_or("127.0.0.1")
+    }
+    fn publish_ip(&self) -> &str {
+        self.endpoint
+            .as_ref()
+            .map(|e| e.publish_ip.as_str())
+            .unwrap_or("127.0.0.1")
     }
     pub fn with_namespace(mut self, namespace: impl Into<String>) -> Result<Self> {
         let namespace = namespace.into();
@@ -183,7 +318,10 @@ impl LocalManager {
             .and_then(|v| v.pointer("/Config/Image"))
             .cloned()
             .unwrap_or(Value::Null);
-        let binding = info.as_ref().map(|value| published_port(value, spec));
+        let expected_ip = self.endpoint.as_ref().map(|e| e.publish_ip.as_str());
+        let binding = info
+            .as_ref()
+            .map(|value| published_port(value, spec, expected_ip));
         let actual_port = binding
             .as_ref()
             .and_then(|value| value.as_ref().ok())
@@ -201,7 +339,7 @@ impl LocalManager {
             .await
             .is_ok();
         let conflict = !running
-            && tokio::net::TcpStream::connect(("127.0.0.1", spec.port))
+            && tokio::net::TcpStream::connect((self.probe_host(), spec.port))
                 .await
                 .is_ok();
         Ok(
@@ -240,7 +378,11 @@ impl LocalManager {
                 .pointer("/State/Running")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let actual = published_port(info, &spec)?;
+            let actual = published_port(
+                info,
+                &spec,
+                self.endpoint.as_ref().map(|e| e.publish_ip.as_str()),
+            )?;
             if actual != spec.port {
                 if port.is_none() {
                     return Err(RuntimeError::Invalid("existing container publishes a different port from configuration; inspect and reconcile the configured port or request an explicit port change; container and volume were left unchanged".into()));
@@ -277,7 +419,51 @@ impl LocalManager {
             "started"
         } else {
             self.require_free_port(spec.port).await?;
-            let publish = format!("127.0.0.1:{}:{}", spec.port, spec.internal_port);
+            let publish = if self.publish_ip().contains(':') {
+                format!(
+                    "[{}]:{}:{}",
+                    self.publish_ip(),
+                    spec.port,
+                    spec.internal_port
+                )
+            } else {
+                format!("{}:{}:{}", self.publish_ip(), spec.port, spec.internal_port)
+            };
+            let mut extra = vec![];
+            if let Some(memory) = &self.limits.memory {
+                extra.push("--memory".to_owned());
+                extra.push(memory.clone());
+            }
+            if let Some(cpus) = &self.limits.cpus {
+                extra.push("--cpus".to_owned());
+                extra.push(cpus.clone());
+            }
+            for (key, value) in &self.limits.labels {
+                extra.push("--label".to_owned());
+                extra.push(format!("{key}={value}"));
+            }
+            if let Some(network) = self.isolated_network() {
+                if self
+                    .docker(&["network", "inspect", &network], BTreeMap::new(), 10)
+                    .await
+                    .is_err()
+                {
+                    self.docker(
+                        &[
+                            "network",
+                            "create",
+                            "--label",
+                            "quarry.cloud-local=1",
+                            &network,
+                        ],
+                        BTreeMap::new(),
+                        30,
+                    )
+                    .await?;
+                }
+                extra.push("--network".to_owned());
+                extra.push(network);
+            }
             let mount = format!(
                 "{}:{}",
                 spec.volume,
@@ -297,6 +483,7 @@ impl LocalManager {
                 "-v",
                 &mount,
             ];
+            args.extend(extra.iter().map(String::as_str));
             let mut env = BTreeMap::new();
             if engine == "postgres" {
                 args.extend([
@@ -308,10 +495,22 @@ impl LocalManager {
                     "POSTGRES_DB",
                 ]);
                 env.insert("POSTGRES_USER".into(), "quarry".into());
-                env.insert("POSTGRES_PASSWORD".into(), "quarry".into());
+                env.insert("POSTGRES_PASSWORD".into(), self.password().into());
                 env.insert("POSTGRES_DB".into(), "postgres".into());
             }
+            if engine == "redis" && self.secret.is_some() {
+                // Passed through the environment, never in the argument list.
+                args.extend(["-e", "REDIS_PASSWORD"]);
+                env.insert("REDIS_PASSWORD".into(), self.password().into());
+            }
             args.push(&spec.image);
+            if engine == "redis" && self.secret.is_some() {
+                args.extend([
+                    "sh",
+                    "-c",
+                    "exec redis-server --requirepass \"$REDIS_PASSWORD\"",
+                ]);
+            }
             self.docker(&args, env, 180).await?;
             "created"
         };
@@ -401,6 +600,11 @@ impl LocalManager {
             self.docker(&["volume", "rm", &spec.volume], BTreeMap::new(), 30)
                 .await?;
             removed_volume = true;
+        }
+        if purge && let Some(network) = self.isolated_network() {
+            let _ = self
+                .docker(&["network", "rm", &network], BTreeMap::new(), 30)
+                .await;
         }
         Ok(
             json!({"engine":engine,"stopped":stopped,"purged":purge,"removed_volume":removed_volume}),
@@ -624,11 +828,22 @@ impl LocalManager {
             .unwrap_or(0);
         local.url = if engine == "postgres" {
             format!(
-                "postgresql://quarry:quarry@localhost:{}/{}",
-                spec.port, identity
+                "postgresql://quarry:{}@{}:{}/{}",
+                self.password(),
+                self.connect_host(),
+                spec.port,
+                identity
             )
         } else if engine == "redis" {
-            format!("redis://localhost:{}/{}", spec.port, redis_db)
+            match &self.secret {
+                Some(secret) => format!(
+                    "redis://:{secret}@{}:{}/{}",
+                    self.connect_host(),
+                    spec.port,
+                    redis_db
+                ),
+                None => format!("redis://{}:{}/{}", self.connect_host(), spec.port, redis_db),
+            }
         } else {
             format!("https://localhost:{}", spec.port)
         };
@@ -690,7 +905,7 @@ impl LocalManager {
             }
             let mut url = url::Url::parse(&connection.url)
                 .map_err(|_| RuntimeError::Invalid("invalid registered local URL".into()))?;
-            if url.port() == Some(old) && url.host_str().is_some_and(is_loopback) {
+            if url.port() == Some(old) && url.host_str().is_some_and(|h| self.is_managed_host(h)) {
                 url.set_port(Some(new))
                     .map_err(|_| RuntimeError::Invalid("invalid local port".into()))?;
                 connection.url = url.into();
@@ -711,7 +926,12 @@ impl LocalManager {
         Ok(())
     }
     async fn require_free_port(&self, port: u16) -> Result<()> {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+        // A remote daemon rejects conflicting publishes itself; probing through
+        // its network can report proxied ports as busy.
+        if self.endpoint.is_some() {
+            return Ok(());
+        }
+        if tokio::net::TcpStream::connect((self.probe_host(), port))
             .await
             .is_ok()
         {
@@ -739,6 +959,18 @@ impl LocalManager {
         timeout: u64,
     ) -> Result<String> {
         let mut command = Command::new(&self.docker);
+        if let Some(endpoint) = &self.endpoint {
+            command
+                .env_remove("DOCKER_CONTEXT")
+                .env_remove("DOCKER_TLS_VERIFY")
+                .env_remove("DOCKER_CERT_PATH")
+                .env("DOCKER_HOST", &endpoint.host);
+            if let Some(path) = &endpoint.cert_path {
+                command
+                    .env("DOCKER_TLS_VERIFY", "1")
+                    .env("DOCKER_CERT_PATH", path);
+            }
+        }
         command.args(args).envs(env).kill_on_drop(true);
         let output = tokio::time::timeout(Duration::from_secs(timeout), command.output())
             .await
@@ -771,7 +1003,7 @@ fn is_loopback(host: &str) -> bool {
             .parse::<std::net::IpAddr>()
             .is_ok_and(|v| v.is_loopback())
 }
-fn published_port(info: &Value, spec: &LocalSpec) -> Result<u16> {
+fn published_port(info: &Value, spec: &LocalSpec, remote_ip: Option<&str>) -> Result<u16> {
     let expected = format!("{}/tcp", spec.internal_port);
     let inspect = |mapping: &Value| -> Result<u16> {
         let mappings = mapping.as_object().ok_or_else(||RuntimeError::Invalid("existing container has no explicit port mapping; inspect its network mode before migration; container and volume were left unchanged".into()))?;
@@ -783,10 +1015,16 @@ fn published_port(info: &Value, spec: &LocalSpec) -> Result<u16> {
             let bindings = bindings.as_array().ok_or_else(||RuntimeError::Invalid("cannot verify existing container port bindings; container and volume were left unchanged".into()))?;
             for binding in bindings {
                 let host = binding["HostIp"].as_str().unwrap_or("");
-                if !host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-                {
+                let allowed = match remote_ip {
+                    Some(remote) => {
+                        host.parse::<std::net::IpAddr>().ok()
+                            == remote.parse::<std::net::IpAddr>().ok()
+                    }
+                    None => host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback()),
+                };
+                if !allowed {
                     return Err(RuntimeError::Invalid("existing container publishes on a wildcard or non-loopback address; inspect and retain its actual image, mounts and port, then explicitly recreate only the container with a 127.0.0.1 binding while preserving its named volume; do not purge; container and volume were left unchanged".into()));
                 }
                 let port = binding["HostPort"].as_str().and_then(|p|p.parse::<u16>().ok()).filter(|p|*p>0)
@@ -1093,6 +1331,125 @@ esac
         assert!(args.contains("127.0.0.1:5433:5432"));
         assert!(!args.contains("POSTGRES_PASSWORD="));
         assert!(!args.contains("quarry:quarry"));
+    }
+    #[tokio::test]
+    async fn remote_endpoint_publishes_on_private_ip_with_limits_and_docker_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("docker");
+        let args_file = dir.path().join("arguments");
+        let env_file = dir.path().join("environment");
+        write_executable_fixture(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf '%s|%s|%s\\n' \"$DOCKER_HOST\" \"$DOCKER_TLS_VERIFY\" \"$DOCKER_CERT_PATH\" >> '{}'\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nrun) printf '%s\\n' \"$@\" > '{}'; echo created;;\nexec) exit 0;;\n*) exit 0;;\nesac\n",
+                env_file.display(),
+                args_file.display()
+            ),
+        );
+        let config = RuntimeConfig::load(dir.path().join("config.toml"))
+            .unwrap()
+            .set_local_port("postgres", 1)
+            .unwrap();
+        let mut manager = LocalManager::new(config, dir.path().join("state"))
+            .with_endpoint(DockerEndpoint {
+                host: "tcp://dind:2376".into(),
+                cert_path: Some("/certs/client".into()),
+                publish_ip: "0.0.0.0".into(),
+                connect_host: "127.0.0.1".into(),
+            })
+            .unwrap()
+            .with_limits(ContainerLimits {
+                memory: Some("512m".into()),
+                cpus: Some("1".into()),
+                labels: BTreeMap::from([("quarry.owner".into(), "abc".into())]),
+            })
+            .unwrap();
+        manager.docker = script;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        manager
+            .up("postgres", Some("postgres:15"), Some(port))
+            .await
+            .unwrap();
+        let args = std::fs::read_to_string(args_file).unwrap();
+        assert!(args.contains(&format!("0.0.0.0:{port}:5432")));
+        assert!(args.contains("--memory\n512m"));
+        assert!(args.contains("--cpus\n1"));
+        assert!(args.contains("quarry.owner=abc"));
+        assert!(args.contains("postgres:15"));
+        let env = std::fs::read_to_string(env_file).unwrap();
+        assert!(env.lines().all(|l| l == "tcp://dind:2376|1|/certs/client"));
+        assert!(manager.is_managed_host("127.0.0.1"));
+        assert!(!manager.is_managed_host("localhost"));
+        let remote = inspected_container("0.0.0.0", port, true);
+        assert_eq!(
+            published_port(&remote, &manager.spec("postgres").unwrap(), Some("0.0.0.0")).unwrap(),
+            port
+        );
+        assert!(published_port(&remote, &manager.spec("postgres").unwrap(), None).is_err());
+        assert!(
+            LocalManager::new(
+                RuntimeConfig::load(dir.path().join("c2.toml")).unwrap(),
+                dir.path()
+            )
+            .with_endpoint(DockerEndpoint {
+                host: "ssh://x".into(),
+                cert_path: None,
+                publish_ip: "0.0.0.0".into(),
+                connect_host: "dind".into(),
+            })
+            .is_err()
+        );
+    }
+    #[tokio::test]
+    async fn isolation_uses_private_network_and_secret_without_exposing_it_in_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("docker");
+        let calls = dir.path().join("calls");
+        let envs = dir.path().join("envs");
+        write_executable_fixture(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf 'pg=%s redis=%s\\n' \"$POSTGRES_PASSWORD\" \"$REDIS_PASSWORD\" >> '{}'\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nnetwork) [ \"$2\" = inspect ] && {{ echo 'No such network' >&2; exit 1; }}; echo ok;;\nvolume) echo 'No such volume' >&2; exit 1;;\n*) echo ok;;\nesac\n",
+                calls.display(),
+                envs.display()
+            ),
+        );
+        let secret = "A".repeat(40);
+        let config = RuntimeConfig::load(dir.path().join("config.toml")).unwrap();
+        assert!(
+            LocalManager::new(config.clone(), dir.path().join("s0"))
+                .with_isolation(secret.clone())
+                .is_err(),
+            "isolation needs a namespace"
+        );
+        let mut manager = LocalManager::new(config, dir.path().join("state"))
+            .with_namespace("qcl-test")
+            .unwrap()
+            .with_isolation(secret.clone())
+            .unwrap();
+        manager.docker = script;
+        let free = |_: ()| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        manager.up("postgres", None, Some(free(()))).await.unwrap();
+        manager.up("redis", None, Some(free(()))).await.unwrap();
+        let calls = std::fs::read_to_string(calls).unwrap();
+        assert!(calls.contains("network create --label quarry.cloud-local=1 qcl-test-net"));
+        assert_eq!(calls.matches("--network qcl-test-net").count(), 2);
+        assert!(calls.contains("exec redis-server --requirepass \"$REDIS_PASSWORD\""));
+        assert!(
+            !calls.contains(&secret),
+            "secret must not appear in docker arguments"
+        );
+        let envs = std::fs::read_to_string(envs).unwrap();
+        assert!(envs.contains(&format!("pg={secret}")));
+        assert!(envs.contains(&format!("redis={secret}")));
+        manager.down("redis", true).await.unwrap();
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        assert!(calls.contains("network rm qcl-test-net"));
     }
     #[tokio::test]
     async fn new_logical_database_registers_without_a_remote_connection() {

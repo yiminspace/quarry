@@ -24,7 +24,9 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target URL".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !target_url.host_str().is_some_and(super::is_loopback)
+            || !target_url
+                .host_str()
+                .is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid(
                 "schema target must be local, loopback and without SSH".into(),
@@ -317,7 +319,9 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target URL".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !target_url.host_str().is_some_and(super::is_loopback)
+            || !target_url
+                .host_str()
+                .is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid(
                 "schema target must be local, loopback and without SSH".into(),
@@ -441,7 +445,7 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !url.host_str().is_some_and(super::is_loopback)
+            || !url.host_str().is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid("recovery target is not local".into()));
         }

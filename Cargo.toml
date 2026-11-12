@@ -15,7 +15,7 @@ serde_json = { version = "1", features = ["arbitrary_precision"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 clap = { version = "4", features = ["derive", "env"] }
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 tower-http = { version = "0.6", features = ["fs", "trace", "limit"] }
 futures-util = "0.3"
 async-trait = "0.1"
