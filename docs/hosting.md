@@ -169,7 +169,7 @@ To use it:
    qy local connect https://quarry.example.com/quarry/ --port 5433 --ticket qt_...
    ```
 
-   Then point the service at `postgresql://quarry:quarry@127.0.0.1:5433/<database>`. The tunnel
+   Then point the service at the connection URL shown in the workbench (`postgresql://quarry:<this Local's password>@127.0.0.1:5433/<database>`). Each Local has its own Docker network and random password, given only to its owner, so other users' containers can neither reach nor log in to it. The tunnel
    forwards bytes unchanged, so transactions, prepared statements, extensions and migration tools work.
 
 Cloud Local requires `lab:db:local`. Each Local belongs to the account that created it; tickets are

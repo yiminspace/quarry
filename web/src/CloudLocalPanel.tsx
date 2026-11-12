@@ -71,7 +71,7 @@ export default function CloudLocalPanel({ db, env, onChanged }: { db: string; en
   const command = ticket ? `qy local connect ${server} --port ${port} --ticket ${ticket.ticket}` : "";
   const url = ticket
     ? ticket.engine === "redis"
-      ? `redis://127.0.0.1:${port}/0`
+      ? `redis://${ticket.password ? `:${ticket.password}@` : ""}127.0.0.1:${port}/0`
       : `postgresql://${ticket.user}:${ticket.password}@127.0.0.1:${port}/${ticket.database}`
     : "";
   const line = (label: string, value: string, id: string) => (
@@ -97,7 +97,7 @@ export default function CloudLocalPanel({ db, env, onChanged }: { db: string; en
           toast(t("cloud_local_done"), true);
         })}
         {button("cloud-local-start", "ti-player-play", t("cloud_local_start"), async () => {
-          await platformJSON("/api/local/up", { engine: resource.engine, name: resource.db });
+          await platformJSON("/api/local/up", { resourceId: resource.id });
           toast(t("cloud_local_done"), true);
         })}
         {button("cloud-local-stop", "ti-player-stop", t("cloud_local_stop"), async () => {

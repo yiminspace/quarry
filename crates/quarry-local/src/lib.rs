@@ -92,6 +92,9 @@ pub struct LocalManager {
     neptune_launcher: Option<DaemonLauncher>,
     endpoint: Option<DockerEndpoint>,
     limits: ContainerLimits,
+    /// Per-service secret: a private Docker network plus this database
+    /// password, so co-tenant containers cannot reach or log in to each other.
+    secret: Option<String>,
 }
 impl LocalManager {
     pub fn new(config: RuntimeConfig, state_dir: impl Into<PathBuf>) -> Self {
@@ -105,7 +108,33 @@ impl LocalManager {
             neptune_launcher: None,
             endpoint: None,
             limits: ContainerLimits::default(),
+            secret: None,
         }
+    }
+    /// Isolate this namespace's services: a dedicated Docker network and the
+    /// given secret as the PostgreSQL password and Redis `requirepass`.
+    pub fn with_isolation(mut self, secret: impl Into<String>) -> Result<Self> {
+        let secret = secret.into();
+        if self.resource_namespace.is_none()
+            || secret.len() < 32
+            || secret.len() > 128
+            || !secret.bytes().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(RuntimeError::Invalid(
+                "isolation requires a namespace and a 32-128 character alphanumeric secret".into(),
+            ));
+        }
+        self.secret = Some(secret);
+        Ok(self)
+    }
+    fn isolated_network(&self) -> Option<String> {
+        self.secret
+            .as_ref()
+            .zip(self.resource_namespace.as_ref())
+            .map(|(_, namespace)| format!("{namespace}-net"))
+    }
+    fn password(&self) -> &str {
+        self.secret.as_deref().unwrap_or("quarry")
     }
     /// Manage services on a remote Docker daemon instead of the local one.
     pub fn with_endpoint(mut self, endpoint: DockerEndpoint) -> Result<Self> {
@@ -413,6 +442,28 @@ impl LocalManager {
                 extra.push("--label".to_owned());
                 extra.push(format!("{key}={value}"));
             }
+            if let Some(network) = self.isolated_network() {
+                if self
+                    .docker(&["network", "inspect", &network], BTreeMap::new(), 10)
+                    .await
+                    .is_err()
+                {
+                    self.docker(
+                        &[
+                            "network",
+                            "create",
+                            "--label",
+                            "quarry.cloud-local=1",
+                            &network,
+                        ],
+                        BTreeMap::new(),
+                        30,
+                    )
+                    .await?;
+                }
+                extra.push("--network".to_owned());
+                extra.push(network);
+            }
             let mount = format!(
                 "{}:{}",
                 spec.volume,
@@ -444,10 +495,22 @@ impl LocalManager {
                     "POSTGRES_DB",
                 ]);
                 env.insert("POSTGRES_USER".into(), "quarry".into());
-                env.insert("POSTGRES_PASSWORD".into(), "quarry".into());
+                env.insert("POSTGRES_PASSWORD".into(), self.password().into());
                 env.insert("POSTGRES_DB".into(), "postgres".into());
             }
+            if engine == "redis" && self.secret.is_some() {
+                // Passed through the environment, never in the argument list.
+                args.extend(["-e", "REDIS_PASSWORD"]);
+                env.insert("REDIS_PASSWORD".into(), self.password().into());
+            }
             args.push(&spec.image);
+            if engine == "redis" && self.secret.is_some() {
+                args.extend([
+                    "sh",
+                    "-c",
+                    "exec redis-server --requirepass \"$REDIS_PASSWORD\"",
+                ]);
+            }
             self.docker(&args, env, 180).await?;
             "created"
         };
@@ -537,6 +600,11 @@ impl LocalManager {
             self.docker(&["volume", "rm", &spec.volume], BTreeMap::new(), 30)
                 .await?;
             removed_volume = true;
+        }
+        if purge && let Some(network) = self.isolated_network() {
+            let _ = self
+                .docker(&["network", "rm", &network], BTreeMap::new(), 30)
+                .await;
         }
         Ok(
             json!({"engine":engine,"stopped":stopped,"purged":purge,"removed_volume":removed_volume}),
@@ -760,13 +828,22 @@ impl LocalManager {
             .unwrap_or(0);
         local.url = if engine == "postgres" {
             format!(
-                "postgresql://quarry:quarry@{}:{}/{}",
+                "postgresql://quarry:{}@{}:{}/{}",
+                self.password(),
                 self.connect_host(),
                 spec.port,
                 identity
             )
         } else if engine == "redis" {
-            format!("redis://{}:{}/{}", self.connect_host(), spec.port, redis_db)
+            match &self.secret {
+                Some(secret) => format!(
+                    "redis://:{secret}@{}:{}/{}",
+                    self.connect_host(),
+                    spec.port,
+                    redis_db
+                ),
+                None => format!("redis://{}:{}/{}", self.connect_host(), spec.port, redis_db),
+            }
         } else {
             format!("https://localhost:{}", spec.port)
         };
@@ -1324,6 +1401,55 @@ esac
             })
             .is_err()
         );
+    }
+    #[tokio::test]
+    async fn isolation_uses_private_network_and_secret_without_exposing_it_in_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("docker");
+        let calls = dir.path().join("calls");
+        let envs = dir.path().join("envs");
+        write_executable_fixture(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf 'pg=%s redis=%s\\n' \"$POSTGRES_PASSWORD\" \"$REDIS_PASSWORD\" >> '{}'\ncase \"$1\" in\nversion) echo fixture;;\ninspect) echo 'No such container' >&2; exit 1;;\nnetwork) [ \"$2\" = inspect ] && {{ echo 'No such network' >&2; exit 1; }}; echo ok;;\nvolume) echo 'No such volume' >&2; exit 1;;\n*) echo ok;;\nesac\n",
+                calls.display(),
+                envs.display()
+            ),
+        );
+        let secret = "A".repeat(40);
+        let config = RuntimeConfig::load(dir.path().join("config.toml")).unwrap();
+        assert!(
+            LocalManager::new(config.clone(), dir.path().join("s0"))
+                .with_isolation(secret.clone())
+                .is_err(),
+            "isolation needs a namespace"
+        );
+        let mut manager = LocalManager::new(config, dir.path().join("state"))
+            .with_namespace("qcl-test")
+            .unwrap()
+            .with_isolation(secret.clone())
+            .unwrap();
+        manager.docker = script;
+        let free = |_: ()| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        manager.up("postgres", None, Some(free(()))).await.unwrap();
+        manager.up("redis", None, Some(free(()))).await.unwrap();
+        let calls = std::fs::read_to_string(calls).unwrap();
+        assert!(calls.contains("network create --label quarry.cloud-local=1 qcl-test-net"));
+        assert_eq!(calls.matches("--network qcl-test-net").count(), 2);
+        assert!(calls.contains("exec redis-server --requirepass \"$REDIS_PASSWORD\""));
+        assert!(
+            !calls.contains(&secret),
+            "secret must not appear in docker arguments"
+        );
+        let envs = std::fs::read_to_string(envs).unwrap();
+        assert!(envs.contains(&format!("pg={secret}")));
+        assert!(envs.contains(&format!("redis={secret}")));
+        manager.down("redis", true).await.unwrap();
+        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
+        assert!(calls.contains("network rm qcl-test-net"));
     }
     #[tokio::test]
     async fn new_logical_database_registers_without_a_remote_connection() {

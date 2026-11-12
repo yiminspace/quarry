@@ -239,7 +239,9 @@ impl CloudLocals {
             ])))?;
         manager.config = RuntimeConfig::load(base.join("config.toml"))?;
         manager.state_dir = base.join("state");
-        Ok(manager)
+        // Each Local has its own Docker network and password, so a container
+        // cannot reach or log in to another owner's database.
+        Ok(manager.with_isolation(local_secret(&base)?)?)
     }
     fn resource_id(owner: &str, key: &str) -> String {
         format!("cloud:{}", &hash(&format!("{owner}:{key}"))[..24])
@@ -336,6 +338,14 @@ impl CloudLocals {
         source: Option<(&str, &str, &str, &ConnectionRecord)>,
     ) -> Result<Value> {
         let owner = p.id.as_str();
+        // Start an existing Local by id.
+        if let Some(id) = b["resourceId"].as_str() {
+            let local = self.resolve(owner, id)?;
+            let engine = local.record.spec()?.engine;
+            let _lock = lock(self.user_dir(owner).join("lifecycle.lock")).await?;
+            local.manager.up(engine.as_str(), None, None).await?;
+            return Ok(json!({"created":false,"started":true,"resources":self.resources(owner)?}));
+        }
         let engine = b["engine"]
             .as_str()
             .or_else(|| source.and_then(|(_, _, _, c)| c.engine.as_deref()))
@@ -360,10 +370,27 @@ impl CloudLocals {
                 "Engine must match the source database",
             ));
         }
+        // Default to the source's unique resource id, so same-named databases
+        // in different projects or environments get separate Locals.
         let name = b["name"]
             .as_str()
             .map(String::from)
-            .or_else(|| source.map(|(_, _, db, _)| db.to_owned()))
+            .or_else(|| {
+                source.map(|(id, _, _, _)| {
+                    id.chars()
+                        .map(|c| {
+                            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                                c
+                            } else {
+                                '-'
+                            }
+                        })
+                        .take(40)
+                        .collect::<String>()
+                        .trim_start_matches('-')
+                        .to_owned()
+                })
+            })
             .ok_or_else(|| failure(400, "invalid", "Name required"))?;
         quarry_runtime::validate_name(&name)
             .map_err(|_| failure(400, "invalid", "Name may contain letters, digits, _ and -"))?;
@@ -396,6 +423,18 @@ impl CloudLocals {
                     "A cloud Local with this name uses another engine",
                 ));
             }
+            if existing
+                .extra
+                .get("platform_resource_id")
+                .and_then(toml_string)
+                != source.map(|(id, _, _, _)| id)
+            {
+                return Err(failure(
+                    409,
+                    "conflict",
+                    "A cloud Local with this name belongs to another source; choose another name",
+                ));
+            }
             let local = self.resolve(owner, &id)?;
             local.manager.up(engine, None, None).await?;
             return Ok(json!({"created":false,"started":true,"resources":self.resources(owner)?}));
@@ -419,7 +458,13 @@ impl CloudLocals {
             c.extra.insert("cloud_owner".into(), owner.into());
             c.extra
                 .insert("cloud_namespace".into(), namespace.clone().into());
-            c.extra.insert("platform_db".into(), name.clone().into());
+            c.extra.insert(
+                "platform_db".into(),
+                source
+                    .map(|(_, _, db, _)| db.to_owned())
+                    .unwrap_or_else(|| name.clone())
+                    .into(),
+            );
             let project = b["project"]
                 .as_str()
                 .map(String::from)
@@ -499,12 +544,15 @@ impl CloudLocals {
         })
         .await?;
         let engine = local.record.spec()?.engine;
+        let url = url::Url::parse(&local.record.url)
+            .map_err(|_| failure(500, "internal", "Invalid cloud Local address"))?;
+        // Only the owner receives this Local's own credentials.
         Ok(json!({
             "ticket": ticket, "expiresAt": expires, "resourceId": local.id,
             "engine": engine.as_str(),
-            "database": url::Url::parse(&local.record.url).ok().map(|u| u.path().trim_start_matches('/').to_owned()),
-            "user": if engine == quarry_core::Engine::Postgres { Some("quarry") } else { None },
-            "password": if engine == quarry_core::Engine::Postgres { Some("quarry") } else { None },
+            "database": (engine == quarry_core::Engine::Postgres).then(|| url.path().trim_start_matches('/').to_owned()),
+            "user": (engine == quarry_core::Engine::Postgres).then(|| url.username().to_owned()),
+            "password": url.password(),
         }))
     }
     /// Validate a tunnel ticket and reserve a tunnel slot for its owner.
@@ -588,6 +636,32 @@ impl CloudLocals {
         ports.ports.retain(|_, ns| ns != namespace);
         write_json(&path, &ports)
     }
+}
+
+/// Per-Local secret, generated once and readable only by the server.
+fn local_secret(base: &Path) -> Result<String> {
+    let path = base.join("secret");
+    match std::fs::read_to_string(&path) {
+        Ok(secret) if secret.trim().len() >= 32 => return Ok(secret.trim().to_owned()),
+        Ok(_) => return Err(failure(503, "unavailable", "Cloud Local secret is corrupt")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let secret = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    options.open(&path)?.write_all(secret.as_bytes())?;
+    Ok(secret)
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -710,6 +784,46 @@ mod tests {
             locals.open_tunnel("qt_unknown").await.err().unwrap().status,
             401
         );
+    }
+    #[test]
+    fn each_local_gets_a_stable_private_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for path in [&a, &b] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let first = local_secret(&a).unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|c| c.is_ascii_alphanumeric()));
+        assert_eq!(local_secret(&a).unwrap(), first);
+        assert_ne!(local_secret(&b).unwrap(), first);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(a.join("secret"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+    #[tokio::test]
+    async fn tickets_carry_only_the_owners_own_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let locals = locals(dir.path());
+        let id = seed(&locals, "alice", "dind");
+        let alice = Principal {
+            id: "alice".into(),
+            permissions: vec![],
+            roles: vec![],
+        };
+        let ticket = locals.ticket(&alice, &id).await.unwrap();
+        assert_eq!(ticket["user"], "quarry");
+        assert_eq!(
+            ticket["password"], "quarry",
+            "seeded record password is returned verbatim"
+        );
+        assert_eq!(ticket["database"], "orders");
     }
     #[test]
     fn images_are_limited_to_database_prefixes() {

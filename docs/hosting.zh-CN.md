@@ -149,7 +149,7 @@ docker compose -f compose.yaml -f compose.cloud-local.yaml up -d
    qy local connect https://quarry.example.com/quarry/ --port 5433 --ticket qt_...
    ```
 
-   之后服务使用 `postgresql://quarry:quarry@127.0.0.1:5433/<库名>` 即可。隧道把字节原样转发，
+   之后服务使用网页上显示的连接地址即可（如 `postgresql://quarry:<该 Local 的密码>@127.0.0.1:5433/<库名>`）。每个 Local 有独立的 Docker 网络和随机密码，只有创建者能拿到，其他用户的容器既连不到它，也登录不了。隧道把字节原样转发，
    事务、预编译语句、扩展、迁移工具都可以正常使用。
 
 需要 `lab:db:local` 权限。每个 Local 只属于创建它的账号；凭证按账号和 Local 绑定，删除 Local 时一并作废。

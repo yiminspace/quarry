@@ -6708,10 +6708,10 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
 
 # Hosted UI contract tests use the built bundle with the platform marker.
 # Network fixtures exercise browser behavior; Rust platform tests cover IAM and ACLs.
-def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False, cloud_local=False):
+def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False, cloud_local=False, cloud_resources=None):
     state = {'online': online, 'queries': [], 'local_requests': [],
              'assistant_requests': [], 'operations': [], 'refreshes': 0,
-             'cloud_local': cloud_local, 'cloud_requests': [], 'cloud_resources': []}
+             'cloud_local': cloud_local, 'cloud_requests': [], 'cloud_resources': list(cloud_resources or [])}
     remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
                   engine=engine, production=True)
     page.add_init_script("""(() => {
@@ -6998,6 +6998,43 @@ def test_platform_cloud_local_create_connect_and_delete_without_running_sql(page
     page.wait_for_function("!document.querySelector('#cibox')")
     assert ('/api/local/down', {'resourceId': 'cloud:abc', 'purge': True}) in state['cloud_requests']
     assert page.locator('#sql').input_value() == 'select 1 as keep_this_draft'
+    assert not state['queries']
+    assert not state['local_requests']
+
+
+def test_platform_cloud_local_sync_start_stop_send_exact_targets_and_keep_draft(page_sqlite):
+    page = page_sqlite
+    answers = []
+    page.on('dialog', lambda dialog: dialog.accept() if answers.pop(0) else dialog.dismiss())
+    local = dict(id='cloud:abc', project='lab', db='notes', env='local', placement='cloud', engine='postgres',
+                 production=False, image='postgres:16-alpine', sourceResourceId='remote-notes')
+    state = _hosted_workbench(page, engine='postgres', cloud_local=True, cloud_resources=[local])
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.get_by_text('Cloud Local', exact=True).first.click()
+    page.locator('#sql').fill('select 2 as keep_this_draft')
+    page.locator('#ciBtn').click()
+    page.get_by_test_id('cloud-local-panel').wait_for()
+
+    # Cancelling the destructive schema sync sends nothing.
+    answers.append(False)
+    page.get_by_test_id('cloud-local-sync').click()
+    page.wait_for_timeout(300)
+    assert not any(path == '/api/schema/import' for path, _ in state['cloud_requests'])
+    answers.append(True)
+    page.get_by_test_id('cloud-local-sync').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-sync]').disabled")
+    page.get_by_test_id('cloud-local-start').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-start]').disabled")
+    page.get_by_test_id('cloud-local-stop').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-stop]').disabled")
+    assert state['cloud_requests'] == [
+        ('/api/schema/import', {'resourceId': 'cloud:abc', 'sourceResourceId': 'remote-notes'}),
+        ('/api/local/up', {'resourceId': 'cloud:abc'}),
+        ('/api/local/down', {'resourceId': 'cloud:abc'}),
+    ]
+    assert not answers
+    page.keyboard.press('Escape')
+    assert page.locator('#sql').input_value() == 'select 2 as keep_this_draft'
     assert not state['queries']
     assert not state['local_requests']
 
