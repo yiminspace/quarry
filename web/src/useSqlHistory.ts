@@ -1,4 +1,4 @@
-import { personalStorage } from "./platform";
+import { personalStorage, subscribeNativeRecordsReplaced } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cloudRouteVisible, connectionTargetId, useConnStore } from "./store/connStore";
 
@@ -69,6 +69,9 @@ export function useSqlHistory() {
   const groups = useConnStore((state) => state.groups);
   const [browserHistory, setHistory] = useState<HistEntry[]>(() => readHistory());
   const [executionHistory, setExecutionHistory] = useState<HistEntry[]>([]);
+  useEffect(() => subscribeNativeRecordsReplaced((keys) => {
+    if (keys.has(STORAGE_KEY)) setHistory(readHistory());
+  }), []);
   useEffect(() => {
     if (document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") !== "native") return;
     const controller = new AbortController();

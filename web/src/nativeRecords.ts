@@ -10,6 +10,8 @@ const recoveryKey = scope ? `qy_native:${encodeURIComponent(scope)}:recovery` : 
 const STANDALONE_SHARED = NATIVE_MODE && document.querySelector('meta[name="quarry-workbench-entry"]')?.getAttribute("content") === "quarry";
 const path = "/api/personal";
 let values: Values = {};
+/** The saved document at `revision`: the common ancestor for cross-window merges. */
+let base: Values = {};
 let editableCloudIds = new Set<string>();
 let revision = 0;
 let edits = 0;
@@ -21,6 +23,9 @@ let storageError = "";
 let oversized = false;
 let ownRecovery: string | null = null;
 const listeners = new Set<() => void>();
+const replaceListeners = new Set<(keys: Set<string>) => void>();
+/** Called after records saved by another window were merged into this window. */
+export const subscribeNativeRecordsReplaced = (listener: (keys: Set<string>) => void) => { replaceListeners.add(listener); return () => { replaceListeners.delete(listener); }; };
 export const subscribeNativeRecords = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export function nativeRecordsError(): string {
   if (persistence === "conflict") return t("native_records_conflict");
@@ -100,13 +105,15 @@ function filterCloudRecords(snapshot: Values, visible: (env: string) => boolean)
   return copy;
 }
 
-function saveBody(): string | null {
-  let document = JSON.stringify({ values });
+function saveBody(): { body: string; sent: Values } | null {
+  let sent = { ...values };
+  let document = JSON.stringify({ values: sent });
   if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) {
-    document = JSON.stringify({ values: withoutResultSnapshots(values) });
+    sent = withoutResultSnapshots(values);
+    document = JSON.stringify({ values: sent });
     if (utf8.encode(document).length > DOCUMENT_BYTE_LIMIT) return null;
   }
-  return `{"value":${document},"revision":${revision},"cloudIds":${JSON.stringify([...editableCloudIds])}}`;
+  return { body: `{"value":${document},"revision":${revision},"cloudIds":${JSON.stringify([...editableCloudIds])}}`, sent };
 }
 
 function saveRecovery(): void {
@@ -177,6 +184,183 @@ function containsRecovery(saved: Values, recovered: Values): boolean {
   }
 }
 
+type StoredTab = Record<string, unknown> & { id?: unknown };
+const MAX_HISTORY = 1000; // useSqlHistory MAX_ENTRIES
+/** Per-window bookkeeping: never a reason to report a conflict. */
+const TAB_COUNTERS = new Set(["visited", "sqlRevision"]);
+
+function sameValues(a: Values, b: Values): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && a[key] === b[key]);
+}
+
+function parseArray(raw: string | undefined): unknown[] {
+  if (raw === undefined) return [];
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value)) throw new Error("Invalid workbench array");
+  return value;
+}
+
+class MergeConflict extends Error {}
+
+function tabId(tab: unknown): string {
+  if (!tab || typeof tab !== "object" || Array.isArray(tab) || typeof (tab as StoredTab).id !== "string") throw new Error("Invalid workbench tab");
+  return (tab as StoredTab).id as string;
+}
+const tabContent = (tab: StoredTab): string =>
+  JSON.stringify(Object.entries(tab).filter(([key, value]) => !TAB_COUNTERS.has(key) && value !== undefined && value !== null)
+    .sort(([a], [b]) => a.localeCompare(b)));
+
+/** Field-wise three-way merge of one tab present in both windows. */
+function mergeTab(baseTab: StoredTab | undefined, local: StoredTab, remote: StoredTab): StoredTab {
+  if (!baseTab && tabContent(local) !== tabContent(remote)) throw new MergeConflict();
+  const merged: StoredTab = {};
+  for (const key of new Set([...Object.keys(remote), ...Object.keys(local)])) {
+    const l = JSON.stringify(local[key] ?? null), r = JSON.stringify(remote[key] ?? null), b = JSON.stringify(baseTab?.[key] ?? null);
+    if (TAB_COUNTERS.has(key)) {
+      const numbers = [local[key], remote[key]].filter((value): value is number => typeof value === "number");
+      if (numbers.length) merged[key] = Math.max(...numbers);
+    } else if (l === r || r === b) merged[key] = local[key];
+    else if (l === b) merged[key] = remote[key];
+    else throw new MergeConflict(); // Both windows edited this field differently.
+  }
+  return merged;
+}
+
+/** Union of tabs by id. Tabs are kept unless one side removed an unchanged tab;
+ * an edited tab survives the other window closing it. */
+function mergeTabs(base: Values, local: Values, remote: Values, merged: Values): void {
+  const read = (source: Values) => {
+    const tabs = parseArray(source.qy_tabs) as StoredTab[];
+    const results = parseArray(source.qy_tabres);
+    const ids = tabs.map(tabId);
+    const ati = Number(source.qy_ati ?? 0);
+    return { tabs, ids, byId: new Map(ids.map((id, index) => [id, tabs[index]])), result: (id: string) => {
+      const index = ids.indexOf(id);
+      return index === -1 ? null : results[index] ?? null;
+    }, active: Number.isInteger(ati) ? ids[ati] : undefined };
+  };
+  const b = read(base), l = read(local), r = read(remote);
+  // Keep this window's arrangement unless it is still the saved one.
+  const localOrderChanged = JSON.stringify(l.ids.filter((id) => b.byId.has(id))) !== JSON.stringify(b.ids.filter((id) => l.byId.has(id)));
+  const used = new Set<string>([...b.ids, ...l.ids, ...r.ids]);
+  const nextId = () => {
+    let n = Math.max(0, ...[...used].map((id) => Number(id.slice(1))).filter(Number.isFinite)) + 1;
+    while (used.has(`t${n}`)) n++;
+    used.add(`t${n}`);
+    return `t${n}`;
+  };
+  const out: { tab: StoredTab; result: unknown }[] = [];
+  const remap = new Map<string, string>();
+  const changedFromBase = (tab: StoredTab, id: string) => !b.byId.has(id) || tabContent(b.byId.get(id)!) !== tabContent(tab);
+  const pickResult = (id: string) => JSON.stringify(l.result(id)) !== JSON.stringify(b.result(id)) ? l.result(id) : r.result(id);
+  // Two windows that opened the same connection independently get one tab.
+  const remoteNewEmpty = r.ids.filter((id) => !b.byId.has(id) && !l.byId.has(id) && r.byId.get(id)!.sql === "" && !r.byId.get(id)!.title);
+  const takeLocal = (id: string) => {
+    const tab = l.byId.get(id)!;
+    const remoteTab = r.byId.get(id);
+    if (remoteTab) {
+      try {
+        out.push({ tab: mergeTab(b.byId.get(id), tab, remoteTab), result: pickResult(id) });
+      } catch (error) {
+        if (b.byId.has(id) || !(error instanceof MergeConflict)) throw error;
+        // Both windows created a different tab with the same counter value.
+        const renamed = nextId();
+        remap.set(id, renamed);
+        out.push({ tab: remoteTab, result: r.result(id) }, { tab: { ...tab, id: renamed }, result: l.result(id) });
+      }
+      return;
+    }
+    if (b.byId.has(id) && !changedFromBase(tab, id)) return; // Closed in another window.
+    if (!b.byId.has(id) && tab.sql === "" && !tab.title) {
+      const twin = remoteNewEmpty.find((other) => tabContent({ ...r.byId.get(other)!, id }) === tabContent(tab));
+      if (twin) { remoteNewEmpty.splice(remoteNewEmpty.indexOf(twin), 1); remap.set(id, twin); return; }
+    }
+    out.push({ tab, result: l.result(id) });
+  };
+  const takeRemote = (id: string) => {
+    const tab = r.byId.get(id)!;
+    if (b.byId.has(id) && !changedFromBase(tab, id)) return; // Closed in this window.
+    out.push({ tab, result: r.result(id) });
+  };
+  if (localOrderChanged) {
+    l.ids.forEach(takeLocal);
+    r.ids.filter((id) => !l.byId.has(id)).forEach(takeRemote);
+  } else {
+    for (const id of r.ids) if (l.byId.has(id)) takeLocal(id); else takeRemote(id);
+    l.ids.filter((id) => !r.byId.has(id)).forEach(takeLocal);
+  }
+  const ids = out.map(({ tab }) => tab.id);
+  const localActive = l.active === undefined ? undefined : remap.get(l.active) ?? l.active;
+  const preferred = local.qy_ati !== base.qy_ati || l.active !== b.active ? localActive : r.active;
+  const index = [preferred, localActive, r.active].map((id) => id === undefined ? -1 : ids.indexOf(id)).find((i) => i !== -1);
+  merged.qy_tabs = JSON.stringify(out.map(({ tab }) => tab));
+  merged.qy_ati = String(index ?? Math.min(Number(local.qy_ati ?? 0) || 0, out.length - 1));
+  if (Object.hasOwn(local, "qy_tabres") || Object.hasOwn(remote, "qy_tabres")) merged.qy_tabres = JSON.stringify(out.map(({ result }) => result));
+}
+
+function mergeHistory(local: string, remote: string): string {
+  const seen = new Set<string>();
+  const entries = [...parseArray(local), ...parseArray(remote)].filter((entry) => {
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const ts = (entry: unknown) => typeof entry === "object" && entry && typeof (entry as { ts?: unknown }).ts === "number" ? (entry as { ts: number }).ts : 0;
+  return JSON.stringify(entries.sort((a, b) => ts(b) - ts(a)).slice(0, MAX_HISTORY));
+}
+
+function mergeObject(base: string | undefined, local: string, remote: string): string {
+  const parse = (raw: string | undefined): Record<string, unknown> => {
+    const value: unknown = JSON.parse(raw ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Not an object");
+    return value as Record<string, unknown>;
+  };
+  const b = parse(base), l = parse(local), r = parse(remote);
+  const out: Record<string, unknown> = { ...r };
+  for (const key of new Set([...Object.keys(l), ...Object.keys(b)])) {
+    const lv = JSON.stringify(l[key]), bv = JSON.stringify(b[key]);
+    if (lv === bv) continue; // Unchanged here: the remote value (or removal) stands.
+    if (Object.hasOwn(l, key)) out[key] = l[key]; else delete out[key];
+  }
+  return JSON.stringify(out);
+}
+
+/** Three-way merge of this window's records with a newer saved document.
+ * Returns null only for divergent edits of the same tab. Preferences changed in
+ * both windows keep this window's value. */
+export function mergeNativeRecords(baseValues: Values, local: Values, remote: Values): Values | null {
+  const merged: Values = {};
+  const tabKeys = ["qy_tabs", "qy_tabres", "qy_ati"];
+  try {
+    for (const key of new Set([...Object.keys(remote), ...Object.keys(local), ...Object.keys(baseValues)])) {
+      if (tabKeys.includes(key)) continue;
+      const l = local[key], r = remote[key], b = baseValues[key];
+      let value: string | undefined;
+      if (l === r || r === b) value = l;
+      else if (l === b) value = r;
+      else if (l === undefined || r === undefined) value = l ?? r; // Removed in one window, edited in the other.
+      else if (key === "qy_hist") value = mergeHistory(l, r);
+      else {
+        try { value = mergeObject(b, l, r); }
+        catch { value = l; }
+      }
+      if (value !== undefined) merged[key] = value;
+    }
+    const same = (a: Values, b: Values) => tabKeys.every((key) => a[key] === b[key]);
+    const source = same(local, baseValues) ? remote : same(remote, baseValues) || same(local, remote) ? local : null;
+    if (source) {
+      for (const key of tabKeys) if (Object.hasOwn(source, key)) merged[key] = source[key];
+    } else {
+      mergeTabs(baseValues, local, remote, merged);
+    }
+    return merged;
+  } catch {
+    return null;
+  }
+}
+
 export async function initializeNativeRecords(): Promise<void> {
   if (!NATIVE_MODE) return;
   const recovered = readRecovery();
@@ -187,6 +371,7 @@ export async function initializeNativeRecords(): Promise<void> {
   }
   try {
     const saved = await loadSaved();
+    base = { ...saved.values };
     if (!recovered) {
       values = saved.values;
       revision = saved.revision;
@@ -203,9 +388,7 @@ export async function initializeNativeRecords(): Promise<void> {
       }
       return;
     }
-    const sameValues = Object.keys(values).length === Object.keys(saved.values).length &&
-      Object.entries(values).every(([key, value]) => Object.hasOwn(saved.values, key) && saved.values[key] === value);
-    if (sameValues || (revision < saved.revision && containsRecovery(saved.values, recovered.values))) {
+    if (sameValues(values, saved.values) || (revision < saved.revision && containsRecovery(saved.values, recovered.values))) {
       values = saved.values;
       revision = saved.revision;
       editableCloudIds = new Set(saved.cloudIds);
@@ -220,7 +403,90 @@ export async function initializeNativeRecords(): Promise<void> {
   } catch {
     persistence = "unavailable";
     notify();
+  } finally {
+    listenForOtherWindows();
   }
+}
+
+// Windows on this origin and workbench scope announce each saved revision.
+const channelName = scope ? `qy_native:${encodeURIComponent(scope)}:saved` : null;
+let channel: BroadcastChannel | null = null;
+function announceSaved(): void {
+  if (!channelName) return;
+  try {
+    if (channel) channel.postMessage({ revision });
+    else localStorage.setItem(channelName, JSON.stringify({ revision, at: Date.now() }));
+  } catch { /* Other windows still merge on their next save. */ }
+}
+function heardRevision(data: unknown): void {
+  const announced = (data as { revision?: unknown } | null)?.revision;
+  if (validRevision(announced) && announced > revision) requestSync("announced");
+}
+function listenForOtherWindows(): void {
+  if (!channelName || channel) return;
+  if (typeof BroadcastChannel === "function") {
+    channel = new BroadcastChannel(channelName);
+    channel.onmessage = (event) => heardRevision(event.data);
+  } else {
+    window.addEventListener("storage", (event) => {
+      if (event.key !== channelName || !event.newValue) return;
+      try { heardRevision(JSON.parse(event.newValue)); } catch { /* ignore malformed announcements */ }
+    });
+  }
+}
+
+let pendingSync: "announced" | "rejected" | null = null;
+function requestSync(reason: "announced" | "rejected"): void {
+  if (persistence !== "ready") return;
+  if (saving) {
+    if (pendingSync !== "rejected") pendingSync = reason;
+    return;
+  }
+  void syncFromSaved(reason);
+}
+
+/** Merge a document another window saved into this window's records. */
+async function syncFromSaved(reason: "announced" | "rejected"): Promise<void> {
+  if (persistence !== "ready" || saving) return;
+  saving = true;
+  clearTimeout(timer);
+  try {
+    const saved = await loadSaved();
+    if (saved.revision <= revision) {
+      if (reason === "rejected") { persistence = "conflict"; notify(); }
+      return;
+    }
+    // Merge against the latest local values: edits made during the read are kept.
+    const merged = mergeNativeRecords(base, values, saved.values);
+    if (!merged) {
+      persistence = "conflict";
+      notify();
+      return;
+    }
+    const before = values;
+    values = merged;
+    base = { ...saved.values };
+    revision = saved.revision;
+    saved.cloudIds.forEach((id) => editableCloudIds.add(id));
+    dirty = !sameValues(merged, saved.values);
+    if (dirty) edits++;
+    saveRecovery();
+    const keys = new Set([...Object.keys(before), ...Object.keys(merged)].filter((key) => before[key] !== merged[key]));
+    if (keys.size) replaceListeners.forEach((listener) => listener(keys));
+  } catch {
+    persistence = "unavailable";
+    notify();
+  } finally {
+    saving = false;
+    afterBusy();
+  }
+}
+
+function afterBusy(): void {
+  const reason = pendingSync;
+  pendingSync = null;
+  if (reason) requestSync(reason);
+  else if (dirty) scheduleSave();
 }
 
 function scheduleSave(): void {
@@ -230,11 +496,12 @@ function scheduleSave(): void {
 }
 async function flushNativeRecords(): Promise<void> {
   if (!dirty || persistence !== "ready" || saving) return;
-  const body = saveBody();
-  if (body === null) {
+  const prepared = saveBody();
+  if (prepared === null) {
     setOversized(true);
     return;
   }
+  const { body, sent } = prepared;
   saving = true;
   const version = edits;
   try {
@@ -246,8 +513,8 @@ async function flushNativeRecords(): Promise<void> {
       signal: AbortSignal.timeout(5000),
     });
     if (response.status === 409) {
-      persistence = "conflict";
-      notify();
+      // Another window saved first: merge its records, then save again.
+      pendingSync = "rejected";
       return;
     }
     if (response.status === 413) {
@@ -258,15 +525,18 @@ async function flushNativeRecords(): Promise<void> {
     const saved = await response.json();
     if (saved?.revision !== revision + 1) throw new Error("Invalid saved native records");
     revision = saved.revision;
+    base = sent;
     dirty = edits !== version;
     saveRecovery();
     setOversized(false);
+    announceSaved();
   } catch {
     persistence = "unavailable";
     notify();
   } finally {
     saving = false;
-    if (dirty && edits !== version) scheduleSave();
+    if (pendingSync) afterBusy();
+    else if (dirty && edits !== version) scheduleSave();
   }
 }
 function changed(): void {

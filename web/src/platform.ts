@@ -1,6 +1,6 @@
 import { t } from "./i18n";
 import { NATIVE_MODE, nativePersonalStorage } from "./nativeRecords";
-export { initializeNativeRecords } from "./nativeRecords";
+export { initializeNativeRecords, subscribeNativeRecordsReplaced } from "./nativeRecords";
 import { consumeHostedHandoff, hostedConfig, hostedConfigurationError, loadHostedConfig, readHostedSession, saveHostedSession, type HostedSession } from "./hostedAuth";
 
 /** Hosted workbench. Native Quarry uses its own same-origin API and storage. */

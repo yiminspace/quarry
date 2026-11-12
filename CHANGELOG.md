@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Native workbench windows on the same machine now stay in sync. When one window saves, the others adopt its tabs, history and preferences without reloading. If two windows save at the same time, their tabs are merged instead of showing "Another window saved newer records". The warning remains only when two windows edit the same tab's SQL differently.
+
 ## [2.3.0] - 2026-11-12
 
 - Hosted Quarry can give each user cloud Local PostgreSQL and Redis databases on a server-side Docker-in-Docker daemon. Enable it with `cloud_local` in `hosted.json` and the `compose.cloud-local.yaml` overlay. Users create a Local from a database's connection details and can pick any allowed image version. Run `qy local connect` with a ticket from the workbench to reach the Local from your own services on a loopback port. Database ports are never published, and each Local has its own Docker network and password.

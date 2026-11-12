@@ -1,5 +1,5 @@
 import { collectColumnImages } from "../imageDetection";
-import { PLATFORM_MODE, personalStorage } from "../platform";
+import { PLATFORM_MODE, personalStorage, subscribeNativeRecordsReplaced } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
@@ -530,4 +530,20 @@ export const useTabsStore = create<TabsState>((set, get) => {
       set({ results });
     },
   };
+});
+
+// Another window's saved tabs were merged into this window's records. Keep
+// this window's active tab and in-memory results wherever the tab still exists.
+subscribeNativeRecordsReplaced((keys) => {
+  if (![TABS_KEY, ATI_KEY, TABRES_KEY, EMPTY_GROUPS_KEY].some((key) => keys.has(key))) return;
+  const current = useTabsStore.getState();
+  const next = readInitial();
+  const results = { ...next.results };
+  for (const tab of next.tabs) {
+    const previous = current.tabs.find((item) => item.id === tab.id);
+    const snapshot = current.results[tab.id];
+    if (previous && snapshot && previous.db === tab.db && previous.env === tab.env && previous.targetId === tab.targetId) results[tab.id] = snapshot;
+  }
+  const activeId = next.tabs.some((tab) => tab.id === current.activeId) ? current.activeId : next.activeId;
+  useTabsStore.setState({ tabs: next.tabs, activeId, results, emptyGroups: readEmptyGroups() });
 });
