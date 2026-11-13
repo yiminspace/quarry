@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Fix `qy run` and `qy exec` parsing of CLI options after positional `name=value` parameters.
+
 ## [2.3.1] - 2026-11-13
 
 - Copying a PostgreSQL schema into a Local works on Debian and Ubuntu, where `pg_dump` is a `pg_wrapper` symlink. Quarry used to run the symlink target directly, got an empty dump and reported an empty schema. This also fixed schema export in hosted Quarry.
