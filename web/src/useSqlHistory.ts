@@ -1,4 +1,4 @@
-import { personalStorage } from "./platform";
+import { personalStorage, subscribeNativeRecordsReplaced } from "./platform";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cloudRouteVisible, connectionTargetId, useConnStore } from "./store/connStore";
 
@@ -69,6 +69,9 @@ export function useSqlHistory() {
   const groups = useConnStore((state) => state.groups);
   const [browserHistory, setHistory] = useState<HistEntry[]>(() => readHistory());
   const [executionHistory, setExecutionHistory] = useState<HistEntry[]>([]);
+  useEffect(() => subscribeNativeRecordsReplaced((keys) => {
+    if (keys.has(STORAGE_KEY)) setHistory(readHistory());
+  }), []);
   useEffect(() => {
     if (document.querySelector('meta[name="quarry-mode"]')?.getAttribute("content") !== "native") return;
     const controller = new AbortController();
@@ -122,6 +125,10 @@ export function useSqlHistory() {
     [pushHist],
   );
 
+  const finishHistoryNavigation = useCallback(() => {
+    if (hiRef.current !== -1) pushHist("", null, null);
+  }, [pushHist]);
+
   // Walks history in-place without recording it; the in-progress draft is
   // stashed on the way up and restored once navigation returns past the
   // most recent entry (the legacy Cmd/Ctrl+Up/Down behavior).
@@ -152,5 +159,5 @@ export function useSqlHistory() {
     [groups, history],
   );
 
-  return { history, pushHist, keepDraft, navigateHistory };
+  return { history, pushHist, keepDraft, finishHistoryNavigation, navigateHistory };
 }

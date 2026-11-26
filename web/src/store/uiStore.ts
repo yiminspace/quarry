@@ -1,4 +1,4 @@
-import { PLATFORM_MODE, personalStorage } from "../platform";
+import { PLATFORM_MODE, personalStorage, subscribeNativeRecordsReplaced } from "../platform";
 import { create } from "zustand";
 import type { ChangelogVersion, UpdateInfo } from "../api";
 
@@ -134,4 +134,15 @@ export const useUiStore = create<UiState>((set, get) => {
       set({ collapsedGroups: next });
     },
   };
+});
+
+subscribeNativeRecordsReplaced((keys) => {
+  if (![SIDEBAR_WIDTH_KEY, MAX_ROWS_KEY, EDITOR_HEIGHT_KEY, COLLAPSED_KEY, AUTO_RUN_KEY].some((key) => keys.has(key))) return;
+  useUiStore.setState({
+    sidebarWidth: readNumber(SIDEBAR_WIDTH_KEY, 244),
+    maxRows: readMaxRows(),
+    editorHeight: readNumber(EDITOR_HEIGHT_KEY, 154),
+    collapsedGroups: readCollapsedGroups(),
+    autoRunPreferences: readAutoRunPreferences(),
+  });
 });

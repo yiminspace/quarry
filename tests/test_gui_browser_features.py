@@ -7615,8 +7615,8 @@ def test_platform_builtin_handoff_never_replaces_another_browser_account(page_sq
     assert not state['local_requests']
 
 
-def _native_personal_workbench(page, *, unavailable=False, launch_code=None):
-    state = {'revision': 0, 'value': None, 'unavailable': unavailable, 'writes': [], 'launches': []}
+def _native_personal_workbench(page, *, unavailable=False, launch_code=None, state=None, url=None):
+    state = state or {'revision': 0, 'value': None, 'unavailable': unavailable, 'writes': [], 'launches': []}
 
     def document(route):
         if route.request.resource_type != 'document':
@@ -7651,9 +7651,32 @@ def _native_personal_workbench(page, *, unavailable=False, launch_code=None):
     page.route('**/api/personal', personal)
     if launch_code:
         page.evaluate("code => location.hash = 'quarry_workbench=' + code", launch_code)
-    page.reload(wait_until='domcontentloaded')
-    _select_sqlite(page)
+    if url:
+        # The saved workbench reopens the selected database in another window.
+        page.goto(url, wait_until='domcontentloaded')
+        page.locator('#tbl-panel [data-t="entries"]').wait_for()
+    else:
+        page.reload(wait_until='domcontentloaded')
+        _select_sqlite(page)
     return state
+
+
+def _second_native_window(page, state):
+    """Another browser window of the same native workbench (same origin and scope)."""
+    other = page.context.new_page()
+    other._console_errors = []
+    other.on("console", lambda m: m.type == "error" and other._console_errors.append(m.text))
+    other.on("pageerror", lambda e: other._console_errors.append(str(e)))
+    _native_personal_workbench(other, state=state, url=page.url)
+    return other
+
+
+def _saved_tab_sql(state):
+    return sorted(tab['sql'] for tab in json.loads(state['value']['values']['qy_tabs']))
+
+
+def _tab_labels(page):
+    return sorted(page.locator('.tab[data-i] .lbl').all_inner_texts())
 
 
 def test_native_workbench_records_reopen_from_sqlite_without_browser_records(page_sqlite):
@@ -7815,6 +7838,9 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
         page.locator('#sql').fill(saved_sql)
     page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
 
+    # Another window edited the same tab's SQL differently.
+    other_sql = 'select 24 as edited_in_other_window'
+    state['value'] = json.loads(json.dumps(state['value']).replace(saved_sql, other_sql))
     state['revision'] += 1
     unsaved_sql = 'select 21 as current_draft'
     with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.status == 409):
@@ -7840,10 +7866,170 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
     assert unsaved_sql in download.value.path().read_text()
     page.once('dialog', lambda dialog: dialog.accept())
     page.get_by_role('button', name='Load saved workbench', exact=True).click()
-    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=saved_sql)
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=other_sql)
     assert not page.get_by_test_id('native-records-status').count()
     assert page.evaluate("localStorage.getItem('qy_native:native-fixture:recovery')") == other
     assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))
+
+
+@pytest.mark.parametrize('transport', ['broadcast', 'storage'])
+def test_native_workbench_windows_sync_saved_tabs_without_conflict(page_sqlite, transport):
+    page = page_sqlite
+    if transport == 'storage':
+        page.context.add_init_script('window.BroadcastChannel = undefined;')
+    state = _native_personal_workbench(page)
+    first_sql = 'select 30 as first_window'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(first_sql)
+    other = _second_native_window(page, state)
+    try:
+        other.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=first_sql)
+        # The second window opens another tab and saves first.
+        second_sql = 'select 31 as second_window'
+        other.locator('#tabAdd').click()
+        with other.expect_response(lambda response: response.url.endswith('/api/personal') and response.status == 200):
+            other.locator('#sql').fill(second_sql)
+        page.wait_for_function("() => document.querySelectorAll('.tab[data-i]').length === 2")
+        assert page.locator('#sql').input_value() == first_sql
+
+        # The first window saves next without a revision conflict.
+        edited_sql = 'select 32 as first_window_again'
+        with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.status == 200):
+            page.locator('#sql').fill(edited_sql)
+        other.wait_for_function("() => [...document.querySelectorAll('.tab[data-i] .lbl')].some((tab) => tab.textContent.includes('select 32'))")
+        assert other.locator('#sql').input_value() == second_sql
+        assert _saved_tab_sql(state) == sorted([edited_sql, second_sql])
+        assert _tab_labels(page) == _tab_labels(other) == ['select 31', 'select 32']
+        other.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+        assert state['revision'] == len(state['writes'])  # every save was accepted
+        for window in (page, other):
+            assert not window.get_by_test_id('native-records-status').count()
+        assert not [e for e in other._console_errors if 'Failed to load resource' not in e and 'net::ERR_' not in e]
+    finally:
+        other.close()
+
+
+def test_native_workbench_rejected_save_merges_other_window_tab(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    saved_sql = 'select 33 as this_window'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(saved_sql)
+    page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    # A window in another browser (no notification) saved an additional tab.
+    values = state['value']['values']
+    tabs = json.loads(values['qy_tabs'])
+    other_tab = {**tabs[0], 'id': 't900', 'sql': 'select 34 as other_browser'}
+    state['value'] = {'values': {**values, 'qy_tabs': json.dumps([*tabs, other_tab]),
+                                 'qy_tabres': json.dumps([*json.loads(values.get('qy_tabres', '[]')), None])}}
+    state['revision'] += 1
+    draft = 'select 35 as merged_draft'
+    accepted = lambda response: (response.url.endswith('/api/personal') and
+                                 response.request.method == 'POST' and response.status == 200)
+    with page.expect_response(accepted):
+        page.locator('#sql').fill(draft)
+    assert [write['revision'] for write in state['writes'][-2:]] == [1, 2]  # rejected, then merged
+    page.wait_for_function("() => document.querySelectorAll('.tab[data-i]').length === 2")
+    assert page.locator('#sql').input_value() == draft
+    assert _saved_tab_sql(state) == sorted([draft, 'select 34 as other_browser'])
+    assert not page.get_by_test_id('native-records-status').count()
+
+
+def test_native_workbench_collision_keeps_active_result_and_request_with_its_tab(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    saved = lambda response: (response.url.endswith('/api/personal') and
+                              response.request.method == 'POST' and response.status == 200)
+    with page.expect_response(saved):
+        page.locator('#sql').fill('select 1 as initial_tab')
+    page.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    local_sql = 'select 81 as local_only'
+    remote_sql = 'select 82 as remote_only'
+    collision = False
+
+    def save_with_collision(route):
+        nonlocal collision
+        if route.request.method == 'POST' and not collision:
+            submitted = json.loads(route.request.post_data_json['value']['values']['qy_tabs'])
+            new = next((tab for tab in submitted if tab['sql'] == local_sql), None)
+            if new:
+                # Simulate a different tab saved under the same id.
+                values = state['value']['values']
+                tabs = json.loads(values['qy_tabs'])
+                state['value'] = {'values': {**values, 'qy_tabs': json.dumps([*tabs, {**new, 'sql': remote_sql}])}}
+                state['revision'] += 1
+                collision = True
+        route.fallback()
+
+    page.route('**/api/personal', save_with_collision)
+    page.evaluate("""() => {
+      const fetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (url === '/api/query') await new Promise(resolve => { window.releaseNativeRun = resolve; });
+        return fetch(url, options);
+      };
+    }""")
+    with page.expect_response(saved):
+        page.locator('#tabAdd').click()
+        page.locator('#sql').fill(local_sql)
+        page.locator('#runBtn').click()
+    assert collision
+    remote_tab = page.locator('.tab[data-i]').filter(has_text='select 82')
+    remote_tab.wait_for()
+    assert page.locator('#sql').input_value() == local_sql
+    page.wait_for_function("() => typeof window.releaseNativeRun === 'function'")
+    page.evaluate("window.releaseNativeRun()")
+    page.locator('#grid th').filter(has_text='local_only').wait_for()
+    assert _col_values(page) == ['81']
+    with page.expect_download() as exported:
+        page.locator('#csvBtn').click()
+    assert 'local_only' in exported.value.path().read_text()
+    remote_tab.click()
+    assert page.locator('#sql').input_value() == remote_sql
+    assert page.locator('#grid tbody tr').count() == 0
+
+
+def test_native_workbench_remote_replacement_stashes_draft_and_revalidates_target(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    draft = 'select 48 as never_run_draft'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and
+                              response.request.method == 'POST' and response.status == 200):
+        page.locator('#sql').fill(draft)
+    page.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    assert page.locator('#esw .ep.on').get_attribute('data-env') != 'prod'
+    origin = page.url.split('/quarry/')[0]
+    tree = page.request.get(origin + '/api/connections').json()
+    notes = next(item for group in tree['groups'] for item in group['items'] if item['db'] == 'notes')
+    production = next(env for env in notes['envs'] if env['env'] == 'prod')
+    values = state['value']['values']
+    tabs = json.loads(values['qy_tabs'])
+    index = int(values['qy_ati'])
+    replacement_sql = 'select note from entries where id = 1'
+    tabs[index].update(env='prod', sql=replacement_sql, targetId=production.get('targetId'),
+                       sqlRevision=tabs[index].get('sqlRevision', 0) + 1)
+    state['value'] = {'values': {**values, 'qy_tabs': json.dumps(tabs)}}
+    state['revision'] += 1
+
+    queries = []
+    page.on('request', lambda request: queries.append(request.post_data_json) if request.url.endswith('/api/query') else None)
+    page.evaluate("""revision => {
+      const channel = new BroadcastChannel('qy_native:native-fixture:saved');
+      channel.postMessage({ revision });
+      channel.close();
+    }""", state['revision'])
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=replacement_sql)
+    page.locator('#esw .ep.on[data-env="prod"]').wait_for()
+    assert not queries
+    page.locator('#histBtn').click()
+    page.get_by_text(draft, exact=True).wait_for()
+    page.keyboard.press('Escape')
+    with page.expect_response(lambda response: response.url.endswith('/api/query')):
+        page.locator('#expBtn').click()
+    assert queries[-1]['env'] == 'prod'
+    assert queries[-1]['sql'].startswith('EXPLAIN QUERY PLAN ')
+    _run_sql(page, replacement_sql)
+    page.get_by_text('prod note 1', exact=True).wait_for()
 
 
 _PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="steelblue"/></svg>'

@@ -1,5 +1,6 @@
+import { NATIVE_MODE } from "../nativeRecords";
 import { collectColumnImages } from "../imageDetection";
-import { PLATFORM_MODE, personalStorage } from "../platform";
+import { PLATFORM_MODE, personalStorage, subscribeNativeRecordsReplaced } from "../platform";
 import { create } from "zustand";
 import type { QueryResult, SavedQuery } from "../api";
 import { t } from "../i18n";
@@ -101,13 +102,12 @@ export function isResultSnapshotPersistable(snapshot: TabResultSnapshot): boolea
   return typeof bytes !== "number" || !Number.isFinite(bytes) || bytes <= MAX_PERSISTED_RESULT_BYTES;
 }
 
-// Tab ids are 't<n>' with a monotonically increasing counter seeded past
-// every persisted id, so ids are never reused across reloads (an in-flight
-// request routed by id must not land on an unrelated new tab).
+// Native windows share saved tabs, so new ids must be unique even when two
+// windows create tabs before either saves. Keep the legacy counter elsewhere.
 let TID = 0;
 
 function newId(): TabId {
-  return `t${++TID}`;
+  return NATIVE_MODE ? `tab-${crypto.randomUUID()}` : `t${++TID}`;
 }
 
 type StoredTab = Partial<Tab>;
@@ -530,4 +530,36 @@ export const useTabsStore = create<TabsState>((set, get) => {
       set({ results });
     },
   };
+});
+
+type NativeTabsReplaced = (
+  previous: ReturnType<typeof useTabsStore.getState>,
+  next: ReturnType<typeof readInitial>,
+  tabIdRemap: ReadonlyMap<string, string>,
+) => void;
+const nativeTabListeners = new Set<NativeTabsReplaced>();
+export function subscribeNativeTabsReplaced(listener: NativeTabsReplaced): () => void {
+  nativeTabListeners.add(listener);
+  return () => { nativeTabListeners.delete(listener); };
+}
+
+// Another window's saved tabs were merged into this window's records. Retain
+// live results only for their original tab, including any legacy id remap.
+subscribeNativeRecordsReplaced((keys, tabIdRemap) => {
+  if (![TABS_KEY, ATI_KEY, TABRES_KEY, EMPTY_GROUPS_KEY].some((key) => keys.has(key))) return;
+  const current = useTabsStore.getState();
+  const next = readInitial();
+  const results = { ...next.results };
+  const available = new Map(next.tabs.map((tab) => [tab.id, tab]));
+  for (const previous of current.tabs) {
+    const id = tabIdRemap.get(previous.id) ?? previous.id;
+    const tab = available.get(id);
+    const snapshot = current.results[previous.id];
+    if (tab && snapshot && sameTabGroup(previous, tab)) results[id] = snapshot;
+  }
+  const preferredId = tabIdRemap.get(current.activeId) ?? current.activeId;
+  const activeId = available.has(preferredId) ? preferredId : next.activeId;
+  const replacement = { ...next, activeId, results };
+  useTabsStore.setState({ ...replacement, emptyGroups: readEmptyGroups() });
+  nativeTabListeners.forEach((listener) => listener(current, replacement, tabIdRemap));
 });
