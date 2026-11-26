@@ -32,6 +32,8 @@
   border-radius:var(--r-btn);
 }
 
+.query-time-value{color:var(--accent)}
+
 /* ---- 侧栏里 voyage 组件层没有覆盖到的边角 ---- */
 .grp .ti{font-size:13px}
 .vg-ws-note{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg3);font-size:10px;overflow:hidden;text-overflow:ellipsis;max-width:110px;white-space:nowrap}

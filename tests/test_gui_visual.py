@@ -126,11 +126,13 @@ def test_status_bar_download_speed_reuse_existing_text_color(page):
     status_color = _style(page, "#status", "color")
     assert _style(page, "#dlSize", "color") == status_color
     assert _style(page, "#avgSpeed", "color") == status_color
+    assert _style(page, "#statusQueriedAt .query-time-value", "color") == DARK["accent"]
 
     page.locator(".vg-switcher-mode").click()  # light theme
     light_status_color = _style(page, "#status", "color")
     assert _style(page, "#dlSize", "color") == light_status_color
     assert _style(page, "#avgSpeed", "color") == light_status_color
+    assert _style(page, "#statusQueriedAt .query-time-value", "color") == LIGHT["accent"]
 
 
 def test_large_result_session_badge_inherits_status_token(page):

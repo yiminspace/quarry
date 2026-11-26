@@ -1,6 +1,7 @@
+import ResultQueryTime from "./ResultQueryTime";
 import { ResultImageCell, ResultImageModal, ResultImageColumnMenu } from "./ResultImage";
 import { CLI_SESSION_MODE, PLATFORM_MODE, platformSnapshot, subscribePlatform } from "./platform";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   cancelPlatformQuery,
   fetchConnections,
@@ -41,6 +42,8 @@ import {
   mostRecent,
   sameTabGroup,
   subscribeNativeTabsReplaced,
+  DEFAULT_REFRESH_AFTER_HOURS,
+  REFRESH_AFTER_HOURS,
   workspaceFor,
   parseMainTable,
   useTabsStore,
@@ -530,6 +533,7 @@ export default function ResultWorkbench() {
   const isCurrentReq = (ctx: ReqCtx): boolean => requestsRef.current[ctx.tabId] === ctx;
   const endReq = (ctx: ReqCtx): void => {
     if (!isCurrentReq(ctx)) return;
+    delete requestsRef.current[ctx.tabId];
     setPendingByTab((prev) => ({ ...prev, [ctx.tabId]: false }));
   };
   const reqFailed = (ctx: ReqCtx, e: unknown): void => {
@@ -553,7 +557,7 @@ export default function ResultWorkbench() {
     const tab = state.tabs.find((tb) => tb.id === ctx.tabId);
     if (!tab) return; // tab closed while in flight
     if (!tabMatchesTarget(tab, ctx)) return;
-    setTabResult(ctx.tabId, { ...build(), targetId: ctx.targetId });
+    setTabResult(ctx.tabId, { queriedAt: Date.now(), ...build(), targetId: ctx.targetId });
     if (opts?.resetSort !== false && state.activeId === ctx.tabId) {
       setSortState(null);
       setSelectedCell(null);
@@ -566,6 +570,7 @@ export default function ResultWorkbench() {
   const run = async (
     overrideTarget?: { db: string; env: string | null },
     overrideSql?: string,
+    refresh = false,
   ): Promise<void> => {
     const tabState = useTabsStore.getState();
     const fixed = tabState.tabs.find((tab) => tab.id === tabState.activeId);
@@ -585,7 +590,7 @@ export default function ResultWorkbench() {
     const currentSql = (overrideSql ?? sqlRef.current).trim();
     if (!target || !currentSql || ambiguousConnection(target.db, target.env) || !cloudRouteVisible(state.groups, target.env) ||
         (fixed?.targetId && fixed.targetId !== connectionTargetId(target.db, target.env))) return;
-    pushHist(currentSql, target.db, target.env);
+    if (!refresh) pushHist(currentSql, target.db, target.env);
     const ctx = startReq(useTabsStore.getState().activeId, target);
     try {
       const data = await runQuery({ db: target.db, env: target.env, sql: currentSql, maxRows, requestId: ctx.requestId, target: ctx.targetId });
@@ -601,6 +606,39 @@ export default function ResultWorkbench() {
       endReq(ctx);
     }
   };
+
+  const refreshStaleResult = useEffectEvent((): void => {
+    if (!sessionReady || document.visibilityState !== "visible") return;
+    const { activeId, tabs, results } = useTabsStore.getState();
+    const target = useConnStore.getState().current;
+    const tab = tabs.find((item) => item.id === activeId);
+    const previous = results[activeId];
+    const hours = tab?.refreshAfterHours ?? DEFAULT_REFRESH_AFTER_HOURS;
+    const previousSql = previous?.querySql;
+    if (!hours || !tab || !target || tab.savedQueryId || !previous?.result || !previousSql ||
+        !["postgres", "mysql", "sqlite"].includes(target.engine) || !/^select\b/i.test(previousSql) ||
+        tab.sql.trim() !== previousSql || requestsRef.current[activeId] ||
+        Date.now() - (previous.queriedAt ?? 0) < hours * 3_600_000 ||
+        tab.db !== target.db || tab.env !== target.env || tab.targetId !== target.targetId ||
+        previous.queryDb !== tab.db || previous.queryEnv !== tab.env || previous.targetId !== tab.targetId ||
+        tab.workspace !== workspaceFor(target.db) || !canAutoRun()) return;
+    // The query endpoint enforces its normal read-only execution policy.
+    void run(target, previousSql, true);
+  });
+
+  const refreshTargetReady = !!current && !!activeTab && activeTab.db === current.db &&
+    activeTab.env === current.env && activeTab.targetId === current.targetId;
+  useEffect(() => {
+    if (!sessionReady || !refreshTargetReady) return;
+    const onReturn = (): void => refreshStaleResult();
+    onReturn();
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
+    return () => {
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
+    };
+  }, [sessionReady, refreshTargetReady, activeTabId]);
 
   const normalizeEnvForItem = useCallback(
     (item: ConnItem, env: string | null): { env: string | null; ok: boolean } => {
@@ -908,6 +946,7 @@ export default function ResultWorkbench() {
       updateTab(tabId, { db, env, sql: clean.sql });
       setTabResult(tabId, {
         result: clean as QueryResult,
+        queriedAt: Date.now(),
         queryDb: db,
         queryEnv: env,
         querySql: null,
@@ -1177,6 +1216,7 @@ export default function ResultWorkbench() {
             queryDb,
             queryEnv,
             querySql,
+            queriedAt: activeSnapshot?.queriedAt,
           };
         },
         // an active sort re-applies itself to the combined rows via shownRows
@@ -1507,6 +1547,18 @@ export default function ResultWorkbench() {
             </select>
             <i className="ti ti-chevron-down" aria-hidden="true" />
           </div>
+          {!activeTab.savedQueryId && <select
+            id="resultRefreshAge"
+            className="vg-btn btn"
+            title={t("result_refresh_tip")}
+            aria-label={t("result_refresh_tip")}
+            value={activeTab.refreshAfterHours ?? DEFAULT_REFRESH_AFTER_HOURS}
+            onChange={(event) => updateTab(activeTab.id, { refreshAfterHours: Number(event.target.value) })}
+          >
+            {REFRESH_AFTER_HOURS.map((hours) => (
+              <option key={hours} value={hours}>{t(`result_refresh_${hours}`)}</option>
+            ))}
+          </select>}
           <span className="vg-sp sp" />
           <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>
@@ -1640,6 +1692,9 @@ export default function ResultWorkbench() {
               <span id="statusElapsed" title={t("elapsed_tip")}>
                 <i className="ti ti-clock" /> {result.elapsedMs} ms
               </span>
+              {activeSnapshot?.queriedAt !== undefined && (
+                <ResultQueryTime queriedAt={activeSnapshot.queriedAt} />
+              )}
               {result.downloadBytes != null && (
                 <>
                   <span

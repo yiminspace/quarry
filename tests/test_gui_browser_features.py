@@ -4662,6 +4662,112 @@ def test_sqlite_load_more_sort_export_and_tab_restore(page_sqlite):
     assert page.locator('#sql').input_value() == 'select * from entries order by id'
 
 
+def test_sqlite_stale_tab_refresh_and_query_time(page_sqlite, tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from datetime import datetime, timedelta, timezone
+
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    _select_sqlite(page)
+    start = datetime(2026, 11, 26, 6, tzinfo=timezone.utc)
+    stamp = page.locator('#statusQueriedAt')
+    refresh = page.locator('#resultRefreshAge')
+
+    def set_age(hours):
+        now = start + timedelta(hours=hours)
+        page.clock.set_fixed_time(now)
+        return now.isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
+    def is_query(req):
+        return req.method == 'POST' and req.url.endswith('/api/query')
+
+    requests = []
+    page.on('request', lambda req: requests.append(req.post_data_json['sql']) if is_query(req) else None)
+    first = set_age(0)
+    sql = 'select note from entries where id = 1'
+    _run_sql(page, sql)
+    expect(stamp).to_have_attribute('datetime', first)
+    expect(stamp).to_have_text('Queried just now')
+    expect(stamp).to_have_attribute('title', re.compile(r'^Queried .*2026'))
+    expect(refresh).to_have_value('24')
+    refresh.select_option('1')
+    first_tab = page.locator('.tab[aria-selected="true"]').get_attribute('data-i')
+
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    assert requests == [sql]
+    with closing(sqlite3.connect(tmp_path / 'notes-dev.db')) as db, db:
+        db.execute("update entries set note = 'refreshed note' where id = 1")
+    second = set_age(2)
+    with page.expect_request(is_query):
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(stamp).to_have_attribute('datetime', second)
+    expect(page.locator('#grid td[data-v="refreshed note"]')).to_be_visible()
+
+    page.locator('#tabAdd').click()
+    _run_sql(page, "select 'another tab' as note")
+    expect(page.locator('#grid td[data-v="another tab"]')).to_be_visible()
+    expect(refresh).to_have_value('24')
+    third = set_age(4)
+    with page.expect_request(is_query):
+        page.locator(f'.tab[data-i="{first_tab}"]').click()
+    expect(stamp).to_have_attribute('datetime', third)
+    assert requests[-1] == sql
+    expect(refresh).to_have_value('1')
+
+    fourth = set_age(6)
+    with page.expect_request(is_query):
+        page.reload()
+    expect(stamp).to_have_attribute('datetime', fourth)
+    expect(refresh).to_have_value('1')
+
+    count = len(requests)
+    set_age(8)
+    draft = 'select 42 as draft'
+    _set_sql(page, draft)
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(stamp).to_have_attribute('datetime', fourth)
+    assert page.locator('#sql').input_value() == draft
+    assert len(requests) == count
+
+    _set_sql(page, sql)
+    _choose_run_mode(page, False)
+    page.reload(wait_until='networkidle')
+    expect(stamp).to_have_attribute('datetime', fourth)
+    assert len(requests) == count
+
+    refresh.select_option('0')
+    _choose_run_mode(page, True)
+    page.reload(wait_until='networkidle')
+    expect(refresh).to_have_value('0')
+    expect(stamp).to_have_attribute('datetime', fourth)
+    assert len(requests) == count
+
+
+def test_sqlite_query_time_advances_without_rerunning(page_sqlite):
+    from datetime import datetime, timezone
+
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    _select_sqlite(page)
+    start = datetime(2026, 11, 26, 6, tzinfo=timezone.utc)
+    page.clock.install(time=start)
+    _run_sql(page, 'select 1 as v')
+    stamp = page.locator('#statusQueriedAt')
+    expect(stamp).to_have_text('Queried just now')
+    original = stamp.get_attribute('datetime')
+    exact = stamp.get_attribute('title')
+    page.clock.fast_forward(2 * 60_000 + 1000)
+    expect(stamp).to_have_text('Queried 2 minutes ago')
+    page.clock.fast_forward(60 * 60_000)
+    expect(stamp).to_have_text('Queried 1 hour ago')
+    page.clock.fast_forward(24 * 60 * 60_000)
+    expect(stamp).to_have_text(exact)
+    expect(stamp).to_have_attribute('datetime', original)
+
+
 def test_sqlite_environment_files_and_production_autorun(page_sqlite):
     page = page_sqlite
     _select_sqlite(page)
