@@ -25,6 +25,7 @@ export type Tab = {
   conversationId?: string;
   /** Incremented by the single SQL write sink, including user edits and restore. */
   sqlRevision?: number;
+  refreshAfterHours?: number;
 };
 
 /** Workspace is part of a tab's identity, including when a removed workspace
@@ -58,6 +59,7 @@ export type TabResultSnapshot = {
   queryDb: string | null;
   queryEnv: string | null;
   querySql: string | null;
+  queriedAt?: number;
   targetId?: string;
   imageColumns?: ReadonlyMap<number, ReadonlySet<string>>;
 };
@@ -67,6 +69,9 @@ export type TabResultSnapshot = {
 // index-aligned array of {db,env,res}) — an existing user's tabs, results and
 // active tab carry over unchanged, and the browser suite's storage-shape
 // assertions apply as-is.
+export const REFRESH_AFTER_HOURS = [0, 1, 6, 24, 168];
+export const DEFAULT_REFRESH_AFTER_HOURS = 24;
+
 const TABS_KEY = "qy_tabs";
 const ATI_KEY = "qy_ati";
 const TABRES_KEY = "qy_tabres";
@@ -117,6 +122,7 @@ type StoredResult = {
   targetId?: string;
   res?: (QueryResult & { _sql?: string }) | null;
   imageColumns?: number[];
+  queriedAt?: number;
 } | null;
 
 function blankTab(seed?: { db?: string | null; env?: string | null }): Tab {
@@ -163,6 +169,8 @@ function readStoredResults(tabs: Tab[], ati: number): Record<TabId, TabResultSna
       queryDb: entry.db ?? null,
       queryEnv: entry.env ?? null,
       querySql: _sql ?? null,
+      ...(typeof entry.queriedAt === "number" && entry.queriedAt > 0 && entry.queriedAt <= 8.64e15
+        ? { queriedAt: entry.queriedAt } : {}),
       targetId: entry.targetId,
       ...(imageColumns.size ? { imageColumns } : {}),
     };
@@ -204,6 +212,7 @@ function readInitial(): { tabs: Tab[]; activeId: TabId; results: Record<TabId, T
     savedQueryId: typeof tb.savedQueryId === "string" ? tb.savedQueryId : undefined,
     conversationId: typeof tb.conversationId === "string" ? tb.conversationId : undefined,
     sqlRevision: Number.isSafeInteger(tb.sqlRevision) ? tb.sqlRevision : 0,
+    refreshAfterHours: REFRESH_AFTER_HOURS.includes(tb.refreshAfterHours ?? -1) ? tb.refreshAfterHours : undefined,
   }));
   if (PLATFORM_MODE && tabs.length === 0) tabs.push({ id: newId(), title: null, sql: "", db: null, env: null });
   const ati = Math.min(Math.max(Number(personalStorage.getItem(ATI_KEY) || 0) || 0, -1), tabs.length - 1);
@@ -214,7 +223,7 @@ function persistTabs(tabs: Tab[], activeId: TabId): void {
   try {
     personalStorage.setItem(
       TABS_KEY,
-      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, targetId: tb.targetId, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision }))),
+      JSON.stringify(tabs.map((tb) => ({ id: tb.id, sql: tb.sql, db: tb.db, env: tb.env, title: tb.title, workspace: tb.workspace, targetId: tb.targetId, visited: tb.visited, savedQueryId: tb.savedQueryId, conversationId: tb.conversationId, sqlRevision: tb.sqlRevision, refreshAfterHours: tb.refreshAfterHours }))),
     );
     personalStorage.setItem(ATI_KEY, String(tabs.findIndex((t) => t.id === activeId)));
   } catch {
@@ -231,7 +240,7 @@ function persistResults(tabs: Tab[], activeId: TabId, results: Record<TabId, Tab
     if (!snap?.result) return null;
     const res = snap.querySql ? { ...snap.result, _sql: snap.querySql } : snap.result;
     return {
-      db: snap.queryDb, env: snap.queryEnv, targetId: snap.targetId, res,
+      db: snap.queryDb, env: snap.queryEnv, targetId: snap.targetId, res, queriedAt: snap.queriedAt,
       ...(snap.imageColumns?.size ? { imageColumns: [...snap.imageColumns.keys()] } : {}),
     };
   };
@@ -325,8 +334,8 @@ export type TabsState = {
   closeTab: (id: TabId) => void;
   renameTab: (id: TabId, title: string | null) => void;
   reorderTab: (fromId: TabId, toId: TabId) => void;
-  updateActiveTab: (patch: Partial<Pick<Tab, "sql" | "db" | "env">>) => void;
-  updateTab: (id: TabId, patch: Partial<Pick<Tab, "sql" | "db" | "env">>) => void;
+  updateActiveTab: (patch: Partial<Pick<Tab, "sql" | "db" | "env" | "refreshAfterHours">>) => void;
+  updateTab: (id: TabId, patch: Partial<Pick<Tab, "sql" | "db" | "env" | "refreshAfterHours">>) => void;
   setTabResult: (id: TabId, snapshot: TabResultSnapshot | null) => void;
   bindConversation: (id: TabId, conversationId: string | undefined) => void;
 };

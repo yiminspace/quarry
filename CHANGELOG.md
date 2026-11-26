@@ -7,6 +7,8 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Show when the current result was queried, with a relative time for results from the last 24 hours and the exact time on hover. In Auto mode, returning to a tab or reloading can refresh stale SELECT results after a configurable age, defaulting to one day.
+
 - Native workbench windows on the same machine now stay in sync. When one window saves, the others adopt its tabs, history and preferences without reloading. If two windows save at the same time, their tabs are merged instead of showing "Another window saved newer records". The warning remains only when two windows edit the same tab's SQL differently.
 - Fix `qy run` and `qy exec` parsing of CLI options after positional `name=value` parameters.
 
