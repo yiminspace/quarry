@@ -39,6 +39,8 @@ import { ambiguousConnection, cloudRouteVisible, connectionEnvLabel, connectionT
 import {
   isResultSnapshotPersistable,
   mostRecent,
+  sameTabGroup,
+  subscribeNativeTabsReplaced,
   workspaceFor,
   parseMainTable,
   useTabsStore,
@@ -63,7 +65,7 @@ type ModalState =
 /** Snapshot of the connection a request was fired against — used to route the
  * response back to its issuing tab and drop it if that tab was re-pointed to
  * another connection while the request was in flight. */
-type ReqCtx = { tabId: TabId; requestId: string; seq: number; db: string; env: string | null; targetId?: string };
+type ReqCtx = { tabId: TabId; requestId: string; cancellable: boolean; db: string; env: string | null; targetId?: string };
 
 function tabMatchesTarget(tab: Tab, ctx: ReqCtx): boolean {
   return tab.db === ctx.db && tab.env === ctx.env && tab.targetId === ctx.targetId &&
@@ -208,10 +210,9 @@ export default function ResultWorkbench() {
   const [sessionReady, setSessionReady] = useState(false);
 
   // Per-tab in-flight bookkeeping: a request snapshots its issuing tab and a
-  // sequence number, so a later request on the same tab always wins and a
+  // unique request, so a later request on the same tab always wins and a
   // response only ever lands on — or shows an error on — the tab that fired it.
-  const reqIdsRef = useRef<Record<TabId, string | undefined>>({});
-  const reqSeqRef = useRef<Record<TabId, number>>({});
+  const requestsRef = useRef<Record<TabId, ReqCtx | undefined>>({});
   const [pendingByTab, setPendingByTab] = useState<Record<TabId, boolean>>({});
   const [errorByTab, setErrorByTab] = useState<Record<TabId, string | null>>({});
   const loading = pendingByTab[activeTabId] ?? false;
@@ -226,7 +227,7 @@ export default function ResultWorkbench() {
   const queryEnv = activeSnapshot?.queryEnv ?? null;
   const querySql = activeSnapshot?.querySql ?? null;
 
-  const { history, pushHist, keepDraft, navigateHistory } = useSqlHistory();
+  const { history, pushHist, keepDraft, finishHistoryNavigation, navigateHistory } = useSqlHistory();
   const previewNavigationRef = useRef<{ tabId: string; environmentSwitch: boolean } | null>(null);
   const beforeAssistantWrite = useCallback((tabId: string) => {
     if (previewNavigationRef.current?.tabId === tabId) previewNavigationRef.current = null;
@@ -308,7 +309,7 @@ export default function ResultWorkbench() {
     setPendingLocalDb(null);
   }, []);
   const selectDb = useCallback(
-    (db: string, env: string | null, opts?: { viaPill?: boolean; force?: boolean }): void => {
+    (db: string, env: string | null, opts?: { viaPill?: boolean; force?: boolean; restoreOnly?: boolean }): void => {
       const state = useConnStore.getState();
       const cur = state.current;
       // re-click on the active connection (no env change) toggles its panel
@@ -352,7 +353,7 @@ export default function ResultWorkbench() {
       const engine = target?.engine ?? item.engine;
       const existed = tabsState.tabs.some((tab) => tab.db === db && tab.env === realEnv && tab.workspace === workspaceFor(db));
       if (!opts?.force) tabsState.selectGroup(db, realEnv);
-      else tabsState.updateActiveTab({ db, env: realEnv });
+      else if (!opts.restoreOnly) tabsState.updateActiveTab({ db, env: realEnv });
       const nextState = useTabsStore.getState();
       const next = nextState.tabs.find((tab) => tab.id === nextState.activeId);
       if (!opts?.force && next) {
@@ -411,10 +412,7 @@ export default function ResultWorkbench() {
           const revoked = useTabsStore.getState().tabs.filter((tab) =>
             cloudRouteVisible(conn.groups, tab.env) && !cloudRouteVisible(data.groups, tab.env));
           if (revoked.length) {
-            for (const tab of revoked) {
-              reqSeqRef.current[tab.id] = (reqSeqRef.current[tab.id] ?? 0) + 1;
-              delete reqIdsRef.current[tab.id];
-            }
+            for (const tab of revoked) delete requestsRef.current[tab.id];
             setPendingByTab((pending) => Object.fromEntries(Object.entries(pending).filter(([id]) =>
               !revoked.some((tab) => tab.id === id))));
           }
@@ -520,15 +518,16 @@ export default function ResultWorkbench() {
   /* ---- per-tab request guards ---- */
 
   const startReq = (tabId: TabId, target: { db: string; env: string | null }, cancellable = true): ReqCtx => {
-    const seq = (reqSeqRef.current[tabId] ?? 0) + 1;
-    reqSeqRef.current[tabId] = seq;
-    const requestId = crypto.randomUUID();
-    reqIdsRef.current[tabId] = cancellable ? requestId : undefined;
+    const ctx = {
+      tabId, requestId: crypto.randomUUID(), cancellable, db: target.db, env: target.env,
+      targetId: connectionTargetId(target.db, target.env),
+    };
+    requestsRef.current[tabId] = ctx;
     setPendingByTab((prev) => ({ ...prev, [tabId]: true }));
     setErrorByTab((prev) => ({ ...prev, [tabId]: null }));
-    return { tabId, requestId, seq, db: target.db, env: target.env, targetId: connectionTargetId(target.db, target.env) };
+    return ctx;
   };
-  const isCurrentReq = (ctx: ReqCtx): boolean => reqSeqRef.current[ctx.tabId] === ctx.seq;
+  const isCurrentReq = (ctx: ReqCtx): boolean => requestsRef.current[ctx.tabId] === ctx;
   const endReq = (ctx: ReqCtx): void => {
     if (!isCurrentReq(ctx)) return;
     setPendingByTab((prev) => ({ ...prev, [ctx.tabId]: false }));
@@ -993,20 +992,65 @@ export default function ResultWorkbench() {
   /* ---- tab switch / close (arriving at a tab re-validates its result) ---- */
 
   const revalidateTab = useCallback(
-    (tab: Tab | undefined): void => {
-      if (!tab) return;
+    (tab: Tab | undefined, restoreOnly = false): void => {
+      if (!tab) {
+        if (restoreOnly) clearCurrentSelection();
+        return;
+      }
       const snap = useTabsStore.getState().results[tab.id];
-      if (snap?.result && (snap.queryDb !== tab.db || (snap.queryEnv ?? null) !== (tab.env ?? null) || snap.targetId !== tab.targetId)) {
+      if (!restoreOnly && snap?.result && (snap.queryDb !== tab.db || (snap.queryEnv ?? null) !== (tab.env ?? null) || snap.targetId !== tab.targetId)) {
         setTabResult(tab.id, null);
       }
       if (tab.db && missingCloudTarget(findItem(tab.db), tab.env)) clearCurrentSelection();
       else if (tab.db && findItem(tab.db) && tab.workspace === workspaceFor(tab.db) &&
-        tab.targetId === connectionTargetId(tab.db, tab.env)) selectDb(tab.db, tab.env ?? null, { force: true });
-      else if (tab.db) unbindActiveTab();
+        tab.targetId === connectionTargetId(tab.db, tab.env)) selectDb(tab.db, tab.env ?? null, { force: true, restoreOnly });
+      else if (tab.db && !restoreOnly) unbindActiveTab();
       else clearCurrentSelection();
     },
     [clearCurrentSelection, findItem, selectDb, setTabResult, unbindActiveTab],
   );
+
+  useEffect(() => subscribeNativeTabsReplaced((before, after, remap) => {
+    const nextTabs = new Map(after.tabs.map((tab) => [tab.id, tab]));
+    const moves = new Map<TabId, TabId | undefined>();
+    for (const tab of before.tabs) {
+      const id = remap.get(tab.id) ?? tab.id;
+      const next = nextTabs.get(id);
+      if (!next || !sameTabGroup(tab, next)) moves.set(tab.id, undefined);
+      else if (id !== tab.id) moves.set(tab.id, id);
+    }
+    if (moves.size) {
+      const moveEntries = <T,>(state: Record<TabId, T>): Record<TabId, T> => {
+        const moved = { ...state };
+        for (const id of moves.keys()) delete moved[id];
+        for (const [id, next] of moves) {
+          if (next && Object.hasOwn(state, id)) moved[next] = state[id];
+        }
+        return moved;
+      };
+      const requests = moveEntries(requestsRef.current);
+      for (const [id, request] of Object.entries(requests)) {
+        if (request) request.tabId = id;
+      }
+      requestsRef.current = requests;
+      setPendingByTab(moveEntries);
+      setErrorByTab(moveEntries);
+    }
+    const previous = before.tabs.find((tab) => tab.id === before.activeId);
+    const active = nextTabs.get(after.activeId);
+    const targetChanged = previous && active ? !sameTabGroup(previous, active) : previous !== active;
+    if (previous && (targetChanged || active?.id !== (remap.get(previous.id) ?? previous.id) || active?.sql !== previous.sql)) {
+      previewNavigationRef.current = null;
+      finishHistoryNavigation();
+    }
+    if (targetChanged) {
+      setSortState(null);
+      setSelectedCell(null);
+      setColumnWidths({});
+      setImagePreview(null);
+      revalidateTab(active, true);
+    }
+  }), [finishHistoryNavigation, revalidateTab]);
 
   const handleTabSwitch = useCallback(
     (tab: Tab): void => {
@@ -1411,16 +1455,14 @@ export default function ResultWorkbench() {
               useUiStore.getState().setAutoRun({ ...target, workspace: workspaceFor(target.db) }, enabled);
             }}
           />
-          {pendingByTab[activeTabId] && reqIdsRef.current[activeTabId] && current && (PLATFORM_MODE || current.source === "cloud") && <button className="vg-btn btn" data-testid="cancel-platform-query" onClick={() => {
-            const requestId = reqIdsRef.current[activeTabId];
-            const seq = reqSeqRef.current[activeTabId];
-            if (!requestId || seq === undefined) return;
-            const ctx: ReqCtx = { tabId: activeTabId, requestId, seq, db: current.db, env: current.env };
-            void cancelPlatformQuery(current.db, current.env, requestId).then(() => {
+          {pendingByTab[activeTabId] && requestsRef.current[activeTabId]?.cancellable && current && (PLATFORM_MODE || current.source === "cloud") && <button className="vg-btn btn" data-testid="cancel-platform-query" onClick={() => {
+            const ctx = requestsRef.current[activeTabId];
+            if (!ctx?.cancellable) return;
+            void cancelPlatformQuery(ctx.db, ctx.env, ctx.requestId).then(() => {
               // Cancellation belongs to the request clicked, even if another
               // query starts on this tab before the acknowledgement arrives.
               if (!isCurrentReq(ctx)) return;
-              reqSeqRef.current[ctx.tabId] = ctx.seq + 1;
+              delete requestsRef.current[ctx.tabId];
               setPendingByTab((previous) => ({ ...previous, [ctx.tabId]: false }));
             }).catch((error) => toast((error as Error).message, false));
           }}>{t("platform_cancel_query")}</button>}

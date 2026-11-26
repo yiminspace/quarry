@@ -8,6 +8,11 @@ pre-1.0 history followed the earlier development policy.
 ## [Unreleased]
 
 - Native workbench windows on the same machine now stay in sync. When one window saves, the others adopt its tabs, history and preferences without reloading. If two windows save at the same time, their tabs are merged instead of showing "Another window saved newer records". The warning remains only when two windows edit the same tab's SQL differently.
+- Fix `qy run` and `qy exec` parsing of CLI options after positional `name=value` parameters.
+
+## [2.3.1] - 2026-11-13
+
+- Copying a PostgreSQL schema into a Local works on Debian and Ubuntu, where `pg_dump` is a `pg_wrapper` symlink. Quarry used to run the symlink target directly, got an empty dump and reported an empty schema. This also fixed schema export in hosted Quarry.
 
 ## [2.3.0] - 2026-11-12
 

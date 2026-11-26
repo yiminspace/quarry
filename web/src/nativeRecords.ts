@@ -23,9 +23,10 @@ let storageError = "";
 let oversized = false;
 let ownRecovery: string | null = null;
 const listeners = new Set<() => void>();
-const replaceListeners = new Set<(keys: Set<string>) => void>();
+type RecordsReplaced = (keys: ReadonlySet<string>, tabIdRemap: ReadonlyMap<string, string>) => void;
+const replaceListeners = new Set<RecordsReplaced>();
 /** Called after records saved by another window were merged into this window. */
-export const subscribeNativeRecordsReplaced = (listener: (keys: Set<string>) => void) => { replaceListeners.add(listener); return () => { replaceListeners.delete(listener); }; };
+export const subscribeNativeRecordsReplaced = (listener: RecordsReplaced) => { replaceListeners.add(listener); return () => { replaceListeners.delete(listener); }; };
 export const subscribeNativeRecords = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export function nativeRecordsError(): string {
   if (persistence === "conflict") return t("native_records_conflict");
@@ -229,7 +230,7 @@ function mergeTab(baseTab: StoredTab | undefined, local: StoredTab, remote: Stor
 
 /** Union of tabs by id. Tabs are kept unless one side removed an unchanged tab;
  * an edited tab survives the other window closing it. */
-function mergeTabs(base: Values, local: Values, remote: Values, merged: Values): void {
+function mergeTabs(base: Values, local: Values, remote: Values, merged: Values, remap: Map<string, string>): void {
   const read = (source: Values) => {
     const tabs = parseArray(source.qy_tabs) as StoredTab[];
     const results = parseArray(source.qy_tabres);
@@ -251,7 +252,6 @@ function mergeTabs(base: Values, local: Values, remote: Values, merged: Values):
     return `t${n}`;
   };
   const out: { tab: StoredTab; result: unknown }[] = [];
-  const remap = new Map<string, string>();
   const changedFromBase = (tab: StoredTab, id: string) => !b.byId.has(id) || tabContent(b.byId.get(id)!) !== tabContent(tab);
   const pickResult = (id: string) => JSON.stringify(l.result(id)) !== JSON.stringify(b.result(id)) ? l.result(id) : r.result(id);
   // Two windows that opened the same connection independently get one tab.
@@ -311,6 +311,32 @@ function mergeHistory(local: string, remote: string): string {
   return JSON.stringify(entries.sort((a, b) => ts(b) - ts(a)).slice(0, MAX_HISTORY));
 }
 
+/** Keep drafts displaced by another window in the same history used by the editor. */
+function preserveReplacedDrafts(before: Values, merged: Values, tabIdRemap: ReadonlyMap<string, string>): void {
+  if (before.qy_tabs === merged.qy_tabs) return;
+  const tabs = parseArray(before.qy_tabs) as StoredTab[];
+  const incoming = new Map((parseArray(merged.qy_tabs) as StoredTab[])
+    .flatMap((tab) => typeof tab.id === "string" ? [[tab.id, tab] as const] : []));
+  const displaced = tabs.flatMap((tab) => {
+    const sql = typeof tab.sql === "string" ? tab.sql.trim() : "";
+    if (!sql || tab.savedQueryId) return [];
+    const id = tab.id;
+    const next = typeof id === "string" ? incoming.get(tabIdRemap.get(id) ?? id) : undefined;
+    if (typeof next?.sql === "string" && sql === next.sql.trim()) return [];
+    return [{ sql, db: tab.db ?? null, env: tab.env ?? null, targetId: tab.targetId, ts: Date.now() }];
+  });
+  if (!displaced.length) return;
+  let history: unknown[];
+  try { history = parseArray(merged.qy_hist); } catch { history = []; }
+  const added = displaced.filter(({ sql, db, env, targetId }) => !history.some((item) => {
+    if (typeof item === "string") return !db && !env && item === sql;
+    if (!item || typeof item !== "object") return false;
+    const entry = item as Record<string, unknown>;
+    return entry.sql === sql && (entry.db ?? null) === db && (entry.env ?? null) === env && entry.targetId === targetId;
+  }));
+  if (added.length) merged.qy_hist = JSON.stringify([...added.reverse(), ...history].slice(0, MAX_HISTORY));
+}
+
 function mergeObject(base: string | undefined, local: string, remote: string): string {
   const parse = (raw: string | undefined): Record<string, unknown> => {
     const value: unknown = JSON.parse(raw ?? "{}");
@@ -330,7 +356,9 @@ function mergeObject(base: string | undefined, local: string, remote: string): s
 /** Three-way merge of this window's records with a newer saved document.
  * Returns null only for divergent edits of the same tab. Preferences changed in
  * both windows keep this window's value. */
-export function mergeNativeRecords(baseValues: Values, local: Values, remote: Values): Values | null {
+export function mergeNativeRecords(
+  baseValues: Values, local: Values, remote: Values, tabIdRemap = new Map<string, string>(),
+): Values | null {
   const merged: Values = {};
   const tabKeys = ["qy_tabs", "qy_tabres", "qy_ati"];
   try {
@@ -353,7 +381,7 @@ export function mergeNativeRecords(baseValues: Values, local: Values, remote: Va
     if (source) {
       for (const key of tabKeys) if (Object.hasOwn(source, key)) merged[key] = source[key];
     } else {
-      mergeTabs(baseValues, local, remote, merged);
+      mergeTabs(baseValues, local, remote, merged, tabIdRemap);
     }
     return merged;
   } catch {
@@ -457,13 +485,15 @@ async function syncFromSaved(reason: "announced" | "rejected"): Promise<void> {
       return;
     }
     // Merge against the latest local values: edits made during the read are kept.
-    const merged = mergeNativeRecords(base, values, saved.values);
+    const tabIdRemap = new Map<string, string>();
+    const merged = mergeNativeRecords(base, values, saved.values, tabIdRemap);
     if (!merged) {
       persistence = "conflict";
       notify();
       return;
     }
     const before = values;
+    preserveReplacedDrafts(before, merged, tabIdRemap);
     values = merged;
     base = { ...saved.values };
     revision = saved.revision;
@@ -472,7 +502,7 @@ async function syncFromSaved(reason: "announced" | "rejected"): Promise<void> {
     if (dirty) edits++;
     saveRecovery();
     const keys = new Set([...Object.keys(before), ...Object.keys(merged)].filter((key) => before[key] !== merged[key]));
-    if (keys.size) replaceListeners.forEach((listener) => listener(keys));
+    if (keys.size) replaceListeners.forEach((listener) => listener(keys, tabIdRemap));
   } catch {
     persistence = "unavailable";
     notify();

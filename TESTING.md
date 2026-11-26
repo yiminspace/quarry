@@ -476,6 +476,7 @@ The release workflow reuses CI against its exact tag before publishing to PyPI.
 | grid | record links for JOINs, computed/aliased projections, aggregates, nullable or absent unique keys | disabled with an explanation; conservative original-column single-table SELECT support |
 | tabs | pin a tab; explicitly copy a query into another connection | backlog; environment switches seed empty editors but preserve existing drafts |
 | tabs | browse inactive drafts whose workspace/connection has been removed | backlog; persisted drafts remain stored, active missing connection is unbound |
+| native tabs | focus an existing OS window when opening a workbench link | deferred; links open a window and its tabs synchronize with other windows for that workbench |
 | toolbar | arbitrary result-cap values beyond 100/500/2000/5000 | deferred; the row-limit selector deliberately retains its existing presets |
 | assistant | model settings form, query execution from chat, maximizing the panel and a separate checkpoint manager | intentionally excluded; CLI configuration, existing Run and inline Restore previous SQL are the supported controls |
 | assistant | cross-connection joins, Redis/Cypher generation and result-row analysis | first assistant release is scoped to SQL/schema on the current PostgreSQL/MySQL/SQLite connection; query result rows are not sent automatically |
@@ -1367,7 +1368,7 @@ This section describes the former cloud-origin companion. See the cloud-only and
 |---|------|---------|------------|---|
 | NP1 | editor/tabs | Protected launch hydrates the configuration's SQLite workbench document before constructing the editor. Drafts survive reload without browser records. Provider drafts are projected for the verified account. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust `workbench_projection_keeps_other_accounts_drafts_private_on_update` | ✅ |
 | NP2 | persistence/recovery | Failed hydration makes no SQLite writes. A divergent edit of the same tab's SQL in another window preserves the current draft and offers export and confirmed reload. On reopen, an older recovery with matching tabs and no additional content yields to the newer saved document. | F:test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite; F:test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly; F:test_native_workbench_reopen_uses_newer_records_when_recovery_adds_no_content | ✅ |
-| NP2b | multi-window sync | Windows with the same workbench scope announce each saved revision on a `BroadcastChannel` (a `storage` event where unsupported). Other windows merge the saved document without a reload: tabs, empty groups, history and UI preferences rehydrate, and each window keeps its active tab and in-memory results. A save rejected by revision (a window in another browser) loads the saved document, merges it three ways against the last saved base and saves again. Tabs are unioned by id. Colliding new ids are renumbered. The same new connection opened in both windows becomes one tab. An edited tab survives the other window closing it. History is unioned. Preferences changed in both windows keep the local value. | F:test_native_workbench_windows_sync_saved_tabs_without_conflict; F:test_native_workbench_rejected_save_merges_other_window_tab; unit web/src/nativeRecords.test.ts | ✅ |
+| NP2b | multi-window sync | Windows with the same scope announce a successful SQLite save and merge incoming tabs, empty groups, history and UI preferences. A rejected save reads and merges the newer document before retrying. New native tabs have distinct ids, and a legacy collision moves the local active tab, result and in-flight request together. A remote draft replacement preserves the displaced draft in History. If the active target changes, the table panel and explicit Run/EXPLAIN follow the new target and sync issues no automatic query. Empty duplicate connection tabs coalesce, and an edited tab survives an overlapping close. | F:test_native_workbench_windows_sync_saved_tabs_without_conflict; F:test_native_workbench_rejected_save_merges_other_window_tab; F:test_native_workbench_collision_keeps_active_result_and_request_with_its_tab; F:test_native_workbench_remote_replacement_stashes_draft_and_revalidates_target; unit web/src/nativeRecords.test.ts | 🟡 |
 | NP3 | launch and history | Protected launch clears the one-use fragment, exchanges it for a loopback session, and reopens with that session. Quarry and YLab use the same SQLite history for the selected configuration. Local history stays available through cloud disconnection. | F:test_native_workbench_records_reopen_from_sqlite_without_browser_records; Rust native history tests; YLab native process tests | ✅ |
 | NP4 | large workbench documents | Saves use the existing 16 MiB SQLite budget in UTF-8 bytes. Optional result snapshots are omitted first. A larger draft stays available for editing and recovery, and shortening it resumes saving at the same revision. | F:test_native_workbench_large_save_prioritizes_drafts_over_results; F:test_native_workbench_oversized_draft_can_resume_saving; Rust `native_personal_http_preserves_sqlite_document_budget_and_revision` | ✅ |
 
@@ -1395,6 +1396,28 @@ This section describes the former cloud-origin companion. See the cloud-only and
   recovery content allow hydration from a newer revision, including its
   authorized cloud scopes. Divergent recovery still requires confirmed load
   to discard. Separate query-history entries are outside this CAS document.
+
+- Multi-window existence. NP2b covers the scoped `qy_native:…:saved`
+  announcement, its `BroadcastChannel` listener, and the existing
+  `/api/personal` GET/POST with revision retry. The browser tests exercise
+  BroadcastChannel and the storage event fallback, tab switching, History,
+  Run, Explain and CSV. Live empty-group/preference reconciliation has partial
+  coverage. The existing table refresh uses `/api/tables` (sidebar coverage).
+- Multi-window capability. The editor keeps its draft in History and the tabs
+  retain their result ownership during a concurrent save. The sidebar and
+  toolbar follow the selected target while the grid and CSV still use the
+  selected tab’s snapshot. Conflicting edits use the recovery control. OS
+  window focus on a repeated link is listed in Design gaps.
+- Multi-window shared state. The record write sites are initialization,
+  `nativePersonalStorage.setItem` and `removeItem`, and `syncFromSaved`;
+  `flushNativeRecords` takes a snapshot and advances its revision after save.
+  Sync stashes outgoing drafts and publishes the replacement to tabs, history
+  and UI preferences. Tabs restore selection and results together and notify
+  Workbench to move request, loading and error ownership and reconcile the
+  connection without rewriting the tabs. This keeps Run, EXPLAIN, the table
+  panel, the grid and CSV on the correct target or tab. UI preferences still
+  use the existing auto-run gate and sync leaves pending navigation cleared
+  when the target changes.
 
 ### Header project-link audits (2026-11-05)
 

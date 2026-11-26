@@ -70,7 +70,6 @@ enum Command {
         sql: Option<String>,
         #[arg(long)]
         file: Option<PathBuf>,
-        #[arg(trailing_var_arg = true)]
         params: Vec<String>,
         #[command(flatten)]
         options: QueryOptions,
@@ -80,7 +79,6 @@ enum Command {
         /// Select a compatible execution target from `qy connections`.
         #[arg(long)]
         target: Option<String>,
-        #[arg(trailing_var_arg = true)]
         params: Vec<String>,
         #[arg(long)]
         strict: bool,
@@ -2556,6 +2554,37 @@ pub fn web_asset(path: &str) -> Option<(&'static [u8], String)> {
 mod cli_behavior_tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn query_options_after_positional_parameters() {
+        for (command, name) in [("run", "session-snapshots"), ("exec", "matrix_runtime")] {
+            let cli = Cli::try_parse_from([
+                "qy",
+                command,
+                name,
+                "session_id=example",
+                "limit=1",
+                "--format",
+                "ndjson",
+                "--env",
+                "dev",
+            ])
+            .unwrap();
+            let (params, options) = match cli.command {
+                Command::Run {
+                    params, options, ..
+                }
+                | Command::Exec {
+                    params, options, ..
+                } => (params, options),
+                _ => unreachable!(),
+            };
+            assert_eq!(params, ["session_id=example", "limit=1"]);
+            assert_eq!(options.format, "ndjson");
+            assert_eq!(options.env.as_deref(), Some("dev"));
+        }
+    }
+
     struct Prompt {
         tty: bool,
         answers: VecDeque<String>,

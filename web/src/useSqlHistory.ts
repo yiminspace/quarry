@@ -125,6 +125,10 @@ export function useSqlHistory() {
     [pushHist],
   );
 
+  const finishHistoryNavigation = useCallback(() => {
+    if (hiRef.current !== -1) pushHist("", null, null);
+  }, [pushHist]);
+
   // Walks history in-place without recording it; the in-progress draft is
   // stashed on the way up and restored once navigation returns past the
   // most recent entry (the legacy Cmd/Ctrl+Up/Down behavior).
@@ -155,5 +159,5 @@ export function useSqlHistory() {
     [groups, history],
   );
 
-  return { history, pushHist, keepDraft, navigateHistory };
+  return { history, pushHist, keepDraft, finishHistoryNavigation, navigateHistory };
 }

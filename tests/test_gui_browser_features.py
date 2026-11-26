@@ -7872,8 +7872,11 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
     assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))
 
 
-def test_native_workbench_windows_sync_saved_tabs_without_conflict(page_sqlite):
+@pytest.mark.parametrize('transport', ['broadcast', 'storage'])
+def test_native_workbench_windows_sync_saved_tabs_without_conflict(page_sqlite, transport):
     page = page_sqlite
+    if transport == 'storage':
+        page.context.add_init_script('window.BroadcastChannel = undefined;')
     state = _native_personal_workbench(page)
     first_sql = 'select 30 as first_window'
     with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
@@ -7897,7 +7900,8 @@ def test_native_workbench_windows_sync_saved_tabs_without_conflict(page_sqlite):
         assert other.locator('#sql').input_value() == second_sql
         assert _saved_tab_sql(state) == sorted([edited_sql, second_sql])
         assert _tab_labels(page) == _tab_labels(other) == ['select 31', 'select 32']
-        assert state['revision'] == len(state['writes']) == 3  # every save was accepted
+        other.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+        assert state['revision'] == len(state['writes'])  # every save was accepted
         for window in (page, other):
             assert not window.get_by_test_id('native-records-status').count()
         assert not [e for e in other._console_errors if 'Failed to load resource' not in e and 'net::ERR_' not in e]
@@ -7929,6 +7933,103 @@ def test_native_workbench_rejected_save_merges_other_window_tab(page_sqlite):
     assert page.locator('#sql').input_value() == draft
     assert _saved_tab_sql(state) == sorted([draft, 'select 34 as other_browser'])
     assert not page.get_by_test_id('native-records-status').count()
+
+
+def test_native_workbench_collision_keeps_active_result_and_request_with_its_tab(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    saved = lambda response: (response.url.endswith('/api/personal') and
+                              response.request.method == 'POST' and response.status == 200)
+    with page.expect_response(saved):
+        page.locator('#sql').fill('select 1 as initial_tab')
+    page.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    local_sql = 'select 81 as local_only'
+    remote_sql = 'select 82 as remote_only'
+    collision = False
+
+    def save_with_collision(route):
+        nonlocal collision
+        if route.request.method == 'POST' and not collision:
+            submitted = json.loads(route.request.post_data_json['value']['values']['qy_tabs'])
+            new = next((tab for tab in submitted if tab['sql'] == local_sql), None)
+            if new:
+                # Simulate a different tab saved under the same id.
+                values = state['value']['values']
+                tabs = json.loads(values['qy_tabs'])
+                state['value'] = {'values': {**values, 'qy_tabs': json.dumps([*tabs, {**new, 'sql': remote_sql}])}}
+                state['revision'] += 1
+                collision = True
+        route.fallback()
+
+    page.route('**/api/personal', save_with_collision)
+    page.evaluate("""() => {
+      const fetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (url === '/api/query') await new Promise(resolve => { window.releaseNativeRun = resolve; });
+        return fetch(url, options);
+      };
+    }""")
+    with page.expect_response(saved):
+        page.locator('#tabAdd').click()
+        page.locator('#sql').fill(local_sql)
+        page.locator('#runBtn').click()
+    assert collision
+    remote_tab = page.locator('.tab[data-i]').filter(has_text='select 82')
+    remote_tab.wait_for()
+    assert page.locator('#sql').input_value() == local_sql
+    page.wait_for_function("() => typeof window.releaseNativeRun === 'function'")
+    page.evaluate("window.releaseNativeRun()")
+    page.locator('#grid th').filter(has_text='local_only').wait_for()
+    assert _col_values(page) == ['81']
+    with page.expect_download() as exported:
+        page.locator('#csvBtn').click()
+    assert 'local_only' in exported.value.path().read_text()
+    remote_tab.click()
+    assert page.locator('#sql').input_value() == remote_sql
+    assert page.locator('#grid tbody tr').count() == 0
+
+
+def test_native_workbench_remote_replacement_stashes_draft_and_revalidates_target(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    draft = 'select 48 as never_run_draft'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and
+                              response.request.method == 'POST' and response.status == 200):
+        page.locator('#sql').fill(draft)
+    page.wait_for_function("() => localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    assert page.locator('#esw .ep.on').get_attribute('data-env') != 'prod'
+    origin = page.url.split('/quarry/')[0]
+    tree = page.request.get(origin + '/api/connections').json()
+    notes = next(item for group in tree['groups'] for item in group['items'] if item['db'] == 'notes')
+    production = next(env for env in notes['envs'] if env['env'] == 'prod')
+    values = state['value']['values']
+    tabs = json.loads(values['qy_tabs'])
+    index = int(values['qy_ati'])
+    replacement_sql = 'select note from entries where id = 1'
+    tabs[index].update(env='prod', sql=replacement_sql, targetId=production.get('targetId'),
+                       sqlRevision=tabs[index].get('sqlRevision', 0) + 1)
+    state['value'] = {'values': {**values, 'qy_tabs': json.dumps(tabs)}}
+    state['revision'] += 1
+
+    queries = []
+    page.on('request', lambda request: queries.append(request.post_data_json) if request.url.endswith('/api/query') else None)
+    page.evaluate("""revision => {
+      const channel = new BroadcastChannel('qy_native:native-fixture:saved');
+      channel.postMessage({ revision });
+      channel.close();
+    }""", state['revision'])
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=replacement_sql)
+    page.locator('#esw .ep.on[data-env="prod"]').wait_for()
+    assert not queries
+    page.locator('#histBtn').click()
+    page.get_by_text(draft, exact=True).wait_for()
+    page.keyboard.press('Escape')
+    with page.expect_response(lambda response: response.url.endswith('/api/query')):
+        page.locator('#expBtn').click()
+    assert queries[-1]['env'] == 'prod'
+    assert queries[-1]['sql'].startswith('EXPLAIN QUERY PLAN ')
+    _run_sql(page, replacement_sql)
+    page.get_by_text('prod note 1', exact=True).wait_for()
 
 
 _PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="steelblue"/></svg>'
