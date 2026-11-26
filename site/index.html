@@ -337,10 +337,6 @@
         <p>Sign in to query authorized server connections. Drafts and SQL history stay in account-scoped browser storage. Query results stay on the open page. A cached workbench can reopen for editing offline.</p>
       </div>
       <div class="card">
-        <h3><span class="ico">⇄</span> Combine local and hosted connections</h3>
-        <p>With federation-enabled builds, sign in with <code>ylab auth login</code> and open <code>ylab db gui</code> to register your authorized catalog. <code>qy gui</code> and the CLI can then browse those connections alongside Quarry workspaces. Local queries run on your computer and cloud queries go through YLab. The two workbench launchers share local SQLite records for the same configuration. Cloud drafts and history are scoped to the signed-in account, and cloud query results stay in the current session.</p>
-      </div>
-      <div class="card">
         <h3><span class="ico">▤</span> Deploy a versioned image</h3>
         <p>The image includes the compiled web assets and query service. Configure connections, reader grants and sign-in, then deploy a tested image. Upgrade the hosted workbench by deploying a newer image.</p>
       </div>
@@ -348,7 +344,6 @@
     <p class="lede" style="margin-top:26px">Remote queries send SQL to your host; the assistant sends required context to the configured model gateway. Their retention follows host policy. Hosted shared SQL, cloud personal history and cross-device sync are not included.</p>
     <div class="cta-row" style="margin-top:26px">
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.md">Deploy the hosted workbench</a>
-      <a href="https://github.com/yiminspace/quarry/blob/main/docs/ylab-integration.md">Set up local and cloud connections →</a>
       <span class="lede">One image, one configuration file; built-in or existing-platform sign-in.</span>
     </div>
   </div>

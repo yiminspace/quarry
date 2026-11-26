@@ -31,7 +31,7 @@ SSH、Docker 和 PostgreSQL schema sync 分别按需使用系统工具；普通�
 
 平台可通过当前源码 SDK 的 `quarry-platform` 接入自己的 IAM、明确的资源授权和配对本机服务。
 远程查询只读，个人记录保存在电脑 SQLite；宿主负责网页会话、CLI 与部署。
-YLab 内嵌的 Quarry 随 YLab 发布和升级，独立安装的 `qy` 从 Quarry Releases 更新。
+独立安装的 `qy` 从 Quarry Releases 更新。
 公开接口、存储与离线行为见
 [托管接入指南](docs/hosting.zh-CN.md)。
 

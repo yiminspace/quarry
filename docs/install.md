@@ -54,7 +54,7 @@ explicit `qy update`.
 
 If you copied a native binary manually, rerun the installer at the same
 location to make it eligible for future self-updates. Use your normal build
-process to update source builds. YLab's embedded copy updates with YLab.
+process to update source builds.
 The hosted workbench updates when the operator deploys a new Docker image.
 
 ## Switch from an existing Python package

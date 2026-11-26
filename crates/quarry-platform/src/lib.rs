@@ -1,5 +1,6 @@
 //! Authenticated hosted execution and an explicitly paired desktop companion.
 //! Hosted state holds no user documents or database results after a request.
+mod cloud_local;
 mod store;
 use async_trait::async_trait;
 use axum::{
@@ -10,6 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::any,
 };
+pub use cloud_local::{CloudLocalOptions, CloudLocals};
 use futures_util::StreamExt;
 use quarry_assistant::MetadataProvider;
 use quarry_core::{CancellationToken, QueryRequest};
@@ -82,8 +84,43 @@ pub struct HostedState {
     resources: Arc<Vec<HostedResource>>,
     active: Active,
     assistant: Option<AssistantOptions>,
+    cloud: Option<CloudLocals>,
 }
 impl HostedState {
+    /// Enable per-user cloud Local databases on a deployment-owned Docker daemon.
+    pub fn with_cloud_local(mut self, cloud: CloudLocals) -> Self {
+        self.cloud = Some(cloud);
+        self
+    }
+    fn cloud(&self) -> Result<&CloudLocals> {
+        self.cloud
+            .as_ref()
+            .ok_or_else(|| failure(404, "not_found", "Cloud Local is not enabled"))
+    }
+    async fn authorize_local(&self, token: &str, p: &Principal) -> Result<()> {
+        let local = self.authorizer.authorize(token, "lab:db:local").await?;
+        if local.id != p.id {
+            return Err(failure(403, "forbidden", "IAM identity changed"));
+        }
+        Ok(())
+    }
+    fn all_resources(&self, p: &Principal) -> Vec<Value> {
+        let mut out = self
+            .resources
+            .iter()
+            .filter(|r| r.granted(p))
+            .filter_map(|r| self.record(r).ok().map(|c| resource_json(r, &c)))
+            .collect::<Vec<_>>();
+        if let Some(cloud) = &self.cloud
+            && p.permissions
+                .iter()
+                .any(|v| v == "lab:db:local" || v == "*")
+            && let Ok(mut locals) = cloud.resources(&p.id)
+        {
+            out.append(&mut locals);
+        }
+        out
+    }
     pub fn new(
         service: Arc<QuarryService>,
         authorizer: Arc<dyn Authorizer>,
@@ -112,9 +149,10 @@ impl HostedState {
             resources: Arc::new(resources),
             active: Arc::new(Mutex::new(HashMap::new())),
             assistant: None,
+            cloud: None,
         })
     }
-    fn resource(&self, p: &Principal, id: &str) -> Result<&HostedResource> {
+    pub fn resource(&self, p: &Principal, id: &str) -> Result<&HostedResource> {
         self.resources
             .iter()
             .find(|r| r.id == id && r.granted(p))
@@ -125,6 +163,10 @@ impl HostedState {
             .resolve(&r.connection_key, Some(&r.env), r.workspace.as_deref())
     }
 }
+/// A resource restriction supplied by the trusted HTTP host, never by client headers.
+#[derive(Clone)]
+pub struct HostedResourceScope(pub String);
+
 pub fn hosted_router(state: HostedState) -> Router {
     Router::new()
         .fallback(any(hosted_dispatch))
@@ -185,7 +227,24 @@ fn id<'a>(q: &'a BTreeMap<String, String>, b: &'a Value) -> Result<&'a str> {
         .or_else(|| q.get("resourceId").map(String::as_str))
         .ok_or_else(|| failure(400, "invalid", "Explicit database resource required"))
 }
-async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response {
+async fn hosted_dispatch(State(mut s): State<HostedState>, req: Request) -> Response {
+    if req.method() == Method::GET && req.uri().path() == "/api/local/tunnel" {
+        return match tunnel(&s, req).await {
+            Ok(r) => r,
+            Err(e) => error_response(e),
+        };
+    }
+    if let Some(scope) = req.extensions().get::<HostedResourceScope>() {
+        // A single-database session never administers or lists cloud Locals.
+        s.cloud = None;
+        s.resources = Arc::new(
+            s.resources
+                .iter()
+                .filter(|resource| resource.id == scope.0)
+                .cloned()
+                .collect(),
+        );
+    }
     if req.method() == Method::POST && req.uri().path() == "/api/assistant/chat" {
         return match hosted_chat(&s, req).await {
             Ok(r) => r,
@@ -199,6 +258,8 @@ async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response
         let q = query(&req);
         let permission = if path == "/api/schema/export" {
             "lab:db:schema:export"
+        } else if path.starts_with("/api/local/") || path == "/api/schema/import" {
+            "lab:db:local"
         } else {
             "lab:db:read"
         };
@@ -215,22 +276,45 @@ async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response
             json!({})
         };
         match (method.as_str(), path.as_str()) {
-            ("GET", "/api/platform") => Ok(platform(
-                "hosted",
-                &p,
-                &s.resources
-                    .iter()
-                    .filter(|r| r.granted(&p))
-                    .filter_map(|r| s.record(r).ok().map(|c| resource_json(r, &c)))
-                    .collect::<Vec<_>>(),
-            )),
-            ("GET", "/api/connections") => Ok(catalog(
-                &s.resources
-                    .iter()
-                    .filter(|r| r.granted(&p))
-                    .filter_map(|r| s.record(r).ok().map(|c| resource_json(r, &c)))
-                    .collect::<Vec<_>>(),
-            )),
+            ("GET", "/api/platform") => {
+                let mut value = platform("hosted", &p, &s.all_resources(&p));
+                let cloud = s.cloud.is_some()
+                    && p.permissions
+                        .iter()
+                        .any(|v| v == "lab:db:local" || v == "*");
+                value["capabilities"]["cloudLocal"] = json!(cloud);
+                Ok(value)
+            }
+            ("GET", "/api/connections") => Ok(catalog(&s.all_resources(&p))),
+            ("GET", "/api/local/status") => s.cloud()?.status(&p.id).await,
+            ("POST", "/api/local/up") => {
+                let cloud = s.cloud()?;
+                match b["sourceResourceId"].as_str() {
+                    Some(source) => {
+                        let r = s.resource(&p, source)?;
+                        let c = s.record(r)?;
+                        cloud
+                            .create(&p, &b, Some((&r.id, &r.project, &r.db, &c)))
+                            .await
+                    }
+                    None => cloud.create(&p, &b, None).await,
+                }
+            }
+            ("POST", "/api/local/down") => s.cloud()?.stop(&p, &b).await,
+            ("POST", "/api/local/ticket") => s.cloud()?.ticket(&p, text(&b, "resourceId")?).await,
+            ("POST", "/api/schema/import") => {
+                let cloud = s.cloud()?;
+                let export = s
+                    .authorizer
+                    .authorize(&token, "lab:db:schema:export")
+                    .await?;
+                if export.id != p.id {
+                    return Err(failure(403, "forbidden", "IAM identity changed"));
+                }
+                let r = s.resource(&p, text(&b, "sourceResourceId")?)?;
+                let c = s.record(r)?;
+                cloud.import_schema(&p, text(&b, "resourceId")?, &c).await
+            }
             ("GET", "/api/queries") => Ok(json!([])),
             ("GET", "/api/assistant/config") => Ok(assistant_details(s.assistant.as_ref())),
             ("POST", "/api/cancel") => {
@@ -240,12 +324,36 @@ async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response
                     .map_err(|_| failure(503, "unavailable", "Execution registry unavailable"))?
                     .get(&(p.id.clone(), text(&b, "requestId")?.into()))
                 {
-                    s.resource(&p, rid)?;
+                    if rid.starts_with("cloud:") {
+                        s.cloud()?.resolve(&p.id, rid)?;
+                    } else {
+                        s.resource(&p, rid)?;
+                    }
                 }
                 cancel(&s.active, &p, &b)
             }
             _ => {
-                let r = s.resource(&p, id(&q, &b)?)?;
+                let target = id(&q, &b)?;
+                if target.starts_with("cloud:") {
+                    if path == "/api/schema/export" {
+                        return Err(failure(400, "invalid", "Export from a hosted resource"));
+                    }
+                    s.authorize_local(&token, &p).await?;
+                    let local = s.cloud()?.resolve(&p.id, target)?;
+                    return execute_api(
+                        &s.service,
+                        &s.active,
+                        &p,
+                        &local.id,
+                        &local.record,
+                        &method,
+                        &path,
+                        &q,
+                        &b,
+                    )
+                    .await;
+                }
+                let r = s.resource(&p, target)?;
                 let c = s.record(r)?;
                 if method == Method::GET && path == "/api/schema/export" {
                     let schema = s
@@ -271,8 +379,78 @@ async fn hosted_dispatch(State(s): State<HostedState>, req: Request) -> Response
         Err(e) => error_response(e),
     }
 }
+/// Byte tunnel to one cloud Local. Authenticated by a ticket the owner issued
+/// from an IAM session; bytes are forwarded verbatim without interpretation.
+async fn tunnel(s: &HostedState, req: Request) -> Result<Response> {
+    use axum::extract::{FromRequestParts, ws::WebSocketUpgrade};
+    let cloud = s.cloud()?.clone();
+    let ticket = bearer(&req)?;
+    let (local, slot) = cloud.open_tunnel(&ticket).await?;
+    let (host, port) = local.address()?;
+    let (mut parts, _) = req.into_parts();
+    let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &())
+        .await
+        .map_err(|_| failure(400, "invalid", "WebSocket upgrade required"))?;
+    let tcp = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::net::TcpStream::connect((host.as_str(), port)),
+    )
+    .await
+    .map_err(|_| failure(503, "unavailable", "Cloud Local is not reachable"))?
+    .map_err(|_| failure(503, "unavailable", "Cloud Local is not running"))?;
+    let _ = tcp.set_nodelay(true);
+    Ok(upgrade
+        .max_message_size(4 * 1024 * 1024)
+        .on_upgrade(move |socket| async move {
+            pump(socket, tcp).await;
+            drop(slot);
+        }))
+}
+async fn pump(socket: axum::extract::ws::WebSocket, tcp: tokio::net::TcpStream) {
+    use axum::extract::ws::Message;
+    use futures_util::SinkExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut sink, mut stream) = socket.split();
+    let (mut reader, mut writer) = tcp.into_split();
+    let upstream = async {
+        while let Some(Ok(message)) = stream.next().await {
+            match message {
+                Message::Binary(bytes) => {
+                    if writer.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+        let _ = writer.shutdown().await;
+    };
+    let downstream = async {
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if sink
+                        .send(Message::Binary(buffer[..n].to_vec().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = sink.send(Message::Close(None)).await;
+    };
+    tokio::select! {
+        _ = upstream => {},
+        _ = downstream => {},
+    }
+}
 fn resource_json(r: &HostedResource, c: &ConnectionRecord) -> Value {
-    json!({"id":r.id,"resourceId":r.id,"project":r.project,"db":r.db,"env":r.env,"engine":c.spec().map(|s|s.engine.as_str()).unwrap_or("unknown"),"production":c.production})
+    json!({"id":r.id,"resourceId":r.id,"project":r.project,"db":r.db,"env":r.env,"engine":c.spec().map(|s|s.engine.as_str()).unwrap_or("unknown"),"production":c.production,"placement":"remote"})
 }
 fn platform(mode: &str, p: &Principal, resources: &[Value]) -> Value {
     json!({"mode":mode,"principal":p,"resources":resources,"personalStorage":if mode=="companion"{"companion"}else{"browser"},"authMode":if mode=="companion"{"paired-local"}else{"iam"},"capabilities":{"query":true,"schema":true,"export":true,"assistant":false,"sharedQueries":false,"local":mode=="companion","personalStorage":mode=="companion"}})
@@ -280,7 +458,7 @@ fn platform(mode: &str, p: &Principal, resources: &[Value]) -> Value {
 fn catalog(resources: &[Value]) -> Value {
     let mut groups: BTreeMap<String, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
     for r in resources {
-        groups.entry(r["project"].as_str().unwrap_or("local").into()).or_default().entry(r["db"].as_str().unwrap_or("").into()).or_default().push(json!({"env":r["env"],"resourceId":r["id"],"key":r["id"],"engine":r["engine"],"production":r["production"],"ssh":false,"proxied":false,"region":null,"sourceResourceId":r["sourceResourceId"]}));
+        groups.entry(r["project"].as_str().unwrap_or("local").into()).or_default().entry(r["db"].as_str().unwrap_or("").into()).or_default().push(json!({"env":r["env"],"resourceId":r["id"],"key":r["id"],"engine":r["engine"],"production":r["production"],"ssh":false,"proxied":false,"region":null,"sourceResourceId":r["sourceResourceId"],"placement":r["placement"]}));
     }
     json!({"groups":groups.into_iter().map(|(g,items)|json!({"group":g,"ws":g,"items":items.into_iter().map(|(db,envs)|json!({"db":db,"engine":envs[0]["engine"],"is_env_set":true,"envs":envs})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"workspace":"platform","workspaces":[]})
 }

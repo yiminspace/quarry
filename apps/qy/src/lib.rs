@@ -4,7 +4,9 @@ mod gui_launch;
 pub mod http;
 mod mcp;
 mod service;
+mod tunnel;
 mod updater;
+mod verified_associations;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use federated_cli::{Catalog, Selector, Source, Target};
 use federation::Federation;
@@ -68,7 +70,6 @@ enum Command {
         sql: Option<String>,
         #[arg(long)]
         file: Option<PathBuf>,
-        #[arg(trailing_var_arg = true)]
         params: Vec<String>,
         #[command(flatten)]
         options: QueryOptions,
@@ -78,7 +79,6 @@ enum Command {
         /// Select a compatible execution target from `qy connections`.
         #[arg(long)]
         target: Option<String>,
-        #[arg(trailing_var_arg = true)]
         params: Vec<String>,
         #[arg(long)]
         strict: bool,
@@ -94,6 +94,11 @@ enum Command {
         action: Option<ConnectionCommand>,
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
         format: String,
+    },
+    /// Register installed database provider helpers for this Quarry configuration.
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommand,
     },
     Schema {
         db: String,
@@ -286,6 +291,15 @@ enum ConnectionCommand {
     },
     /// List possible associations between hosted resources and local connections.
     Candidates,
+    /// Verify which PostgreSQL routes reach the same database.
+    Reconcile {
+        /// Restrict verification to a project.
+        #[arg(long)]
+        project: Option<String>,
+        /// Save verified associations that do not already have a link.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Associate one or more pairs of exact cloud and local IDs.
     Link {
         #[arg(required = true, num_args = 2.., value_names = ["CLOUD_ID", "LOCAL_ID"])]
@@ -349,6 +363,26 @@ enum WorkspaceCommand {
     },
 }
 #[derive(Subcommand)]
+enum ProviderCommand {
+    /// Verify a local helper and register its authorized database catalog.
+    Register {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        origin: url::Url,
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        owner: String,
+        #[arg(long)]
+        executable: PathBuf,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+}
+#[derive(Subcommand)]
 enum ProxyCommand {
     Status {
         #[arg(long, default_value = "json", value_parser=["json","text","table"])]
@@ -388,6 +422,16 @@ enum LocalCommand {
         db: String,
         #[arg(long = "from", default_value = "dev")]
         from: String,
+    },
+    /// Expose a cloud Local on a loopback port for your own services.
+    Connect {
+        /// Hosted Quarry address, e.g. https://quarry.example.com/quarry/
+        server: String,
+        /// Tunnel ticket copied from the workbench (or QUARRY_TUNNEL_TICKET).
+        #[arg(long, env = "QUARRY_TUNNEL_TICKET", hide_env_values = true)]
+        ticket: String,
+        #[arg(long, default_value_t = 5433)]
+        port: u16,
     },
     #[command(name = "neptune-calls")]
     NeptuneCalls {
@@ -853,6 +897,30 @@ async fn run_with_prefix(
         host.catalog()?.skill_links(&skill)?;
     }
     let result = match cli.command {
+        Command::Provider {
+            action:
+                ProviderCommand::Register {
+                    id,
+                    label,
+                    origin,
+                    profile,
+                    owner,
+                    executable,
+                    args,
+                },
+        } => {
+            let identity = federation::ProviderIdentity {
+                id,
+                label,
+                origin: origin.to_string(),
+                profile,
+                owner,
+            };
+            let helper = federation::ProviderHelper { executable, args };
+            let federation = Federation::new(&host.config_path)?;
+            let count = federation.register(&identity, &helper).await?;
+            output(json!({"registered": count}))
+        }
         Command::Exec {
             db,
             sql,
@@ -1626,6 +1694,10 @@ async fn connections(host: &Host, action: Option<ConnectionCommand>, format: &st
                 format,
             )
         }
+        Some(ConnectionCommand::Reconcile { project, apply }) => {
+            let federation = Federation::new(&host.config_path)?;
+            output(reconcile_connections(host, &federation, project.as_deref(), apply).await?)
+        }
         Some(ConnectionCommand::Link { targets, yes }) => {
             let (pairs, unmatched) = targets.as_chunks::<2>();
             if !unmatched.is_empty() {
@@ -1697,6 +1769,61 @@ async fn connections(host: &Host, action: Option<ConnectionCommand>, format: &st
         Some(ConnectionCommand::Set(fields)) => put_connection(host, fields, true).await,
     }
 }
+
+/// Verify PostgreSQL routes through their existing local and provider credentials.
+pub async fn reconcile_connections(
+    host: &quarry_service::QuarryService,
+    federation: &Federation,
+    project: Option<&str>,
+    apply: bool,
+) -> quarry_service::Result<Value> {
+    let catalog = federation.catalog().await?;
+    let locals = host.catalog()?.connections()?;
+    let discovery =
+        verified_associations::discover(host, federation, &catalog, &locals, project).await;
+    let mut applied = Vec::new();
+    if apply {
+        let entries: Vec<_> = discovery
+            .candidates
+            .iter()
+            .filter(|candidate| !candidate.already_linked)
+            .map(|candidate| (candidate.resource_id.clone(), candidate.local.clone()))
+            .collect();
+        if !entries.is_empty() {
+            let latest = federation.catalog().await?;
+            for (cloud_id, local) in &entries {
+                let unchanged = catalog.resources.iter().any(|previous| {
+                    previous.id == *cloud_id
+                        && latest.resources.iter().any(|resource| {
+                            resource.id == *cloud_id
+                                && resource.status == federation::Status::Connected
+                                && resource.provider == previous.provider
+                                && resource.upstream_id == previous.upstream_id
+                                && resource.project == previous.project
+                                && resource.db == previous.db
+                                && resource.env == previous.env
+                                && resource.engine == previous.engine
+                                && resource.production == previous.production
+                        })
+                });
+                if !unchanged || federated_cli::resolve_local_target(host, &local.id).is_err() {
+                    return Err(Failure::invalid(
+                        "A database route changed during verification; run reconcile again",
+                    ));
+                }
+            }
+            applied = federation.registry().associate_missing(&entries)?;
+        }
+    }
+    Ok(json!({
+        "cloudStatus": catalog.status,
+        "candidates": discovery.candidates,
+        "skipped": discovery.skipped,
+        "unavailableLocalCount": discovery.unavailable_local_count,
+        "applied": applied,
+    }))
+}
+
 async fn put_connection(host: &Host, f: ConnectionFields, overwrite: bool) -> Result<()> {
     let env_explicit = f.env.is_some();
     let catalog = host.catalog()?;
@@ -1777,6 +1904,14 @@ async fn put_connection(host: &Host, f: ConnectionFields, overwrite: bool) -> Re
     output(json!({"saved":connection.key}))
 }
 async fn local(host: &Host, action: LocalCommand) -> Result<()> {
+    if let LocalCommand::Connect {
+        server,
+        ticket,
+        port,
+    } = &action
+    {
+        return tunnel::connect(server, ticket, *port).await;
+    }
     let manager = host.local()?;
     match action {
         LocalCommand::Status { engine, format } => {
@@ -1896,6 +2031,7 @@ async fn local(host: &Host, action: LocalCommand) -> Result<()> {
         LocalCommand::NeptuneCalls { after, format } => {
             metadata_output(manager.neptune_calls(after).await?, &format)
         }
+        LocalCommand::Connect { .. } => unreachable!("handled before local manager setup"),
     }
 }
 async fn ai(host: &Host, command: AiCommand) -> Result<()> {
@@ -2418,6 +2554,37 @@ pub fn web_asset(path: &str) -> Option<(&'static [u8], String)> {
 mod cli_behavior_tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn query_options_after_positional_parameters() {
+        for (command, name) in [("run", "session-snapshots"), ("exec", "matrix_runtime")] {
+            let cli = Cli::try_parse_from([
+                "qy",
+                command,
+                name,
+                "session_id=example",
+                "limit=1",
+                "--format",
+                "ndjson",
+                "--env",
+                "dev",
+            ])
+            .unwrap();
+            let (params, options) = match cli.command {
+                Command::Run {
+                    params, options, ..
+                }
+                | Command::Exec {
+                    params, options, ..
+                } => (params, options),
+                _ => unreachable!(),
+            };
+            assert_eq!(params, ["session_id=example", "limit=1"]);
+            assert_eq!(options.format, "ndjson");
+            assert_eq!(options.env.as_deref(), Some("dev"));
+        }
+    }
+
     struct Prompt {
         tty: bool,
         answers: VecDeque<String>,

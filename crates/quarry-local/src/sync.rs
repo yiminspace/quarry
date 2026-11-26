@@ -24,7 +24,9 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target URL".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !target_url.host_str().is_some_and(super::is_loopback)
+            || !target_url
+                .host_str()
+                .is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid(
                 "schema target must be local, loopback and without SSH".into(),
@@ -317,7 +319,9 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target URL".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !target_url.host_str().is_some_and(super::is_loopback)
+            || !target_url
+                .host_str()
+                .is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid(
                 "schema target must be local, loopback and without SSH".into(),
@@ -441,7 +445,7 @@ impl LocalManager {
             .map_err(|_| RuntimeError::Invalid("invalid local target".into()))?;
         if target.env != "local"
             || target.ssh_host.is_some()
-            || !url.host_str().is_some_and(super::is_loopback)
+            || !url.host_str().is_some_and(|h| self.is_managed_host(h))
         {
             return Err(RuntimeError::Invalid("recovery target is not local".into()));
         }
@@ -576,7 +580,10 @@ impl LocalManager {
                 .captures(&text)
                 .and_then(|c| c[1].parse::<u32>().ok());
             if major.is_some_and(|v| v >= server_major) {
-                return Ok(resolve_executable(&candidate).unwrap_or(candidate));
+                // Run the path that passed the version check. Debian/Ubuntu
+                // pg_dump is a symlink to pg_wrapper, which dispatches on the
+                // name it was invoked as and fails if the symlink is resolved.
+                return Ok(locate_executable(&candidate).unwrap_or(candidate));
             }
         }
         Err(RuntimeError::Operation(format!(
@@ -632,17 +639,20 @@ impl LocalManager {
         Ok(String::from_utf8_lossy(&output.stdout).into())
     }
 }
-fn resolve_executable(path: &std::path::Path) -> Option<PathBuf> {
+/// Finds the executable `Command` would run, keeping symlinks intact.
+fn locate_executable(path: &std::path::Path) -> Option<PathBuf> {
     if path.components().count() > 1 {
-        return path.canonicalize().ok();
+        return path.is_file().then(|| path.to_path_buf());
     }
-    std::env::var_os("PATH")
-        .and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|directory| directory.join(path))
-                .find(|candidate| candidate.is_file())
-        })
-        .and_then(|p| p.canonicalize().ok())
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(path))
+            .find(|candidate| candidate.is_file())
+    })
+}
+/// Resolves the real binary, only for finding sibling tools of one package.
+fn resolve_executable(path: &std::path::Path) -> Option<PathBuf> {
+    locate_executable(path).and_then(|p| p.canonicalize().ok())
 }
 fn sync_key(target: &url::Url) -> String {
     // Credentials/workspace aliases must not allow concurrent swaps of the
@@ -824,6 +834,24 @@ mod tests {
             );
         }
         assert!(!manager.state_dir.exists());
+    }
+    #[tokio::test]
+    async fn selected_pg_dump_keeps_dispatching_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapper = dir.path().join("pg_wrapper");
+        // Like Debian's pg_wrapper: the invoked name selects the program.
+        crate::write_executable_fixture(
+            &wrapper,
+            "#!/bin/sh\ncase \"$(basename \"$0\")\" in pg_dump) echo 'pg_dump (PostgreSQL) 16.4';; *) exit 1;; esac\n",
+        );
+        let dump = dir.path().join("pg_dump");
+        std::os::unix::fs::symlink(&wrapper, &dump).unwrap();
+        let manager = LocalManager::new(
+            RuntimeConfig::load(dir.path().join("config.toml")).unwrap(),
+            dir.path().join("state"),
+        )
+        .with_tools(None, Some(dump.clone()), None);
+        assert_eq!(manager.select_pg_dump(16).await.unwrap(), dump);
     }
     #[test]
     fn credentials_are_not_in_pg_arguments() {

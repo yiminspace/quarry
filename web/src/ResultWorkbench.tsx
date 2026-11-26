@@ -1,5 +1,6 @@
-import { PLATFORM_MODE } from "./platform";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ResultImageCell, ResultImageModal, ResultImageColumnMenu } from "./ResultImage";
+import { CLI_SESSION_MODE, PLATFORM_MODE, platformSnapshot, subscribePlatform } from "./platform";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   cancelPlatformQuery,
   fetchConnections,
@@ -194,11 +195,14 @@ export default function ResultWorkbench() {
   const [pendingLocalDb, setPendingLocalDb] = useState<string | null>(null);
   const [sortState, setSortState] = useState<SortState>(null);
   const [selectedCell, setSelectedCell] = useState<SelectedCell>(null);
+  const [imagePreview, setImagePreview] = useState<{ tabId: string; result: QueryResult; column: number; url: string } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<number, number>>({});
   const [modal, setModal] = useState<ModalState>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [paramModal, setParamModal] = useState<SavedQuery | null>(null);
   const [connInfoOpen, setConnInfoOpen] = useState(false);
+  // Hosted mode offers connection details only for cloud Local administration.
+  const cloudLocal = useSyncExternalStore(subscribePlatform, () => platformSnapshot().cloudLocal);
   const [explainBusy, setExplainBusy] = useState(false);
   const [loadMoreBusy, setLoadMoreBusy] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
@@ -778,7 +782,7 @@ export default function ResultWorkbench() {
     const table = currentTable ?? parseMainTable(sql);
     const search = encodeFocusSearch({ db, env, table, targetId: current?.targetId });
     const url = new URL(window.location.href);
-    const pathname = "/quarry/";
+    const pathname = CLI_SESSION_MODE ? url.pathname : "/quarry/";
     if (url.search !== search || url.pathname !== pathname) {
       window.history.replaceState(null, "", `${pathname}${search}${url.hash}`);
     }
@@ -1060,7 +1064,14 @@ export default function ResultWorkbench() {
     setSortState(null);
     setSelectedCell(null);
     setColumnWidths({});
+    setImagePreview(null);
   }, [activeTabId]);
+
+  useEffect(() => {
+    setImagePreview((previous) => previous?.result === result ? previous : null);
+  }, [result]);
+
+  const enabledImageColumns = activeSnapshot?.imageColumns;
 
   /* ---- grid derivations ---- */
 
@@ -1151,7 +1162,7 @@ export default function ResultWorkbench() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const { shownRows: rows, selectedCell: sel, result: res, queryEnv: env } = gridNavRef.current;
-      if (!sel || !res) return;
+      if (!sel || !res || anyModalOpen() || (document.activeElement as HTMLElement)?.closest("button, select, a")) return;
       const typing = /INPUT|TEXTAREA/.test((document.activeElement as HTMLElement)?.tagName || "");
       if ((e.metaKey || e.ctrlKey) && e.key === "c" && !typing && !String(getSelection())) {
         const v = cellText(rows[sel.ri]?.[res.columns[sel.ci]?.name]) ?? "";
@@ -1367,7 +1378,7 @@ export default function ResultWorkbench() {
             id="ciBtn"
             title={t("conn_info")}
             aria-label={t("conn_info")}
-            style={{ display: current && !PLATFORM_MODE ? undefined : "none" }}
+            style={{ display: current && (!PLATFORM_MODE || cloudLocal) ? undefined : "none" }}
             onClick={() => setConnInfoOpen(true)}
           >
             <i className="ti ti-info-circle" />
@@ -1458,9 +1469,9 @@ export default function ResultWorkbench() {
           <button className="vg-btn btn" id="histBtn" title={t("hist")} onClick={openHistory}>
             <i className="ti ti-history" /> <span id="histLbl">{t("hist")}</span>
           </button>
-          <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
+          {!CLI_SESSION_MODE && <button className="vg-btn btn" id="linkBtn" title={t("copy_query_link")} onClick={copyQueryLink}>
             <i className="ti ti-link" /> <span id="linkLbl">{t("copy_query_link")}</span>
-          </button>
+          </button>}
         </div>
           }>
         <SqlEditor
@@ -1481,6 +1492,9 @@ export default function ResultWorkbench() {
           navigateHistory={navigateHistory}
         />
         </EditorWorkspace>
+        {imagePreview?.tabId === activeTabId && imagePreview.result === result && enabledImageColumns?.has(imagePreview.column) && (
+          <ResultImageModal url={imagePreview.url} onClose={() => setImagePreview(null)} />
+        )}
         <div className="vg-gridwrap gridwrap" id="grid">
           {loading ? (
             <div className="vg-empty spin">
@@ -1516,6 +1530,15 @@ export default function ResultWorkbench() {
                       {sortState?.i === i && (
                         <span className="vg-ar ar">{sortState.dir > 0 ? "↑" : "↓"}</span>
                       )}
+                      <ResultImageColumnMenu result={result} column={c.name} enabled={!!enabledImageColumns?.has(i)}
+                        onChange={(urls) => {
+                          const current = useTabsStore.getState().results[activeTabId];
+                          if (current?.result !== result) return;
+                          const columns = new Map(current.imageColumns);
+                          if (urls) columns.set(i, urls);
+                          else columns.delete(i);
+                          setTabResult(activeTabId, { ...current, imageColumns: columns.size ? columns : undefined });
+                        }} />
                       <span className="vg-rz rz" onMouseDown={(e) => startColResize(e, i)} />
                     </th>
                   ))}
@@ -1538,6 +1561,7 @@ export default function ResultWorkbench() {
                     {result.columns.map((c, ci) => {
                       const v = r[c.name];
                       const preview = cellPreview(v);
+                      const imageUrl = typeof v === "string" && enabledImageColumns?.get(ci)?.has(v) ? v : undefined;
                       const isSel = selectedCell?.ri === ri && selectedCell?.ci === ci;
                       return (
                         <td
@@ -1549,7 +1573,9 @@ export default function ResultWorkbench() {
                           onClick={() => setSelectedCell({ ri, ci })}
                           onDoubleClick={() => onCellDblClick(v)}
                         >
-                          {preview.text === null ? "NULL" : preview.text}
+                          {imageUrl ? <ResultImageCell key={imageUrl} url={imageUrl}
+                            onOpen={() => setImagePreview({ tabId: activeTabId, result, column: ci, url: imageUrl })} />
+                            : preview.text === null ? "NULL" : preview.text}
                         </td>
                       );
                     })}

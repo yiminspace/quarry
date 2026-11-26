@@ -153,6 +153,30 @@ async function loadSaved(): Promise<Document> {
   return { values: loaded, revision: data.revision, cloudIds };
 }
 
+function containsRecovery(saved: Values, recovered: Values): boolean {
+  try {
+    const readArray = (source: Values, key: string): unknown[] => {
+      const value: unknown = JSON.parse(source[key] ?? "[]");
+      if (!Array.isArray(value)) throw new Error("Invalid workbench array");
+      return value;
+    };
+    // Newer records can contain additional tabs and history. A stale copy
+    // whose tabs still match can differ only in navigation or sidebar state.
+    const tabSignature = (tab: unknown): string => {
+      if (!tab || typeof tab !== "object" || Array.isArray(tab)) throw new Error("Invalid workbench tab");
+      return JSON.stringify(Object.entries(tab).filter(([key]) => key !== "visited").sort(([a], [b]) => a.localeCompare(b)));
+    };
+    const savedTabs = new Set(readArray(saved, "qy_tabs").map(tabSignature));
+    if (!readArray(recovered, "qy_tabs").every((tab) => savedTabs.has(tabSignature(tab)))) return false;
+    if (readArray(recovered, "qy_tabres").some((result) => result !== null)) return false;
+    if (readArray(recovered, "qy_hist").length && recovered.qy_hist !== saved.qy_hist) return false;
+    const checked = new Set(["qy_tabs", "qy_tabres", "qy_hist", "qy_ati", "qy_collapsed"]);
+    return Object.entries(recovered).every(([key, value]) => checked.has(key) || saved[key] === value);
+  } catch {
+    return false;
+  }
+}
+
 export async function initializeNativeRecords(): Promise<void> {
   if (!NATIVE_MODE) return;
   const recovered = readRecovery();
@@ -181,8 +205,10 @@ export async function initializeNativeRecords(): Promise<void> {
     }
     const sameValues = Object.keys(values).length === Object.keys(saved.values).length &&
       Object.entries(values).every(([key, value]) => Object.hasOwn(saved.values, key) && saved.values[key] === value);
-    if (sameValues) {
+    if (sameValues || (revision < saved.revision && containsRecovery(saved.values, recovered.values))) {
+      values = saved.values;
       revision = saved.revision;
+      editableCloudIds = new Set(saved.cloudIds);
       dirty = false;
       saveRecovery();
     } else if (revision === saved.revision) {

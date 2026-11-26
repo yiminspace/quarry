@@ -60,8 +60,7 @@ remain in the kernel. `quarry-platform` enforces live host-provided authorizatio
 and explicit resource ACLs, and provides a separately paired loopback companion.
 Hosted operations exclude standalone connection/configuration/Docker management.
 See the [public hosting guide](hosting.md) for an integration with your own IAM,
-browser session and CLI, and [YiminLab integration](ylab-integration.md) for local SQLite ownership,
-offline behavior, exact scope boundaries and validation evidence.
+browser session and CLI, including personal storage and offline behavior.
 
 A host that wants a durable local Neptune process supplies a `DaemonLauncher`
 pointing to its own hidden dispatch command; a keeper also accepts an explicit

@@ -18,7 +18,7 @@ export type ConnEnv = {
   providerLabel?: string;
   sourceStatus?: CloudStatus;
   workspaceLabel?: string;
-  placement?: "remote" | "local";
+  placement?: "remote" | "local" | "cloud";
 };
 
 export type VersionInfo = { name: string; version: string };

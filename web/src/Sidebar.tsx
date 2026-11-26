@@ -469,6 +469,7 @@ export default function Sidebar(props: SidebarProps) {
                 const queries = groupQueriesByDb(g.queries, g.items).find((s) => s.db === item.db)?.queries ?? [];
                 const isCurrent = current?.db === item.db;
                 const h = health[item.db];
+                const cloudOnly = item.envs.length > 0 && item.envs.every((env) => env.source === "cloud");
                 return (
                   <div key={item.db}>
                     <div
@@ -478,7 +479,10 @@ export default function Sidebar(props: SidebarProps) {
                       onClick={() => onSelect(item.db, null)}
                     >
                       <span className={dotClass(item.db)} />
-                      <span className="db-name" title={item.label ?? item.db}>{item.label ?? (PLATFORM_MODE && g.group && item.db.startsWith(`${g.group}/`) ? item.db.slice(g.group.length + 1) : item.db)}</span>
+                      <span className="db-label">
+                        <span className="db-name" title={item.label ?? item.db}>{item.label ?? (PLATFORM_MODE && g.group && item.db.startsWith(`${g.group}/`) ? item.db.slice(g.group.length + 1) : item.db)}</span>
+                        {cloudOnly && <span className="cloud-source-badge">{t("cloud_source")}</span>}
+                      </span>
                       <small className="vg-engine-tag">{item.engine}</small>
                       {isCurrent && <button className="vg-iconbtn treload" title={t("refresh_list")}
                         aria-label={t("refresh_list")} onClick={(event) => {

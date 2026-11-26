@@ -12,7 +12,7 @@ import { listConversations, type ConversationSummary } from "./assistantApi";
 type Row = Record<string, unknown>;
 
 /** Backdrop + box wrapper shared by every modal — legacy `.modal > .box`. */
-function Modal({
+export function Modal({
   onClose,
   boxStyle,
   boxId,

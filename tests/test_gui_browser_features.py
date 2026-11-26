@@ -15,7 +15,9 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -277,12 +279,12 @@ def _console_clean(request):
     """Invariant: no page JS errors during any test in this module."""
     # Keep the legacy Postgres requirement, but do not gate SQLite's standalone
     # browser coverage on a server it never connects to.
-    if not {"page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language"}.intersection(request.fixturenames) and not DB_OK:
+    if not {"page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language", "page_registered_providers"}.intersection(request.fixturenames) and not DB_OK:
         pytest.skip("quarry_test Postgres not reachable")
     pages = [request.getfixturevalue(n)
              for n in ("page", "page_envset", "page_envset_local", "page_noparam",
                        "page_redis", "page_redis_capped", "page_dead", "page_clip",
-                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language")
+                       "page_explicit_production", "page_saved", "page_missing_group", "page_neptune", "page_saved_multi", "page_sqlite", "page_sqlite_workspaces", "page_sqlite_default_language", "page_registered_providers")
              if n in request.fixturenames]     # grab refs while fixtures are alive
     yield
     for pg in pages:
@@ -4215,6 +4217,84 @@ def _select_sqlite(page):
     page.locator('#tbl-panel [data-t="entries"]').wait_for()
 
 
+@pytest.fixture()
+def page_registered_providers(_pw_browser, tmp_path, monkeypatch):
+    binary = os.environ.get("QUARRY_RUST_BINARY")
+    if not binary:
+        pytest.skip("provider registration requires the native Quarry binary")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    helper = tmp_path / "provider.py"
+    helper.write_text('''
+import json
+import sys
+
+provider = sys.argv[1]
+request = json.load(sys.stdin)
+assert request["version"] == 1
+assert request["provider"]["id"] == provider
+assert request["provider"]["owner"] == "alice"
+path = request["path"]
+if path == "/identity":
+    value = {"id": "alice"}
+elif path == "/api/platform":
+    value = {"principal": {"id": "alice"}, "resources": [{
+        "id": "shared-notes", "project": "Demo", "db": "notes", "env": "dev",
+        "engine": "sqlite", "production": True,
+    }]}
+elif path == "/api/tables":
+    assert dict(request["pairs"])["resourceId"] == "shared-notes"
+    value = {"engine": "sqlite", "tables": [provider + "_entries"], "capped": False}
+elif path == "/api/health":
+    value = {"ok": True}
+elif path == "/api/query":
+    assert request["body"]["resourceId"] == "shared-notes"
+    value = {"columns": [{"name": "note", "type": None}], "rows": [{"note": provider}],
+             "rowCount": 1, "truncated": False, "elapsedMs": 1, "engine": "sqlite",
+             "sql": request["body"]["sql"], "downloadBytes": 16, "sizeIsEstimated": False}
+else:
+    raise AssertionError(path)
+print(json.dumps({"value": value}))
+''', encoding="utf-8")
+    config = tmp_path / "config.toml"
+    for provider, label in [("alpha", "Alpha Cloud"), ("beta", "Beta Cloud")]:
+        result = subprocess.run([
+            binary, "--config", str(config), "provider", "register", "--id", provider,
+            "--label", label, "--origin", "https://provider.example", "--profile", "dev",
+            "--owner", "alice", "--executable", sys.executable, "--", str(helper), provider,
+        ], check=True, capture_output=True, text=True, timeout=10)
+        assert json.loads(result.stdout) == {"registered": 1}
+
+    with sqlite3.connect(tmp_path / "notes.db") as db:
+        db.executescript("CREATE TABLE entries(note TEXT); INSERT INTO entries VALUES ('local row');")
+    connections = '[notes_dev]\ndb="notes"\nenv="dev"\ngroup="Demo"\nurl="sqlite:///notes.db"\n'
+    with _running_gui(tmp_path, connections_toml=connections, federated_launch=True) as launch_url:
+        ctx, page = _mk_page(_pw_browser, launch_url)
+        try:
+            yield page
+        finally:
+            ctx.close()
+
+
+def test_registered_providers_keep_same_name_database_routes_separate(page_registered_providers):
+    from playwright.sync_api import expect
+
+    page = page_registered_providers
+    expect(page.locator('#side .sidebar-tree .grp')).to_have_count(3)
+    _select_sqlite(page)
+    _run_sql(page, "SELECT note FROM entries")
+    expect(page.locator('#grid td[data-v="local row"]')).to_be_visible()
+
+    for provider, label in [("alpha", "Alpha Cloud"), ("beta", "Beta Cloud")]:
+        group = page.locator("[data-grp]", has_text=label).locator("..")
+        group.locator(".dbrow", has_text="notes").click()
+        expect(page.locator("#esw .cloud-source-badge")).to_contain_text(label)
+        expect(page.locator(f'#tbl-panel [data-t="{provider}_entries"]')).to_be_visible()
+        _run_sql(page, "SELECT 'marker' AS note")
+        expect(page.locator(f'#grid td[data-v="{provider}"]')).to_be_visible()
+
+
 def _route_native_cloud_catalog(page, cloud_status, *, configured_dev=True):
     def catalog(route):
         data = route.fetch().json()
@@ -4231,6 +4311,44 @@ def _route_native_cloud_catalog(page, cloud_status, *, configured_dev=True):
         route.fulfill(json=data)
 
     page.route("**/api/connections", catalog)
+
+
+def test_native_cloud_only_row_shares_workspace_group_and_shows_source(page_sqlite):
+    from playwright.sync_api import expect
+
+    page = page_sqlite
+    target = 'f:' + 'a' * 64
+    cloud_env = 'cloud:' + target
+    cloud_db = 'cloud-db:preview-notes'
+
+    def catalog(route):
+        data = route.fetch().json()
+        group = next(group for group in data['groups'] if any(item['db'] == 'notes' for item in group['items']))
+        group['group'] = 'YIMINLAB'
+        group['items'].append({
+            'db': cloud_db, 'label': 'notes', 'engine': 'sqlite', 'is_env_set': True,
+            'envs': [{'env': cloud_env, 'display_env': 'dev', 'source': 'cloud',
+                      'resourceId': target, 'targetId': target, 'key': target,
+                      'engine': 'sqlite', 'production': True, 'region': None,
+                      'ssh': False, 'proxied': False}],
+        })
+        route.fulfill(json={**data, 'groups': [group], 'cloudStatus': 'connected'})
+
+    page.route('**/api/connections', catalog)
+    page.route('**/api/health?*', lambda route: route.fulfill(json={'ok': True}))
+    page.reload(wait_until='networkidle')
+    headings = page.locator('#side .sidebar-tree .grp')
+    expect(headings).to_have_count(1)
+    expect(headings).to_contain_text('YIMINLAB')
+    group = headings.locator('xpath=..')
+    local = group.locator('.dbrow[data-db="notes"]')
+    cloud = group.locator(f'.dbrow[data-db="{cloud_db}"]')
+    expect(local.locator('.db-name')).to_have_text('notes')
+    expect(cloud.locator('.db-name')).to_have_text('notes')
+    expect(local.locator('.cloud-source-badge')).to_have_count(0)
+    expect(cloud.locator('.cloud-source-badge')).to_have_text('Cloud')
+    page.locator('.vg-lang-switch').click()
+    expect(cloud.locator('.cloud-source-badge')).to_have_text('云端')
 
 
 def test_native_cloud_source_separates_same_name_targets_and_cancel(page_sqlite):
@@ -4374,20 +4492,30 @@ def test_federated_account_change_keeps_local_result_and_rejects_old_inflight_re
 
     page = page_sqlite
     owner = {'value': 'Alice'}
+    linked = {'value': False}
     routes = {'Alice': 'cloud:f:' + 'a' * 64, 'Bob': 'cloud:f:' + 'b' * 64}
+    cloud_rows = {account: f'cloud-db:{account.lower()}-remote-notes' for account in routes}
     held = []
     remote_queries = []
 
     def catalog(route):
         data = route.fetch().json()
         data['cloudStatus'] = 'connected'
-        notes = next(item for group in data['groups'] for item in group['items'] if item['db'] == 'notes')
-        target = routes[owner['value']]
-        notes['envs'].append({
+        group = next(group for group in data['groups'] if any(item['db'] == 'notes' for item in group['items']))
+        notes = next(item for item in group['items'] if item['db'] == 'notes')
+        account = owner['value']
+        target = routes[account]
+        env = {
             'env': target, 'display_env': 'dev', 'source': 'cloud', 'key': target, 'targetId': target[6:],
-            'providerLabel': 'YLab ' + owner['value'], 'sourceStatus': 'connected', 'production': True,
+            'providerLabel': 'YLab ' + account, 'sourceStatus': 'connected', 'production': True,
             'engine': 'sqlite', 'region': None, 'ssh': False, 'proxied': False,
-        })
+        }
+        if account == 'Alice' and linked['value']:
+            env['associatedTargetId'] = next(local.get('targetId') for local in notes['envs'] if local['env'] == 'dev')
+            notes['envs'].append(env)
+        else:
+            group['items'].append({'db': cloud_rows[account], 'label': 'remote_notes', 'engine': 'sqlite',
+                                   'is_env_set': True, 'envs': [env]})
         route.fulfill(json=data)
 
     def result(sql, note):
@@ -4414,6 +4542,7 @@ def test_federated_account_change_keeps_local_result_and_rejects_old_inflight_re
             route.continue_()
 
     page.route('**/api/connections', catalog)
+    page.route('**/api/health?*', lambda route: route.fulfill(json={'ok': True}))
     page.route('**/api/query', query)
     page.route('**/api/tables?*', tables)
     page.reload(wait_until='domcontentloaded')
@@ -4421,18 +4550,32 @@ def test_federated_account_change_keeps_local_result_and_rejects_old_inflight_re
     _run_sql(page, 'select note from entries where id = 1')
     expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
 
-    alice = page.locator(f'#esw [data-env="{routes["Alice"]}"]')
-    alice.click()
+    alice_row = page.locator(f'.dbrow[data-db="{cloud_rows["Alice"]}"]')
+    alice_row.click()
+    expect(page.locator('#qtitle')).to_have_text('remote_notes')
     _run_sql(page, "select 'private Alice history' as note")
     expect(page.locator('#grid td[data-v="private Alice result"]')).to_be_visible()
     draft = 'select 1 as late_alice_private_draft'
     _set_sql(page, draft)
+
+    linked['value'] = True
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    expect(alice_row).to_have_count(0)
+    expect(page.locator('#qtitle')).to_have_text('notes')
+    alice = page.locator(f'#esw [data-env="{routes["Alice"]}"]')
+    expect(alice).to_have_attribute('aria-pressed', 'true')
+    expect(alice.locator('.cloud-source-badge')).to_have_text('YLab Alice')
+    expect(page.locator('#sql')).to_have_value(draft)
+    expect(page.locator('#grid td[data-v="private Alice result"]')).to_be_visible()
+    assert remote_queries == [routes['Alice']]
+
     page.locator('#runBtn').click()
     expect(page.locator('#grid .spin')).to_be_visible()
 
     owner['value'] = 'Bob'
     page.evaluate("window.dispatchEvent(new Event('focus'))")
     expect(alice).to_have_count(0)
+    expect(page.locator(f'.dbrow[data-db="{cloud_rows["Bob"]}"] .cloud-source-badge')).to_have_text('Cloud')
     expect(page.locator('#sql')).to_have_value('select note from entries where id = 1')
     expect(page.locator('#grid td[data-v="dev note 1"]')).to_be_visible()
     page.locator('#histBtn').click()
@@ -6565,9 +6708,10 @@ def _isolated_indicator_page(browser, tmp_path, monkeypatch):
 
 # Hosted UI contract tests use the built bundle with the platform marker.
 # Network fixtures exercise browser behavior; Rust platform tests cover IAM and ACLs.
-def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False):
+def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="", expect_login=False, cloud_local=False, cloud_resources=None):
     state = {'online': online, 'queries': [], 'local_requests': [],
-             'assistant_requests': [], 'operations': [], 'refreshes': 0}
+             'assistant_requests': [], 'operations': [], 'refreshes': 0,
+             'cloud_local': cloud_local, 'cloud_requests': [], 'cloud_resources': list(cloud_resources or [])}
     remote = dict(id='remote-notes', project='lab', db='notes', env='prod',
                   engine=engine, production=True)
     page.add_init_script("""(() => {
@@ -6592,6 +6736,24 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
         path = parsed.path.replace('/api/db/', '/api/', 1)
         body = request.post_data_json if request.method == 'POST' else {}
         account = request.headers.get('authorization', '').replace('Bearer ', '').split('-')[0]
+        if state['cloud_local'] and (path.startswith('/api/local/') or path == '/api/schema/import'):
+            state['cloud_requests'].append((path, body))
+            if path == '/api/local/up' and body.get('sourceResourceId'):
+                state['cloud_resources'] = [dict(id='cloud:abc', project='lab', db='notes', env='local',
+                                                 placement='cloud', engine=engine, production=False,
+                                                 image=body.get('image') or 'postgres:16-alpine',
+                                                 sourceResourceId=body['sourceResourceId'])]
+                value = {'created': True, 'resources': state['cloud_resources']}
+            elif path == '/api/local/ticket':
+                value = {'ticket': 'qt_fixture', 'resourceId': body['resourceId'], 'engine': engine,
+                         'database': 'workspace_ab_notes', 'user': 'quarry', 'password': 'quarry'}
+            elif path == '/api/local/down' and body.get('purge'):
+                state['cloud_resources'] = []
+                value = {'purged': True}
+            else:
+                value = {'ok': True}
+            route.fulfill(json=value)
+            return
         if path in ('/api/pair', '/api/unpair', '/api/personal') or path.startswith('/api/local/'):
             state['local_requests'].append(request.url)
             route.abort()
@@ -6614,7 +6776,8 @@ def _hosted_workbench(page, *, online=True, engine="sqlite", launch_fragment="",
             return
         elif path == '/api/platform':
             value = {'mode': 'hosted', 'principal': {'id': account},
-                     'capabilities': {'assistant': True}, 'resources': [remote]}
+                     'capabilities': {'assistant': True, 'cloudLocal': state['cloud_local']},
+                     'resources': [remote] + state['cloud_resources']}
         elif path == '/api/tables':
             value = {'engine': 'sqlite', 'tables': ['entries'], 'capped': False}
         elif path == '/api/columns':
@@ -6805,6 +6968,86 @@ def test_platform_cloud_query_history_stays_in_browser(page_sqlite):
     assert page.locator('#hlist').get_by_text('select 11 as remote_value', exact=True).count() == 0
     assert not state['local_requests']
     assert len(state['queries']) == 1
+
+
+def test_platform_cloud_local_create_connect_and_delete_without_running_sql(page_sqlite):
+    page = page_sqlite
+    page.on('dialog', lambda dialog: dialog.accept())
+    state = _hosted_workbench(page, engine='postgres', cloud_local=True)
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').fill('select 1 as keep_this_draft')
+    page.locator('#ciBtn').click()
+    panel = page.get_by_test_id('cloud-local-panel')
+    panel.wait_for()
+    page.get_by_test_id('cloud-local-image').fill('postgres:15-alpine')
+    page.get_by_test_id('cloud-local-create').click()
+    page.wait_for_function("!document.querySelector('#cibox')")
+    assert ('/api/local/up', {'sourceResourceId': 'remote-notes', 'engine': 'postgres', 'image': 'postgres:15-alpine'}) in state['cloud_requests']
+
+    # The new cloud Local is a separate, labelled environment of the same database.
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.get_by_text('Cloud Local', exact=True).first.click()
+    page.locator('#ciBtn').click()
+    page.get_by_test_id('cloud-local-connect').click()
+    command = page.get_by_test_id('cloud-local-command')
+    command.wait_for()
+    assert command.text_content().startswith('qy local connect ')
+    assert command.text_content().endswith('--port 5433 --ticket qt_fixture')
+    assert page.get_by_test_id('cloud-local-url').text_content() == 'postgresql://quarry:quarry@127.0.0.1:5433/workspace_ab_notes'
+    page.get_by_test_id('cloud-local-delete').click()
+    page.wait_for_function("!document.querySelector('#cibox')")
+    assert ('/api/local/down', {'resourceId': 'cloud:abc', 'purge': True}) in state['cloud_requests']
+    assert page.locator('#sql').input_value() == 'select 1 as keep_this_draft'
+    assert not state['queries']
+    assert not state['local_requests']
+
+
+def test_platform_cloud_local_sync_start_stop_send_exact_targets_and_keep_draft(page_sqlite):
+    page = page_sqlite
+    answers = []
+    page.on('dialog', lambda dialog: dialog.accept() if answers.pop(0) else dialog.dismiss())
+    local = dict(id='cloud:abc', project='lab', db='notes', env='local', placement='cloud', engine='postgres',
+                 production=False, image='postgres:16-alpine', sourceResourceId='remote-notes')
+    state = _hosted_workbench(page, engine='postgres', cloud_local=True, cloud_resources=[local])
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.get_by_text('Cloud Local', exact=True).first.click()
+    page.locator('#sql').fill('select 2 as keep_this_draft')
+    page.locator('#ciBtn').click()
+    page.get_by_test_id('cloud-local-panel').wait_for()
+
+    # Cancelling the destructive schema sync sends nothing.
+    answers.append(False)
+    page.get_by_test_id('cloud-local-sync').click()
+    page.wait_for_timeout(300)
+    assert not any(path == '/api/schema/import' for path, _ in state['cloud_requests'])
+    answers.append(True)
+    page.get_by_test_id('cloud-local-sync').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-sync]').disabled")
+    page.get_by_test_id('cloud-local-start').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-start]').disabled")
+    page.get_by_test_id('cloud-local-stop').click()
+    page.wait_for_function("!document.querySelector('[data-testid=cloud-local-stop]').disabled")
+    assert state['cloud_requests'] == [
+        ('/api/schema/import', {'resourceId': 'cloud:abc', 'sourceResourceId': 'remote-notes'}),
+        ('/api/local/up', {'resourceId': 'cloud:abc'}),
+        ('/api/local/down', {'resourceId': 'cloud:abc'}),
+    ]
+    assert not answers
+    page.keyboard.press('Escape')
+    assert page.locator('#sql').input_value() == 'select 2 as keep_this_draft'
+    assert not state['queries']
+    assert not state['local_requests']
+
+
+def test_platform_without_cloud_local_capability_shows_no_local_administration(page_sqlite):
+    page = page_sqlite
+    state = _hosted_workbench(page, engine='postgres')
+    page.locator('.dbrow[data-db="lab/notes"]').click()
+    page.locator('#sql').wait_for()
+    assert page.locator('#ciBtn').is_hidden()
+    assert page.get_by_test_id('cloud-local-panel').count() == 0
+    assert page.locator('#ciUp').count() == 0
+    assert not state['local_requests'] and not state['cloud_requests']
 
 
 def test_platform_background_reconnect_preserves_draft_without_query_replay(page_sqlite):
@@ -7530,6 +7773,40 @@ def test_native_workbench_failed_read_keeps_recovery_without_writing_sqlite(page
     assert any(sql in body['value']['values']['qy_tabs'] for body in state['writes'])
 
 
+def test_native_workbench_reopen_uses_newer_records_when_recovery_adds_no_content(page_sqlite):
+    page = page_sqlite
+    state = _native_personal_workbench(page)
+    sql = 'select 22 as saved_in_newer_workbench'
+    with page.expect_response(lambda response: response.url.endswith('/api/personal') and response.request.method == 'POST'):
+        page.locator('#sql').fill(sql)
+    page.wait_for_function("localStorage.getItem('qy_native:native-fixture:recovery') === null")
+    saved = state['value']['values']
+    tabs = json.loads(saved['qy_tabs'])
+    draft = {**next(tab for tab in tabs if tab['sql'] == sql), 'visited': 0}
+    # A different window only changed navigation before it went away. Its
+    # older document lacks the newer window's additional tab.
+    recovered = {**saved, 'qy_tabs': json.dumps([draft]), 'qy_ati': '0',
+                 'qy_tabres': '[null]', 'qy_hist': '[]', 'qy_collapsed': '{}'}
+    tabs.append({**draft, 'id': 't999', 'sql': 'select 23 as another_saved_tab'})
+    state['value']['values'] = {**saved, 'qy_tabs': json.dumps(tabs)}
+    recovery = {'values': recovered, 'revision': state['revision'], 'dirty': True}
+    state['revision'] += 1
+    newer_revision = state['revision']
+    page.evaluate("""recovery => {
+      const key = 'qy_native:native-fixture:recovery';
+      sessionStorage.removeItem(key);
+      localStorage.setItem(key, JSON.stringify(recovery));
+    }""", recovery)
+    page.reload(wait_until='domcontentloaded')
+    page.wait_for_function("sql => document.querySelector('#sql')?.value === sql", arg=sql)
+    page.wait_for_function("""revision => {
+      const raw = localStorage.getItem('qy_native:native-fixture:recovery');
+      return raw === null || JSON.parse(raw).revision >= revision;
+    }""", arg=newer_revision)
+    assert not page.get_by_test_id('native-records-status').count()
+    assert 'another_saved_tab' in state['value']['values']['qy_tabs']
+
+
 def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(page_sqlite):
     page = page_sqlite
     state = _native_personal_workbench(page)
@@ -7567,3 +7844,260 @@ def test_native_workbench_conflict_keeps_draft_and_loads_saved_copy_explicitly(p
     assert not page.get_by_test_id('native-records-status').count()
     assert page.evaluate("localStorage.getItem('qy_native:native-fixture:recovery')") == other
     assert all(tab['sql'] != unsaved_sql for tab in json.loads(state['value']['values']['qy_tabs']))
+
+
+_PREVIEW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><rect width="64" height="48" fill="steelblue"/></svg>'
+
+
+def _result_image_mode(page, column):
+    return page.get_by_role('button', name=f'{column} display', exact=True)
+
+
+def _set_result_image_mode(page, column, image):
+    _result_image_mode(page, column).click()
+    page.locator('.result-image-mode-menu:popover-open').get_by_role(
+        'button', name='Load images' if image else 'Text', exact=True).click()
+
+
+def _enable_result_images(page, column):
+    _set_result_image_mode(page, column, True)
+
+
+def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+
+    def serve(route):
+        requests.append((route.request.url, route.request.headers.get('referer')))
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', serve)
+    first = 'https://images.example/first?filename=app.png&signature=abc%2Fdef&expires=123'
+    second = 'https://images.example/second.png'
+    sql = f"select 2 as id, '{first}' as icon_url, 'https://images.example/other.png' as other union all select 1, '{second}', null"
+    _run_sql(page, sql)
+    expect(page.locator('#grid img')).to_have_count(0)
+    mode = _result_image_mode(page, 'icon_url')
+    expect(mode).to_have_attribute('data-enabled', 'false')
+    mode.hover()
+    mode.click()
+    menu = page.locator('.result-image-mode-menu:popover-open')
+    expect(menu.get_by_role('button', name='Text', exact=True)).to_have_attribute('aria-pressed', 'true')
+    page.keyboard.press('Escape')
+    expect(menu).to_have_count(0)
+    assert requests == []
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
+    expect(page.locator('#grid img')).to_have_count(2)
+    assert sorted(requests) == [(first, None), (second, None)]
+    opener = page.get_by_role('button', name='Enlarge image').first
+    opener.click()
+    dialog = page.get_by_role('dialog', name='Image preview')
+    expect(dialog.locator('img')).to_be_visible()
+    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('href', first)
+    expect(dialog.get_by_role('link', name='Open original')).to_have_attribute('rel', 'noopener noreferrer')
+    page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
+    dialog.get_by_role('button', name='Copy URL').click()
+    assert page.evaluate('window.__copied') == first
+    page.keyboard.press('Escape')
+    expect(dialog).to_have_count(0)
+    expect(opener).to_be_focused()
+    # Click the column name; the adjacent select handles its own clicks.
+    page.locator('#grid th[data-i="0"]').click(position={'x': 15, 'y': 12})
+    expect(page.locator('#grid .result-image-url').first).to_have_text(second)
+    with page.expect_download() as download:
+        page.locator('#jsonBtn').click()
+    exported = json.loads(open(download.value.path()).read())
+    assert [row['icon_url'] for row in exported] == [second, first]
+    _set_result_image_mode(page, 'icon_url', False)
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
+    _run_sql(page, sql)
+    expect(page.locator('#grid img')).to_have_count(0)
+    _enable_result_images(page, 'icon_url')
+    page.locator('#tabAdd').click()
+    _run_sql(page, f"select '{second}' as icon_url")
+    expect(page.locator('#grid img')).to_have_count(0)
+    page.locator('#tabs .tab').first.click()
+    expect(page.locator('#grid img')).to_have_count(2)
+    page.reload(wait_until='domcontentloaded')
+    expect(mode).to_have_attribute('data-enabled', 'true')
+    expect(page.locator('#grid img')).to_have_count(2)
+    _set_result_image_mode(page, 'icon_url', False)
+    page.reload(wait_until='domcontentloaded')
+    expect(mode).to_have_attribute('data-enabled', 'false')
+    expect(page.locator('#grid img')).to_have_count(0)
+
+
+def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    requests, held = [], []
+    recovered = False
+
+    def respond(route):
+        requests.append(route.request.url)
+        if '/slow' in route.request.url:
+            held.append(route)
+        elif '/bad' in route.request.url and not recovered:
+            route.fulfill(content_type='text/html', body='<html>expired</html>')
+        else:
+            route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', respond)
+    page.select_option('#maxRows', '100')
+    _run_sql(page, "select id, 'https://images.example/' || id || '.png' AS image_url from entries order by id")
+    _enable_result_images(page, 'image_url')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert 'https://images.example/100.png' not in requests
+    page.locator('#grid').evaluate('el => el.scrollTop = el.scrollHeight')
+    page.locator('#grid tbody tr').last.locator('img').wait_for()
+    assert 'https://images.example/100.png' in requests
+    page.locator('#loadMoreBtn').click()
+    expect(page.locator('#grid tbody tr')).to_have_count(200)
+    expect(page.locator('#grid img')).to_have_count(0)
+    assert 'https://images.example/101.png' not in requests
+    _run_sql(page, "select 'https://images.example/bad.png' as avatar_url")
+    _enable_result_images(page, 'avatar_url')
+    retry = page.get_by_role('button', name='Retry image', exact=True)
+    expect(retry).to_be_visible()
+    expect(page.locator('#grid td[data-v="https://images.example/bad.png"]')).to_be_visible()
+    recovered = True
+    retry.click()
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    page.clock.install()
+    _run_sql(page, "select 'https://images.example/slow.png' as avatar_url")
+    with page.expect_request('https://images.example/slow.png'):
+        _enable_result_images(page, 'avatar_url')
+    page.clock.fast_forward(15_001)
+    expect(retry).to_be_visible()
+    expect(page.locator('#grid img')).to_have_count(0)
+    for route in held:
+        try:
+            route.abort()
+        except Exception:
+            pass
+
+
+def test_result_images_enlarge_and_keep_signed_urls_distinct(page_sqlite):
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+
+    def serve(route):
+        requests.append(route.request.url)
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', serve)
+    first = 'https://images.example/icon.png?signature=first%2Fone'
+    second = 'https://images.example/icon.png?signature=second%2Ftwo'
+    _run_sql(page, f"select '{first}' as icon_url")
+    _enable_result_images(page, 'icon_url')
+    page.get_by_role('button', name='Enlarge image').click()
+    page.wait_for_function("document.querySelector('#imagePreview img')?.naturalWidth === 64")
+    assert set(requests) == {first}
+    page.keyboard.press('Escape')
+    _run_sql(page, f"select '{second}' as icon_url")
+    _enable_result_images(page, 'icon_url')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert set(requests) == {first, second}
+
+
+def test_result_image_dropdown_filters_links_and_loads_without_cors(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    requests = []
+
+    def serve(route):
+        requests.append(route.request.url)
+        route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG)
+
+    page.route('https://images.example/**', serve)
+    _run_sql(page, """select 'https://images.example/icon.png' as icon,
+      'http://images.example/plain.png' as insecure,
+      'https://images.example/no-extension' as plain""")
+    page.locator('#grid tbody .rownum').click()
+    expect(page.locator('.vg-modal')).to_contain_text('https://images.example/icon.png')
+    expect(page.locator('.vg-modal img')).to_have_count(0)
+    page.keyboard.press('Escape')
+    for column in ('insecure', 'plain'):
+        _result_image_mode(page, column).click()
+        menu = page.locator('.result-image-mode-menu:popover-open')
+        expect(menu.get_by_role('button')).to_have_count(1)
+        expect(menu.get_by_role('button', name='Text', exact=True)).to_have_attribute('aria-pressed', 'true')
+        page.keyboard.press('Escape')
+    assert requests == []
+    _enable_result_images(page, 'icon')
+    page.locator('#grid .result-image-thumb').first.scroll_into_view_if_needed()
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert requests == ['https://images.example/icon.png']
+
+
+def test_result_image_url_text_keeps_existing_double_click_actions(page_sqlite):
+    from playwright.sync_api import expect
+    page = page_sqlite
+    _select_sqlite(page)
+    short = 'https://images.example/plain.png'
+    long = 'https://images.example/image.png?signature=' + 'a' * 80
+    page.route('https://images.example/**', lambda route: route.fulfill(
+        content_type='image/svg+xml', body=_PREVIEW_SVG))
+    _run_sql(page, f"select '{short}' as value union all select '{long}'")
+    _enable_result_images(page, 'value')
+    page.evaluate("window.__copied = ''; navigator.clipboard.writeText = async text => { window.__copied = text; }")
+    page.locator('#grid .result-image-url').first.dblclick()
+    assert page.evaluate('window.__copied') == short
+    expect(page.locator('.vg-modal')).to_have_count(0)
+    page.locator('#grid .result-image-url').last.dblclick()
+    expect(page.locator('.vg-modal pre')).to_have_text(long)
+    page.keyboard.press('Escape')
+    page.get_by_role('button', name='Enlarge image').last.click()
+    expect(page.get_by_role('dialog', name='Image preview')).to_be_visible()
+
+
+def test_platform_cli_session_opens_one_database_and_expires(page_sqlite):
+    page = page_sqlite
+    entry = urlparse(page.url)._replace(path="/quarry/", query="", fragment="").geturl()
+    session = "/quarry/session/" + "a" * 32 + "/"
+    calls = []
+
+    def hosted(route):
+        request = route.request
+        path = urlparse(request.url).path
+        if request.resource_type == "document":
+            response = route.fetch(url=entry)
+            route.fulfill(response=response, body=response.text().replace(
+                "<head>", '<head><meta name="quarry-mode" content="platform">'
+                '<meta name="quarry-cli-session" content="true">', 1))
+        elif path == "/quarry/browser-ticket/consume":
+            calls.append(request.post_data_json)
+            route.fulfill(json={"path": session})
+        elif path == session + "api/platform":
+            assert "authorization" not in request.headers
+            route.fulfill(headers={"x-quarry-session-remaining-ms": "2500"}, json={
+                "mode": "hosted", "principal": {"id": "dev-user"}, "capabilities": {},
+                "resources": [{"id": "only", "project": "brain", "db": "one-db", "env": "dev",
+                               "engine": "sqlite", "production": True}],
+            })
+        elif path.startswith(session + "api/"):
+            route.fulfill(json={"tables": [], "groups": [], "workspaces": [], "engine": "sqlite"})
+        else:
+            route.continue_()
+
+    page.route("**/quarry/**", hosted)
+    page.goto(entry, wait_until="domcontentloaded")
+    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    assert page.locator("#sql").count() == 0
+    page.goto(entry + "?launch=1#quarry_handoff=one-use", wait_until="domcontentloaded")
+    page.wait_for_url("**" + session)
+    page.locator("#sql").wait_for()
+    assert urlparse(page.url).path == session
+    assert page.locator("#linkBtn").count() == 0
+    assert page.evaluate("async () => (await fetch(location.pathname + 'api/platform')).ok")
+    assert calls == [{"code": "one-use"}]
+    assert not page.evaluate("location.hash")
+    page.get_by_text("Open the database again with bcli.", exact=True).wait_for()
+    assert page.locator("#sql").count() == 0

@@ -1,0 +1,24 @@
+# Optional overlay: per-user cloud Local databases.
+#   docker compose -f compose.yaml -f compose.cloud-local.yaml up -d
+# Adds a Docker-in-Docker daemon that only Quarry can reach. Database
+# containers run inside it and are not published on the host.
+services:
+  docker:
+    image: docker:27-dind
+    # Docker-in-Docker requires privileged mode. Run it on a host you trust,
+    # or switch to a Sysbox runtime to avoid privileged containers.
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - cloud-local-certs:/certs/client
+      - cloud-local-docker:/var/lib/docker
+    restart: unless-stopped
+  quarry:
+    depends_on:
+      - docker
+    volumes:
+      - cloud-local-certs:/certs/client:ro
+volumes:
+  cloud-local-certs:
+  cloud-local-docker:

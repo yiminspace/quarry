@@ -1,0 +1,33 @@
+{
+  "listen": "0.0.0.0:8080",
+  "auth": {
+    "mode": "builtin",
+    "username": "admin",
+    "password_hash": "REPLACE_WITH_ARGON2ID_HASH_FROM_HASH_PASSWORD"
+  },
+  "databases": [
+    {
+      "id": "application-production",
+      "project": "application",
+      "db": "application",
+      "env": "production",
+      "url": "postgresql://readonly-user:REPLACE_PASSWORD@database:5432/application",
+      "production": true,
+      "readers": [
+        "admin"
+      ]
+    }
+  ],
+  "cloud_local": {
+    "docker_host": "tcp://docker:2376",
+    "docker_cert_path": "/certs/client",
+    "connect_host": "docker",
+    "ports": [
+      20000,
+      20999
+    ],
+    "max_per_user": 5,
+    "memory": "1g",
+    "cpus": "1"
+  }
+}

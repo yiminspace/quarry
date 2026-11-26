@@ -337,10 +337,6 @@
         <p>登录后查询服务端授权的连接。草稿和 SQL 历史按账号保存在当前浏览器，查询结果留在当前页面。缓存过的工作台可以断网打开继续编辑。</p>
       </div>
       <div class="card">
-        <h3><span class="ico">⇄</span> 在本机同时使用本地库和云端库</h3>
-        <p>使用支持融合连接的版本，先运行 <code>ylab auth login</code> 登录，再运行 <code>ylab db gui</code> 注册有权限的连接。之后可在 <code>qy gui</code> 和 CLI 的目录里同时查看这些连接和 Quarry 工作区。本地查询在电脑上执行，云端查询经 YLab 转发。两种工作台使用同一配置时共用本机 SQLite 记录。云端草稿和历史按登录账号隔离，云端查询结果留在当前会话。</p>
-      </div>
-      <div class="card">
         <h3><span class="ico">▤</span> 按版本部署镜像</h3>
         <p>镜像包含编译好的网页资源和查询服务。配置数据库连接、读取权限和登录方式后，部署通过验收的镜像。托管工作台通过部署新镜像升级。</p>
       </div>
@@ -348,7 +344,6 @@
     <p class="lede" style="margin-top:26px">远程查询会把 SQL 发送到平台；助手会把所需上下文发送到配置的模型网关，日志保留遵循平台策略。托管共享 SQL、云端个人历史与跨设备同步暂未实现。</p>
     <div class="cta-row" style="margin-top:26px">
       <a class="btn btn-copper" href="https://github.com/yiminspace/quarry/blob/main/docs/hosting.zh-CN.md">查看托管部署指南</a>
-      <a href="https://github.com/yiminspace/quarry/blob/main/docs/ylab-integration.md">配置本地与云端连接 →</a>
       <span class="lede">一个镜像、一个配置文件；支持独立登录或已有平台账号。</span>
     </div>
   </div>

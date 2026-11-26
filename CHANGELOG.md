@@ -7,6 +7,28 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Fix `qy run` and `qy exec` parsing of CLI options after positional `name=value` parameters.
+
+## [2.3.1] - 2026-11-13
+
+- Copying a PostgreSQL schema into a Local works on Debian and Ubuntu, where `pg_dump` is a `pg_wrapper` symlink. Quarry used to run the symlink target directly, got an empty dump and reported an empty schema. This also fixed schema export in hosted Quarry.
+
+## [2.3.0] - 2026-11-12
+
+- Hosted Quarry can give each user cloud Local PostgreSQL and Redis databases on a server-side Docker-in-Docker daemon. Enable it with `cloud_local` in `hosted.json` and the `compose.cloud-local.yaml` overlay. Users create a Local from a database's connection details and can pick any allowed image version. Run `qy local connect` with a ticket from the workbench to reach the Local from your own services on a loopback port. Database ports are never published, and each Local has its own Docker network and password.
+
+- Use the column header’s Text / Load images menu to opt into thumbnails. Opening the menu checks only that column. Load images recognizes image suffixes in HTTPS URL paths and filename parameters and loads images as rows come into view. Browser image loading supports hosts without CORS headers, and the choice is restored with the saved query result after refresh. URL text uses the available cell width beside the thumbnail.
+
+- Add optional CLI-launched hosted workbenches with one database per browser session and in-memory expiry.
+
+- Reopen the newer saved workbench without a conflict warning when the older browser recovery adds no workbench content.
+
+## [2.2.0] - 2026-11-06
+
+- Verify PostgreSQL connections with `qy connections reconcile` and link confirmed local and cloud routes even when their database labels differ. Merged rows use the local name.
+
+- Register installed database provider helpers with `qy provider register` and use their authorized databases beside local connections in the same workbench. YLab uses the shared provider protocol.
+
 ## [2.1.0] - 2026-11-06
 
 - Stop a matching standalone workbench gracefully from another terminal with `qy gui stop`.
