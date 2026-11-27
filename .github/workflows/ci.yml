@@ -66,6 +66,8 @@ jobs:
           fetch-depth: 0
       - name: Check browser coverage rules
         run: python3 -m unittest discover -s tests -p test_ci_browser_scope.py
+      - name: Check native release version selection
+        run: python3 -m unittest discover -s tests -p test_prepare_native_release.py
       - name: Determine browser coverage
         id: browser-scope
         continue-on-error: true
