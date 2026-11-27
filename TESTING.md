@@ -310,8 +310,9 @@ vitest unit test (`cd web && npm run test:unit`), referenced by its file name.
 | ID | Region | Behavior | Evidence | Status |
 |----|--------|----------|----------|--------|
 | 132 | grid | Opening the right-aligned column menu scans only that column locally and offers Load images when an HTTPS URL has an image suffix in its path or filename parameter. Text is the default. Selecting Load images enables preview for that result. Opening the menu sends nothing. Consent follows its saved result through tab switches and reloads. Reruns and appended results reset consent. Sort, copy and export use the raw values. | resultImage.test.ts; F:test_result_images_preview_modes_sort_export_and_tab_isolation, F:test_result_image_url_text_keeps_existing_double_click_actions | ✅ |
-| 133 | grid/images | Choosing Load images authorizes visible thumbnails for the column. Row detail displays the URL as text. Requests preserve signed query parameters, omit the referrer, use browser image loading without requiring CORS, and allow retry on errors or timeout. | F:test_result_images_lazy_load_failure_timeout_and_retry, F:test_result_images_enlarge_and_keep_signed_urls_distinct, F:test_result_image_dropdown_filters_links_and_loads_without_cors | ✅ |
+| 133 | grid/images | Choosing Load images authorizes visible thumbnails for the column. Row detail displays the URL as text. Requests preserve signed query parameters, omit the referrer, and use browser image loading without requiring CORS. A browser error or timeout triggers one automatic retry, followed by a manual retry control if the image still fails. | F:test_result_images_lazy_load_failure_timeout_and_retry, F:test_result_images_enlarge_and_keep_signed_urls_distinct, F:test_result_image_dropdown_filters_links_and_loads_without_cors | ✅ |
 | 134 | grid/images | The column menu and enlarged preview use theme tokens in dark/light mode. Borderless thumbnails preserve row height, URLs use the available cell width before truncating, and the enlarged modal fits a narrow viewport. | V:test_result_image_chrome_uses_theme_tokens | ✅ |
+| 135 | grid/images | Session-scoped diagnostics are silent by default. Set `sessionStorage.setItem("qy_debug_images", "1")` in the Console to log page lifecycle, Cloud scope reload, stale result refresh, grid changes, and thumbnail start, outcome, retry and removal. Page and thumbnail IDs correlate events across row and column positions without result URLs or SQL. Use Preserve log to keep entries across reloads. | F:test_result_images_lazy_load_failure_timeout_and_retry (image outcomes and opt-in), F:test_result_image_diagnostics_link_thumbnail_grid_and_page_lifecycles (grid changes, thumbnail correlation and reload) | 🟡 |
 
 ### Hosted workbench matrix
 
@@ -1441,9 +1442,15 @@ This section describes the former cloud-origin companion. See the cloud-only and
 
 ### Result image audit (2026-11-12)
 
-- Existence: rows 132–134 cover the column menu, selected-column scan, conditional Load images option, viewport loading, thumbnail enlargement, retry, Copy URL, Open original and Escape. Preview uses the source HTTPS URL without a Quarry API route or storage key.
-- Capability: users can enable previews for one column, return to text, use the available column width for URLs, see failures, retry, enlarge and export raw values. Previews use the original image and normal browser redirect and caching behavior.
+- Existence: rows 132–134 cover the column menu, selected-column scan, conditional Load images option, viewport loading, automatic and manual retry, thumbnail enlargement, Copy URL, Open original and Escape. Preview uses the source HTTPS URL without a Quarry API route or storage key.
+- Capability: users can enable previews for one column, return to text, use the available column width for URLs, see persistent failures, retry, enlarge and export raw values. Previews use the original image and normal browser redirect and caching behavior. The first browser error or timeout gets one automatic retry of the same URL.
 - Shared state: opening the menu caches the candidate URLs for the current result. The menu writes column consent into the matching tab snapshot when changing to Load images or Text. Result replacement drops consent. qy_tabres stores column indexes alongside their result, and restoration rechecks eligible URLs only in those columns. The menu and cell loaders read the active snapshot. Thumbnail activation writes the large preview, and closing, replacing the result or switching tabs clears it. The preview also requires an enabled column on the matching result. The loader owns its observer, image element, timeout and retry state. Unmount removes the image element and clears the observer and timer. Grid sorting and export share the original result and are exercised with previews enabled.
+
+#### Image preview diagnostics audit
+
+- Existence. Row 135 covers the sessionStorage flag and diagnostic lifecycle listeners. No new API or UI bindings.
+- Capability. Page IDs distinguish a reload from visibility changes. Thumbnail IDs and previous load state distinguish a remounted thumbnail from an error on an already loaded thumbnail. Grid state and the stale refresh event identify nearby result changes. Browser HTTP status remains available through DevTools Network.
+- Shared state. The flag is read on each event. Page listeners are cleaned up on unmount. Image diagnostics observe the same component-local state transitions and do not write to tab snapshots, query results or consent. The load deadline and retry delay are cleared when the cell unmounts, including when changing tabs, results or column display mode.
 
 
 ### Query result freshness audit

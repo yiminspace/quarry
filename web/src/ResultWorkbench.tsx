@@ -23,6 +23,7 @@ import { copy } from "./clip";
 import { NEPTUNE_STARTER_SQL } from "./connectionStarter";
 import ConnInfoModal from "./ConnInfoModal";
 import { t } from "./i18n";
+import { traceImagePreview } from "./imageDiagnostics";
 import { CellModal, ExplainModal, HistoryModal, ParamModal, RowDetailModal } from "./Modals";
 import { anyModalOpen } from "./modalStack";
 import { NATIVE_MODE, restoreNativeScope } from "./nativeRecords";
@@ -622,6 +623,7 @@ export default function ResultWorkbench() {
         tab.db !== target.db || tab.env !== target.env || tab.targetId !== target.targetId ||
         previous.queryDb !== tab.db || previous.queryEnv !== tab.env || previous.targetId !== tab.targetId ||
         tab.workspace !== workspaceFor(target.db) || !canAutoRun()) return;
+    traceImagePreview("refreshing stale result", { tab: activeId });
     // The query endpoint enforces its normal read-only execution policy.
     void run(target, previousSql, true);
   });
@@ -1155,6 +1157,15 @@ export default function ResultWorkbench() {
   }, [result]);
 
   const enabledImageColumns = activeSnapshot?.imageColumns;
+
+  useEffect(() => {
+    traceImagePreview("result grid changed", {
+      tab: activeTabId,
+      state: loading ? "loading" : gridError ? "error" : result ? "ready" : "empty",
+      rows: result?.rows.length ?? 0,
+      previewColumns: enabledImageColumns?.size ?? 0,
+    });
+  }, [activeTabId, loading, gridError, result, enabledImageColumns]);
 
   /* ---- grid derivations ---- */
 

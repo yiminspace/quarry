@@ -8226,6 +8226,13 @@ def test_result_images_preview_modes_sort_export_and_tab_isolation(page_sqlite):
 def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
     from playwright.sync_api import expect
     page = page_sqlite
+    diagnostic_messages = []
+
+    def capture_diagnostic(message):
+        if message.type == 'info' and message.text.startswith('[Quarry images]'):
+            diagnostic_messages.append((message.args[2].json_value(), json.loads(message.args[3].json_value())))
+
+    page.on('console', capture_diagnostic)
     _select_sqlite(page)
     requests, held = [], []
     recovered = False
@@ -8234,6 +8241,8 @@ def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
         requests.append(route.request.url)
         if '/slow' in route.request.url:
             held.append(route)
+        elif '/flaky' in route.request.url and requests.count(route.request.url) == 1:
+            route.fulfill(content_type='text/html', body='<html>temporarily unavailable</html>')
         elif '/bad' in route.request.url and not recovered:
             route.fulfill(content_type='text/html', body='<html>expired</html>')
         else:
@@ -8245,6 +8254,8 @@ def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
     _enable_result_images(page, 'image_url')
     page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
     assert 'https://images.example/100.png' not in requests
+    assert not diagnostic_messages
+    page.evaluate("sessionStorage.setItem('qy_debug_images', '1')")
     page.locator('#grid').evaluate('el => el.scrollTop = el.scrollHeight')
     page.locator('#grid tbody tr').last.locator('img').wait_for()
     assert 'https://images.example/100.png' in requests
@@ -8252,26 +8263,89 @@ def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
     expect(page.locator('#grid tbody tr')).to_have_count(200)
     expect(page.locator('#grid img')).to_have_count(0)
     assert 'https://images.example/101.png' not in requests
+    flaky = 'https://images.example/flaky.png'
+    _run_sql(page, f"select '{flaky}' as avatar_url")
+    _enable_result_images(page, 'avatar_url')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    assert requests.count(flaky) == 2
+    assert any(event == 'loaded' and details['attempt'] == 1 for event, details in diagnostic_messages)
+
     _run_sql(page, "select 'https://images.example/bad.png' as avatar_url")
     _enable_result_images(page, 'avatar_url')
     retry = page.get_by_role('button', name='Retry image', exact=True)
     expect(retry).to_be_visible()
+    assert requests.count('https://images.example/bad.png') == 2
     expect(page.locator('#grid td[data-v="https://images.example/bad.png"]')).to_be_visible()
     recovered = True
     retry.click()
     page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
     page.clock.install()
     _run_sql(page, "select 'https://images.example/slow.png' as avatar_url")
-    with page.expect_request('https://images.example/slow.png'):
+    slow = 'https://images.example/slow.png'
+    with page.expect_request(slow):
         _enable_result_images(page, 'avatar_url')
-    page.clock.fast_forward(15_001)
+    page.clock.run_for(15_100)
+    expect(page.locator('#grid img')).to_have_count(0)
+    with page.expect_request(slow, timeout=5000):
+        page.clock.run_for(1100)
+    page.clock.run_for(15_100)
     expect(retry).to_be_visible()
     expect(page.locator('#grid img')).to_have_count(0)
+    assert requests.count(slow) == 2
+    assert any(event == 'browser error' for event, _ in diagnostic_messages)
+    assert any(event == 'timed out' for event, _ in diagnostic_messages)
+    assert {details['mode'] for event, details in diagnostic_messages if event == 'retrying'} == {'automatic', 'manual'}
+    assert all('images.example' not in str(details) for _, details in diagnostic_messages)
     for route in held:
         try:
             route.abort()
         except Exception:
             pass
+
+
+def test_result_image_diagnostics_link_thumbnail_grid_and_page_lifecycles(page_sqlite):
+    page = page_sqlite
+    _select_sqlite(page)
+    events = []
+
+    def capture(message):
+        if message.type == 'info' and message.text.startswith('[Quarry images]'):
+            events.append((message.args[2].json_value(), json.loads(message.args[3].json_value())))
+
+    page.on('console', capture)
+    page.evaluate("sessionStorage.setItem('qy_debug_images', '1')")
+    url = 'https://images.example/icon.png?signature=private-test-value'
+    page.route(url, lambda route: route.fulfill(content_type='image/svg+xml', body=_PREVIEW_SVG))
+    _run_sql(page, f"select '{url}' as icon_url")
+
+    with page.expect_console_message(predicate=lambda message: '[Quarry images]' in message.text and ' loaded ' in message.text):
+        _enable_result_images(page, 'icon_url')
+    loaded = next(details for event, details in events if event == 'loaded')
+    assert loaded['row'] == loaded['column'] == 1
+    assert loaded['previousStatus'] == 'loading'
+    assert any(event == 'started' and details['thumbnail'] == loaded['thumbnail']
+               and details['page'] == loaded['page'] for event, details in events)
+    assert any(event == 'result grid changed' and details['state'] == 'ready'
+               and details['previewColumns'] == 1 for event, details in events)
+
+    page.locator('#grid img').dispatch_event('error')
+    page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
+    failed = next(details for event, details in events if event == 'browser error')
+    assert failed['previousStatus'] == 'ready'
+    assert (failed['thumbnail'], failed['page']) == (loaded['thumbnail'], loaded['page'])
+
+    with page.expect_console_message(predicate=lambda message: 'thumbnail removed' in message.text):
+        _set_result_image_mode(page, 'icon_url', False)
+    removed = next(details for event, details in events if event == 'thumbnail removed')
+    assert (removed['thumbnail'], removed['page']) == (loaded['thumbnail'], loaded['page'])
+
+    with page.expect_console_message(predicate=lambda message: ' page loaded ' in message.text):
+        page.reload()
+    reopened = next(details for event, details in events if event == 'page loaded')
+    assert reopened['page'] != loaded['page']
+    assert reopened['navigation'] == 'reload'
+    assert all(url not in str(details) and 'private-test-value' not in str(details)
+               for _, details in events)
 
 
 def test_result_images_enlarge_and_keep_signed_urls_distinct(page_sqlite):
