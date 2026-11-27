@@ -8265,10 +8265,14 @@ def test_result_images_lazy_load_failure_timeout_and_retry(page_sqlite):
     assert 'https://images.example/101.png' not in requests
     flaky = 'https://images.example/flaky.png'
     _run_sql(page, f"select '{flaky}' as avatar_url")
-    _enable_result_images(page, 'avatar_url')
+    with page.expect_console_message(predicate=lambda message: (
+        message.text.startswith('[Quarry images]')
+        and ' loaded ' in message.text
+        and '"attempt":1' in message.text
+    )):
+        _enable_result_images(page, 'avatar_url')
     page.wait_for_function("document.querySelector('#grid img')?.naturalWidth === 64")
     assert requests.count(flaky) == 2
-    assert any(event == 'loaded' and details['attempt'] == 1 for event, details in diagnostic_messages)
 
     _run_sql(page, "select 'https://images.example/bad.png' as avatar_url")
     _enable_result_images(page, 'avatar_url')
