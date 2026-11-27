@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { observeImagePreviewPage } from "./imageDiagnostics";
 import { prepareOfflineShell } from "./offlineShell";
 import Header from "./Header";
 import ResultWorkbench from "./ResultWorkbench";
@@ -45,6 +46,7 @@ function UpgradeBanner() {
  * filling the rest — the legacy GUI's `<body>` layout. */
 export default function App() {
   useEvents();
+  useEffect(observeImagePreviewPage, []);
   useEffect(() => { void prepareOfflineShell(); }, []);
   const isProduction = useConnStore((s) => s.current?.production === true);
   return (

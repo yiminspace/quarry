@@ -7,6 +7,10 @@ pre-1.0 history followed the earlier development policy.
 
 ## [Unreleased]
 
+- Retry result thumbnails once after a browser load error or timeout. If both attempts fail, the cell offers a manual retry.
+
+- Add opt-in browser console diagnostics for result image previews. Page, grid, and thumbnail events show whether images were reloaded after returning to a tab. Enable logging for the current tab with `sessionStorage.setItem("qy_debug_images", "1")`.
+
 - Automatically publish native updates after successful main CI when merged commits warrant a version bump.
 
 - Show when the current result was queried, with a relative time for results from the last 24 hours and the exact time on hover. In Auto mode, returning to a tab or reloading can refresh stale SELECT results after a configurable age, defaulting to one day.

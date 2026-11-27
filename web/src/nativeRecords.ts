@@ -1,3 +1,4 @@
+import { traceImagePreview } from "./imageDiagnostics";
 import { t } from "./i18n";
 
 type Values = Record<string, string>;
@@ -612,7 +613,10 @@ export async function restoreNativeScope(): Promise<void> {
   if (!NATIVE_MODE || persistence !== "ready") return;
   for (let i = 0; saving && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 50));
   await flushNativeRecords();
-  if (!dirty && !saving && persistence === "ready") location.reload();
+  if (!dirty && !saving && persistence === "ready") {
+    traceImagePreview("reloading after cloud connection became available");
+    location.reload();
+  }
 }
 
 export async function loadSavedNativeRecords(): Promise<void> {

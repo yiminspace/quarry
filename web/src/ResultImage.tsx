@@ -1,17 +1,31 @@
 import { collectColumnImages } from "./imageDetection";
 import type { QueryResult } from "./api";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { cellPreview } from "./cellValue";
 import { copy } from "./clip";
 import { t } from "./i18n";
+import { traceImagePreview } from "./imageDiagnostics";
 import { Modal } from "./Modals";
 
+function thumbnailPosition(element: Element | null) {
+  return {
+    row: (element?.closest("tr")?.sectionRowIndex ?? -1) + 1,
+    column: element?.closest("td")?.cellIndex ?? 0,
+  };
+}
+
 function ImageLoad({ url, onOpen }: { url: string; onOpen: () => void }) {
+  const thumbnail = useId();
   const host = useRef<HTMLDivElement>(null);
+  const image = useRef<HTMLImageElement>(null);
   const [visible, setVisible] = useState(false);
-  const [status, setStatus] = useState<"loading" | "ready" | "failed">("loading");
+  const [status, setStatus] = useState<"loading" | "retrying" | "ready" | "failed">("loading");
   const timerRef = useRef<number | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
+  const attachImage = useCallback((element: HTMLImageElement | null) => {
+    image.current = element;
+    if (element) traceImagePreview("started", { thumbnail, ...thumbnailPosition(element), attempt });
+  }, [thumbnail, attempt]);
 
   useEffect(() => {
     if (!host.current) return;
@@ -24,28 +38,67 @@ function ImageLoad({ url, onOpen }: { url: string; onOpen: () => void }) {
     return () => observer.disconnect();
   }, []);
 
+  const finish = (outcome: "loaded" | "invalid dimensions" | "browser error" | "timed out"): void => {
+    window.clearTimeout(timerRef.current);
+    traceImagePreview(outcome, {
+      thumbnail, ...thumbnailPosition(host.current), attempt, previousStatus: status,
+      ...(outcome === "timed out" ? { timeoutMs: 15_000 } : {}),
+    });
+    if (outcome === "loaded") {
+      setStatus("ready");
+      return;
+    }
+    setStatus(attempt === 0 && outcome !== "invalid dimensions" ? "retrying" : "failed");
+  };
+  const onTimeout = useEffectEvent(() => {
+    // Dropping the element alone can leave an in-flight request that the retry would reuse.
+    image.current?.removeAttribute("src");
+    finish("timed out");
+  });
+
   useEffect(() => {
     if (!visible) return;
-    const timer = timerRef.current = window.setTimeout(() => setStatus("failed"), 15_000);
+    const position = thumbnailPosition(host.current);
+    return () => traceImagePreview("thumbnail removed", { thumbnail, ...position });
+  }, [thumbnail, visible]);
+
+  useEffect(() => {
+    if (!visible || status !== "loading") return;
+    const timer = window.setTimeout(() => onTimeout(), 15_000);
+    timerRef.current = timer;
     return () => window.clearTimeout(timer);
-  }, [visible, attempt]);
+  }, [visible, status, attempt]);
+
+  const retry = (): void => {
+    setStatus("loading");
+    setAttempt((n) => n + 1);
+  };
+
+  useEffect(() => {
+    if (status !== "retrying") return;
+    const timer = window.setTimeout(() => {
+      traceImagePreview("retrying", { thumbnail, ...thumbnailPosition(host.current), mode: "automatic" });
+      retry();
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [thumbnail, status]);
+
+  const busy = status === "loading" || status === "retrying";
 
   return (
-    <div ref={host} onDoubleClick={(event) => event.stopPropagation()} className="result-image-thumb" aria-busy={visible && status === "loading"}>
-      {visible && status !== "failed" && (
-        <img key={attempt} src={url} alt={t("image_preview")} decoding="async" referrerPolicy="no-referrer"
+    <div ref={host} onDoubleClick={(event) => event.stopPropagation()} className="result-image-thumb" aria-busy={visible && busy}>
+      {visible && (status === "loading" || status === "ready") && (
+        <img ref={attachImage} key={attempt} src={url} alt={t("image_preview")} decoding="async" referrerPolicy="no-referrer"
           onLoad={(event) => {
-            window.clearTimeout(timerRef.current);
-            if (!event.currentTarget.naturalWidth || !event.currentTarget.naturalHeight) { setStatus("failed"); return; }
-            setStatus("ready");
-          }} onError={() => { window.clearTimeout(timerRef.current); setStatus("failed"); }} />
+            finish(event.currentTarget.naturalWidth && event.currentTarget.naturalHeight ? "loaded" : "invalid dimensions");
+          }} onError={() => finish("browser error")} />
       )}
       {status === "failed" ? (
         <button type="button" className="result-image-retry" title={t("image_failed")} aria-label={t("image_retry")}
           onClick={(event) => {
             event.stopPropagation();
-            setStatus("loading");
-            setAttempt((n) => n + 1);
+            traceImagePreview("retrying", { thumbnail, ...thumbnailPosition(host.current), mode: "manual" });
+            retry();
           }}>
           <i className="ti ti-refresh" aria-hidden="true" />
         </button>
@@ -56,7 +109,7 @@ function ImageLoad({ url, onOpen }: { url: string; onOpen: () => void }) {
             event.stopPropagation();
             onOpen();
           }}>
-          {status === "loading" && <span aria-hidden="true">…</span>}
+          {busy && <span aria-hidden="true">…</span>}
         </button>
       )}
     </div>
