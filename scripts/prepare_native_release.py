@@ -17,6 +17,8 @@ def next_version(previous: str, commits: list[str]) -> str | None:
     if not match:
         raise ValueError(f"expected a stable release tag, got {previous!r}")
     major, minor, patch = map(int, match.groups())
+    if major != 2:
+        raise ValueError("Automatic native releases currently support only Quarry 2.x")
     level = 0
     for commit in commits:
         subject, _, body = commit.partition("\n")
@@ -30,7 +32,10 @@ def next_version(previous: str, commits: list[str]) -> str | None:
         elif header[1] in {"fix", "perf"}:
             level = max(level, 1)
     if level == 3:
-        return f"{major + 1}.0.0"
+        raise ValueError(
+            "Breaking changes require a coordinated native major release. "
+            "The installer and updater currently accept only Quarry 2.x."
+        )
     if level == 2:
         return f"{major}.{minor + 1}.0"
     if level == 1:

@@ -85,10 +85,11 @@ its private config backup if using Rust-only credential settings.
 ## Native release automation
 
 Successful push CI on the current `main` commit evaluates the commits since
-the latest stable GitHub release. A breaking change selects a major update,
-`feat:` a minor update, and `fix:` or `perf:` a patch update. The highest
-applicable bump wins. Maintenance commits by themselves leave the release
-version alone.
+the latest stable GitHub release. Within Rust 2.x, `feat:` selects a minor
+update and `fix:` or `perf:` selects a patch update. The highest applicable
+bump wins. Maintenance commits by themselves leave the release version alone.
+A breaking change stops automatic release. A new major version requires a
+coordinated installer and updater migration.
 
 The workflow prepares version metadata on a temporary release branch and
 validates the candidate archives on all four platforms, including the

@@ -1,7 +1,7 @@
 name: Native release
 on:
   push:
-    tags: ['v[0-9]*']
+    tags: ['v2.*']
   workflow_run:
     workflows: [CI]
     types: [completed]
