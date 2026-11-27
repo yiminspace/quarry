@@ -80,3 +80,18 @@ command; no private account configuration is included in releases.
 Python 1.11.0 is preserved by tag and the protected `archive/python-1.x` branch.
 To roll back, reinstall that exact version in its original installer and restore
 its private config backup if using Rust-only credential settings.
+
+
+## Native release automation
+
+Successful push CI on the current `main` commit evaluates the commits since
+the latest stable GitHub release. A breaking change selects a major update,
+`feat:` a minor update, and `fix:` or `perf:` a patch update. The highest
+applicable bump wins. Maintenance commits by themselves leave the release
+version alone.
+
+The workflow prepares version metadata on a temporary release branch and
+validates the candidate archives on all four platforms, including the
+installer, packaged GUI and an existing workspace. It then tags and publishes
+those same archives and checksums. Manual releases can still be triggered
+with an explicit version tag.

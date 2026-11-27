@@ -1,7 +1,11 @@
 name: Native release
 on:
   push:
-    tags: ['v2.*']
+    tags: ['v[0-9]*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -11,32 +15,99 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: native-release-${{ inputs.tag || github.ref_name }}
+  group: native-release
+  queue: max
   cancel-in-progress: false
 jobs:
+  prepare:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+      previous: ${{ steps.version.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Prepare a versioned release candidate from successful main CI
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ref="refs/heads/release/auto-$GITHUB_RUN_ID"
+          existing=$(git ls-remote origin "$ref")
+          if [[ -n "$existing" ]]; then
+            git fetch origin "$ref"
+            git switch --detach FETCH_HEAD
+            tag=$(git log -1 --format=%s | sed 's/^chore(release): //')
+            previous=$(git log -1 --format=%b)
+          else
+            if [[ "$(git rev-parse HEAD)" != "$(git ls-remote origin refs/heads/main | cut -f1)" ]]; then
+              echo 'A newer main commit will be evaluated after its CI completes.'
+              exit 0
+            fi
+            previous=$(gh release view --json tagName --jq .tagName)
+            tag=$(python scripts/prepare_native_release.py "$previous")
+            if [[ -z "$tag" ]]; then exit 0; fi
+            python scripts/validate_release.py "$tag"
+            git -c user.name=github-actions -c user.email=actions@users.noreply.github.com \
+              commit -m "chore(release): $tag" -m "$previous" -- Cargo.toml Cargo.lock
+            git push origin "HEAD:$ref"
+          fi
+          python scripts/validate_release.py "$tag"
+          {
+            printf 'tag=%s\n' "$tag"
+            printf 'sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'previous=%s\n' "$previous"
+          } >> "$GITHUB_OUTPUT"
+
   validate:
+    needs: prepare
+    if: ${{ !cancelled() && (github.event_name != 'workflow_run' || (needs.prepare.result == 'success' && needs.prepare.outputs.tag != '')) }}
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.source.outputs.tag }}
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.prepare.outputs.sha || inputs.tag || github.ref_name }}
+          fetch-depth: 2
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python scripts/validate_release.py "$RELEASE_TAG"
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag || inputs.tag || github.ref_name }}
       - name: Require successful CI for the exact main commit
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag || inputs.tag || github.ref_name }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           source_sha=$(git rev-parse HEAD)
+          if [[ -n "$CI_SHA" ]]; then
+            test "$(git rev-parse HEAD^)" = "$CI_SHA"
+            test "$(git diff --name-only "$CI_SHA" HEAD)" = $'Cargo.lock\nCargo.toml'
+            printf 'sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           for attempt in $(seq 1 90); do
             result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --event push --commit "$source_sha" --limit 1 --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
             if [[ "$result" == $'completed\tsuccess' ]]; then
@@ -50,7 +121,7 @@ jobs:
 
   hosted-plan:
     needs: validate
-    if: ${{ !contains(inputs.tag || github.ref_name, '-rc.') }}
+    if: ${{ !contains(needs.validate.outputs.tag, '-rc.') }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -63,6 +134,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            echo 'build=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           for attempt in $(seq 1 45); do
             result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow hosted-image.yml --branch main --event push --commit "$SOURCE_SHA" --limit 1 --json status,conclusion --jq '.[0] | [.status,.conclusion] | @tsv')
             case "$result" in
@@ -110,7 +185,7 @@ jobs:
           python-version: '3.12'
       - run: python scripts/validate_release.py "$RELEASE_TAG"
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -148,7 +223,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
   publish:
-    needs: [validate, build]
+    needs: [prepare, validate, build, hosted-image]
+    if: >-
+      !cancelled() && needs.build.result == 'success' &&
+      (github.event_name != 'workflow_run' || needs.hosted-image.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -164,9 +242,28 @@ jobs:
       - name: Publish GitHub release and checksums
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          PREVIOUS_TAG: ${{ needs.prepare.outputs.previous }}
         run: |
           cat dist/*.sha256 > dist/SHA256SUMS
+          notes=(--notes-file docs/release-notes.md)
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            python scripts/validate_release.py "$RELEASE_TAG"
+            latest=$(gh release view --json tagName --jq .tagName)
+            if [[ "$latest" != "$PREVIOUS_TAG" && "$latest" != "$RELEASE_TAG" ]]; then
+              echo "Stable release advanced to $latest while preparing $RELEASE_TAG"
+              exit 1
+            fi
+            # The candidate archives have passed installation and workspace
+            # verification on every platform. Publish those exact archives.
+            existing=$(git ls-remote --refs origin "refs/tags/$RELEASE_TAG")
+            if [[ -n "$existing" ]]; then
+              test "${existing%%$'\t'*}" = "$(git rev-parse HEAD)"
+            else
+              git push origin "HEAD:refs/tags/$RELEASE_TAG"
+            fi
+            notes=(--generate-notes --notes-start-tag "$PREVIOUS_TAG")
+          fi
           prerelease=()
           if [[ "$RELEASE_TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
           if release=$(gh release view "$RELEASE_TAG" --json assets,isDraft); then
@@ -186,7 +283,7 @@ jobs:
             fi
           else
             gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --verify-tag \
-              "${prerelease[@]}" --title "Quarry $RELEASE_TAG" --notes-file docs/release-notes.md
+              "${prerelease[@]}" --title "Quarry $RELEASE_TAG" "${notes[@]}"
           fi
 
   publish-hosted-release:
@@ -200,7 +297,7 @@ jobs:
       - name: Verify anonymous pulls and publish the hosted release descriptor
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
           # This job does not log in to GHCR. Confirm the tagged index and both
@@ -229,3 +326,15 @@ jobs:
           else
             gh release upload "$RELEASE_TAG" "$descriptor" --repo "$GITHUB_REPOSITORY"
           fi
+
+  finish:
+    needs: publish-hosted-release
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Remove the completed candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/release/auto-$GITHUB_RUN_ID"
